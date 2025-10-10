@@ -7,150 +7,316 @@ from database import DatabaseManager
 class PowerDataImporter:
     def __init__(self):
         self.db_manager = DatabaseManager()
-        pass
 
     # ===============================
-    # 主入口：导入所有sheet
+    # 主入口：导入 Excel
     # ===============================
     def import_power_data(self, excel_file):
-        """自动导入Excel中所有Sheet的数据，日期自动识别"""
-        sheet_dict = self.read_excel_data(excel_file)
-        if not sheet_dict:
+        """自动导入 Excel 中所有 Sheet，并统一处理"""
+        try:
+            sheet_dict = pd.read_excel(excel_file, sheet_name=None, header=0)
+            print(f"✅ 成功读取 Excel，共 {len(sheet_dict)} 个 Sheet: {list(sheet_dict.keys())}")
+        except Exception as e:
+            print(f"❌ 读取 Excel 失败: {e}")
             return False
+
+        # 自动识别文件类型（汉字）
+        file_name = str(excel_file)
+        chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
+        data_type = chinese_match.group(1) if chinese_match else "未知类型"
+        print(f"📁 文件类型识别: {data_type}")
 
         all_records = []
 
         for sheet_name, df in sheet_dict.items():
-            # === 自动识别日期 ===
+            print(f"\n🔹 正在处理 Sheet: {sheet_name}")
+
+            # 识别 Sheet 日期
             match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", sheet_name)
             data_date = match.group(1) if match else datetime.datetime.now().strftime('%Y-%m-%d')
 
-            # === 根据sheet名识别类型 ===
-            file_name = str(excel_file)
-            
-            chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
-            if chinese_match:
-                data_type = chinese_match.group(1)
-                print(f"📁 文件类型识别: {data_type}")
-            else:
-                print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
-                return False
-
-            print(f"\n📘 正在处理 {sheet_name} | 日期: {data_date} | 类型: {data_type}")
-
-            records = self.process_24h_data(df, data_date, sheet_name, data_type)
+            records = self._process_sheet(df, data_date, sheet_name, data_type)
             all_records.extend(records)
+            print(f"✅ {sheet_name} 解析完成，共 {len(records)} 条记录")
 
         if not all_records:
-            print("❌ 没有任何有效数据被导入")
+            print("❌ 没有生成任何有效记录")
             return False
 
-        # === 保存数据库 ===
         return self.save_to_database(all_records, data_date)
 
     # ===============================
-    # 读取所有sheet
+    # 核心 sheet 处理方法
     # ===============================
-    def read_excel_data(self, excel_file):
-        """读取Excel中所有Sheet"""
-        try:
-            sheet_dict = pd.read_excel(excel_file, sheet_name=None, header=0)
-            print(f"✅ 成功读取Excel，共 {len(sheet_dict)} 个Sheet: {list(sheet_dict.keys())}")
-            return sheet_dict
-        except Exception as e:
-            print(f"❌ 读取Excel失败: {e}")
-            return None
-
-    # ===============================
-    # 处理单个sheet的24小时数据
-    # ===============================
-    def process_24h_data(self, df, data_date, sheet_name, data_type):
-        """处理单个Sheet（行式结构）的24小时数据"""
+    def _process_sheet(self, df, data_date, sheet_name, data_type):
+        """根据 Sheet 结构自动识别处理逻辑"""
         records = []
 
-        # 标准化列名
+        df = df.dropna(how="all")  # 删除全空行
+        if df.empty:
+            print(f"⚠️ {sheet_name} 为空，跳过")
+            return records
+
+        # 清理列名
         df.columns = [str(c).strip() for c in df.columns]
 
-        if "通道名称" not in df.columns:
-            print(f"⚠️ 未找到 '通道名称' 列，跳过")
+        # 1️⃣ 如果是名单表（含 '电厂名称' 和 '机组名称'）
+        if "电厂名称" in df.columns and "机组名称" in df.columns:
+            records = self._process_unit_list(df, data_date, sheet_name, data_type)
             return records
 
-        # 直接使用所有有通道名称的行
-        valid_rows = df[df["通道名称"].notna()]
-        if valid_rows.empty:
-            print(f"⚠️ Sheet中无有效通道，通道列值为: {df['通道名称'].unique().tolist()}")
+        # 2️⃣ 如果有 '通道名称' 列
+        if "通道名称" in df.columns:
+            records = self._process_channel_format(df, data_date, sheet_name, data_type)
             return records
 
-        # 提取所有时间列（一般从00:00到23:45）
-        time_cols = [c for c in df.columns if re.match(r"\d{2}:\d{2}", c)]
+        # 3️⃣ 如果有 '类型' 列
+        if "类型" in df.columns:
+            # 判断是否是时刻列（00:00等）还是单值列
+            time_cols = [c for c in df.columns if re.match(r"\d{1,2}:\d{2}", c)]
+            if time_cols:
+                records = self._process_type_format(df, data_date, sheet_name, data_type)
+            else:
+                records = self._process_type_date_value(df, data_date, sheet_name, data_type)
+            return records
+
+        # 4️⃣ 第一行是指标名 → 其他列是数值
+        if not df.empty:
+            records = self._process_first_row_as_channel(df, data_date, sheet_name, data_type)
+            return records
+
+        print(f"⚠️ 未识别 {sheet_name} 的处理规则")
+        return records
+
+    # ===============================
+    # 处理单元/机组名单表
+    # ===============================
+    def _process_unit_list(self, df, data_date, sheet_name, data_type):
+        """channel_name = 电厂名称-机组名称-类型，value 默认为 1"""
+        records = []
+
+        df = df.dropna(how="all")
+        df.columns = [str(c).strip() for c in df.columns]
+
+        for _, row in df.iterrows():
+            record_date = data_date
+            if "日期" in df.columns and pd.notna(row["日期"]):
+                try:
+                    record_date = pd.to_datetime(str(row["日期"])).date()
+                except:
+                    pass
+
+            parts = []
+            for col in ["电厂名称", "机组名称", "类型"]:
+                if col in df.columns and pd.notna(row[col]):
+                    parts.append(str(row[col]).strip())
+            if not parts:
+                continue
+
+            records.append({
+                "record_date": record_date,
+                "record_time": datetime.datetime.now().time(),
+                "channel_name": "-".join(parts),
+                "value": 1,
+                "type": data_type,
+                "sheet_name": sheet_name,
+                "created_at": datetime.datetime.now(),
+            })
+
+        return records
+
+    # ===============================
+    # 处理有通道名称的 Sheet
+    # ===============================
+    def _process_channel_format(self, df, data_date, sheet_name, data_type):
+        records = []
+        df = df.dropna(how="all")
+        time_cols = [c for c in df.columns if re.match(r"\d{1,2}:\d{2}", c)]
         if not time_cols:
-            print(f"⚠️ 没有发现时间列: {list(df.columns)}")
             return records
 
-        # 遍历每一行（一个通道）
-        for _, row in valid_rows.iterrows():
-            channel_name = row["通道名称"]
-
+        for _, row in df.iterrows():
+            channel_name = str(row["通道名称"]).strip()
+            if not channel_name:
+                continue
             for t in time_cols:
-                # 处理NaN值，跳过NULL值
                 value = row[t]
                 if pd.isna(value):
-                    continue  # 跳过这个记录
-                
-                record = {
-                    "record_date": data_date,
+                    continue
+                try:
+                    value = float(value)
+                except:
+                    continue
+                records.append({
+                    "record_date": pd.to_datetime(data_date).date(),
                     "record_time": t,
                     "channel_name": channel_name,
                     "value": value,
                     "type": data_type,
                     "sheet_name": sheet_name,
                     "created_at": datetime.datetime.now(),
-                }
-                records.append(record)
-
-        print(f"✅ {data_type} 导入 {len(records)} 条记录 ({len(valid_rows)} 个通道)")
+                })
         return records
 
-    # -------------------------------
-    # 数据保存（修复NaN问题）
-    # -------------------------------
+    # ===============================
+    # 处理有类型列和时间列的 Sheet
+    # ===============================
+    def _process_type_format(self, df, data_date, sheet_name, data_type):
+        records = []
+        df = df.dropna(how="all")
+        time_cols = [c for c in df.columns if re.match(r"\d{1,2}:\d{2}", c)]
+        if not time_cols:
+            return records
+
+        for _, row in df.iterrows():
+            parts = []
+            if "类型" in df.columns and pd.notna(row["类型"]):
+                parts.append(str(row["类型"]).strip())
+            if "电源类型" in df.columns and pd.notna(row["电源类型"]):
+                parts.append(str(row["电源类型"]).strip())
+            if not parts:
+                continue
+            channel_name = "-".join(parts)
+
+            for t in time_cols:
+                value = row[t]
+                if pd.isna(value):
+                    continue
+                try:
+                    value = float(value)
+                except:
+                    continue
+                records.append({
+                    "record_date": pd.to_datetime(data_date).date(),
+                    "record_time": t,
+                    "channel_name": channel_name,
+                    "value": value,
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": datetime.datetime.now(),
+                })
+        return records
+
+    # ===============================
+    # 处理类型-日期-数值表
+    # ===============================
+    def _process_type_date_value(self, df, data_date, sheet_name, data_type):
+        records = []
+        df = df.dropna(how="all")
+        df.columns = [str(c).strip() for c in df.columns]
+
+        col_type = "类型" if "类型" in df.columns else None
+        col_date = "日期" if "日期" in df.columns else None
+        value_cols = [c for c in df.columns if c not in [col_type, col_date]]
+        if not value_cols:
+            return records
+        value_col = value_cols[0]
+
+        for _, row in df.iterrows():
+            channel_name = str(row[col_type]).strip() if col_type else "未知类型"
+            raw_date = str(row[col_date]).strip() if col_date and pd.notna(row[col_date]) else None
+
+            parsed_date = None
+            if raw_date:
+                try:
+                    parsed_date = pd.to_datetime(raw_date).date()
+                except:
+                    match = re.search(r"\((\d{2})\.(\d{2})", raw_date)
+                    year_match = re.search(r"(\d{4})年", raw_date)
+                    if match and year_match:
+                        year = int(year_match.group(1))
+                        month = int(match.group(1))
+                        day = int(match.group(2))
+                        parsed_date = datetime.date(year, month, day)
+            if parsed_date is None:
+                parsed_date = pd.to_datetime(data_date).date()
+
+            try:
+                value = float(row[value_col])
+            except:
+                continue
+
+            records.append({
+                "record_date": parsed_date,
+                "record_time": datetime.datetime.now().time(),
+                "channel_name": channel_name,
+                "value": value,
+                "type": data_type,
+                "sheet_name": sheet_name,
+                "created_at": datetime.datetime.now(),
+            })
+        return records
+
+    # ===============================
+    # 处理第一行是指标名的 Sheet
+    # ===============================
+    def _process_first_row_as_channel(self, df, data_date, sheet_name, data_type):
+        records = []
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        if df.empty:
+            return records
+
+        channel_names = [str(c).strip() for c in df.iloc[0].tolist()]
+        df = df.iloc[1:]
+        if df.empty:
+            return records
+
+        for _, row in df.iterrows():
+            for idx, value in enumerate(row):
+                if idx >= len(channel_names):
+                    continue
+                if pd.isna(value):
+                    continue
+                records.append({
+                    "record_date": pd.to_datetime(data_date).date(),
+                    "record_time": datetime.datetime.now().time(),
+                    "channel_name": channel_names[idx],
+                    "value": value,
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": datetime.datetime.now(),
+                })
+        return records
+
+    # ===============================
+    # 数据保存
+    # ===============================
     def save_to_database(self, records, data_date):
-        """保存所有Sheet的数据到数据库"""
         if not records:
             print("❌ 没有可保存的记录")
             return False
 
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        valid_records = []
+        required_fields = ["record_date", "record_time", "channel_name", "value", "type", "sheet_name"]
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            if not all(k in r for k in required_fields):
+                continue
+            if isinstance(r["record_date"], str):
+                try:
+                    r["record_date"] = pd.to_datetime(r["record_date"]).date()
+                except:
+                    continue
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return False
+
         try:
             with self.db_manager.engine.begin() as conn:
-                # 删除该日期数据
-                delete_stmt = text("""
-                    DELETE FROM power_data 
-                    WHERE record_date = :record_date
-                """)
-                conn.execute(delete_stmt, {"record_date": data_date})
-                print(f"🗑️ 已删除 {data_date} 的旧数据")
-
-                # 插入新数据
-                insert_stmt = text("""
-                    INSERT INTO power_data 
-                    (record_date, record_time, type, channel_name, value, sheet_name)
-                    VALUES (:record_date, :record_time, :type, :channel_name, :value, :sheet_name)
-                """)
-
-                batch_size = 200
-                for i in range(0, len(records), batch_size):
-                    batch = records[i:i + batch_size]
-                    conn.execute(insert_stmt, batch)
-                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
-
-                count_stmt = text("""
-                    SELECT COUNT(*) FROM power_data WHERE record_date = :record_date
-                """)
-                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
-                print(f"✅ 数据库保存成功: {count} 条记录")
-                return True
+                conn.execute(text("DELETE FROM power_data WHERE record_date = :record_date"), {"record_date": data_date})
+                conn.execute(
+                    text("""INSERT INTO power_data (record_date, record_time, channel_name, value, type, sheet_name, created_at)
+                           VALUES (:record_date, :record_time, :channel_name, :value, :type, :sheet_name, :created_at)"""),
+                    valid_records
+                )
+            print(f"✅ 数据已保存，共 {len(valid_records)} 条记录")
+            return True
         except Exception as e:
-            print(f"❌ 数据库保存失败: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ 数据保存失败: {e}")
             return False
