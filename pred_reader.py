@@ -16,9 +16,11 @@ class PowerDataImporter:
         """自动导入Excel中所有Sheet的数据，日期自动识别"""
         sheet_dict = self.read_excel_data(excel_file)
         if not sheet_dict:
-            return False
+            return False, None, 0, []
 
         all_records = []
+        table_name = None
+        data_type = None
 
         for sheet_name, df in sheet_dict.items():
             # === 自动识别日期 ===
@@ -34,7 +36,7 @@ class PowerDataImporter:
                 print(f"📁 文件类型识别: {data_type}")
             else:
                 print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
-                return False
+                return False, None, 0, []
 
             print(f"\n📘 正在处理 {sheet_name} | 日期: {data_date} | 类型: {data_type}")
 
@@ -43,10 +45,11 @@ class PowerDataImporter:
 
         if not all_records:
             print("❌ 没有任何有效数据被导入")
-            return False
+            return False, None, 0, []
 
         # === 保存数据库 ===
-        return self.save_to_database(all_records, data_date)
+        success, table_name, record_count, preview_data = self.save_to_database(all_records, data_date)
+        return success, table_name, record_count, preview_data
 
     # ===============================
     # 读取所有sheet
@@ -165,11 +168,27 @@ class PowerDataImporter:
     # 数据保存
     # -------------------------------
 
+    # def save_to_database(self, records, data_date):
+    #     """按日期自动创建表并保存数据"""
+    #     if not records:
+    #         print("❌ 没有可保存的记录")
+    #         return False, None, 0, []
+
+    #     # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+    #     if isinstance(records, pd.DataFrame):
+    #         records = records.to_dict# 获取前5行数据预览
+    #     preview_stmt = text(f"SELECT * FROM {table_name} LIMIT 5")
+    #     result = conn.execute(preview_stmt)
+    #     # 修复：正确处理SQLAlchemy行对象
+    #     preview_data = []
+    #     for row in result:
+    #         # 将行对象转换为字典
+    #         preview_data.append(dict(zip(result.keys(), row)))(orient="records")
     def save_to_database(self, records, data_date):
         """按日期自动创建表并保存数据"""
         if not records:
             print("❌ 没有可保存的记录")
-            return False
+            return False, None, 0, []
 
         # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
         if isinstance(records, pd.DataFrame):
@@ -177,7 +196,7 @@ class PowerDataImporter:
 
         if not isinstance(records, list):
             print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
-            return False
+            return False, None, 0, []
 
         # 🧩 2. 过滤无效记录
         valid_records = []
@@ -194,10 +213,11 @@ class PowerDataImporter:
 
         if not valid_records:
             print("❌ 没有可保存的有效记录")
-            return False
+            return False, None, 0, []
 
         # --- 生成按天表名 ---
         table_name = f"power_data_{data_date.strftime('%Y%m%d')}"
+        preview_data = []
 
         try:
             with self.db_manager.engine.begin() as conn:
@@ -231,15 +251,24 @@ class PowerDataImporter:
 
                 count_stmt = text(f"SELECT COUNT(*) FROM {table_name}")
                 count = conn.execute(count_stmt).scalar()
+                
+                # 获取前5行数据预览
+                preview_stmt = text(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT 5")
+                result = conn.execute(preview_stmt)
+                # 修复：正确处理SQLAlchemy行对象
+                preview_data = []
+                for row in result:
+                    # 将行对象转换为字典
+                    preview_data.append(dict(zip(result.keys(), row)))
+                
                 print(f"✅ 数据库保存成功: {count} 条记录")
-                return True
+                return True, table_name, count, preview_data
 
         except Exception as e:
             print(f"❌ 数据库保存失败: {e}")
             import traceback
             traceback.print_exc()
-            return False
-
+            return False, None, 0, []
 
     def import_custom_excel(self, excel_file):
         """导入指定的5个sheet，并按固定规则映射"""
@@ -708,7 +737,7 @@ class PowerDataImporter:
             print(f"✅ 成功读取 Excel: {excel_file}, sheet: {first_sheet_name}")
         except Exception as e:
             print(f"❌ 读取 Excel 失败: {e}")
-            return False
+            return False, None, 0, []
 
         # 自动识别日期
         match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", first_sheet_name)
@@ -722,7 +751,7 @@ class PowerDataImporter:
             print(f"📁 文件类型识别: {data_type}")
         else:
             print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
-            return False
+            return False, None, 0, []
 
         print(f"\n📘 正在处理 {first_sheet_name} | 日期: {data_date} | 类型: {data_type}")
 
@@ -731,10 +760,12 @@ class PowerDataImporter:
 
         if not records:
             print("❌ 没有任何有效数据被导入")
-            return False
+            return False, None, 0, []
 
         # 保存到数据库
-        return self.save_to_database(records, data_date)
+        success, table_name, record_count, preview_data = self.save_to_database(records, data_date)
+        print(f"✅ 数据保存成功，表名: {table_name}，记录数: {record_count}")
+        return success, table_name, record_count, preview_data
 
     def process_mean_by_column(self, df, data_date, sheet_name, data_type):
         """
@@ -744,6 +775,7 @@ class PowerDataImporter:
 
         # 标准化列名
         df.columns = [str(c).strip() for c in df.columns]
+        # print(f"COLUMNS: {df.columns.tolist()}")
 
         # 获取时间列（第3列及之后）
         time_cols = df.columns[2:]
