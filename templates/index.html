@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel2SQL - 数据导入工具</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Excel2SQL</h1>
+            <div>
+                <span id="db-status" class="status-badge status-pending">检查数据库连接...</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="alerts"></div>
+
+        <div class="card">
+            <h2>上传Excel文件</h2>
+            <div id="drop-area" class="upload-area">
+                <p>拖放Excel文件到这里，或点击下方按钮选择文件</p>
+                <form id="upload-form">
+                    <input type="file" id="file-input" accept=".xlsx" style="display: none;">
+                    <button type="button" class="btn" onclick="document.getElementById('file-input').click()">选择文件</button>
+                    <button type="submit" class="btn btn-success">上传文件</button>
+                </form>
+                <div id="progress-container" class="hidden">
+                    <div class="progress">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2>文件列表</h2>
+                <button id="import-all-btn" class="btn btn-success" onclick="importAllFiles()">导入所有文件</button>
+                <button class="btn" onclick="loadFileList()">刷新列表</button>
+            </div>
+            <ul id="file-list" class="file-list">
+                <div class="text-center">加载中...</div>
+            </ul>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>Excel2SQL - 数据导入工具 &copy; 2023</p>
+        </div>
+    </footer>
+
+    <script src="/static/js/main.js"></script>
+    <script>
+        // 检查数据库连接状态
+        fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                const dbStatus = document.getElementById('db-status');
+                if (data.status === 'healthy') {
+                    dbStatus.className = 'status-badge status-success';
+                    dbStatus.textContent = '数据库已连接';
+                } else {
+                    dbStatus.className = 'status-badge status-error';
+                    dbStatus.textContent = '数据库未连接';
+                }
+            })
+            .catch(error => {
+                console.error('Error checking health:', error);
+                const dbStatus = document.getElementById('db-status');
+                dbStatus.className = 'status-badge status-error';
+                dbStatus.textContent = '连接错误';
+            });
+    </script>
+</body>
+</html>
