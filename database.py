@@ -1,3 +1,4 @@
+# database.py
 from sqlalchemy import create_engine, text
 from config import DB_CONFIG
 
@@ -95,7 +96,7 @@ class DatabaseManager:
                     text(f"SELECT * FROM {table_name} WHERE data_date = :data_date LIMIT 5"),
                     {"data_date": data_date}
                 )
-                preview_data = [dict(row) for row in result]
+                preview_data = [dict(row._mapping) for row in result]
             
             print(f"✅ 成功导入 {len(records)} 条记录到 {table_name} 表")
             return True, table_name, len(records), preview_data
@@ -122,7 +123,8 @@ class DatabaseManager:
                 result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT {limit}"))
                 data = []
                 for row in result:
-                    row_dict = dict(row)
+                    # 修复：正确处理SQLAlchemy行对象
+                    row_dict = dict(row._mapping)
                     # 特别处理 record_time 字段
                     if "record_time" in row_dict and row_dict["record_time"]:
                         # 如果是 timedelta 对象
@@ -153,6 +155,7 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ 删除表失败: {str(e)}")
             return False
+
 if __name__ == "__main__":
     db = DatabaseManager()
     db.test_connection()

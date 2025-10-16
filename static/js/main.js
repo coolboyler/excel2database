@@ -1,3 +1,5 @@
+// static/js/main.js
+
 document.addEventListener('DOMContentLoaded', function() {
     // 初始化页面
     loadFileList();
@@ -37,6 +39,42 @@ function loadFileList() {
         .catch(error => {
             console.error('Error loading file list:', error);
             fileListElement.innerHTML = '<div class="alert alert-danger">加载文件列表失败</div>';
+        });
+}
+
+// 加载表列表
+function loadTableList() {
+    const tableListElement = document.getElementById('table-list');
+    if (!tableListElement) return;
+    
+    tableListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
+    
+    fetch('/tables')
+        .then(response => response.json())
+        .then(data => {
+            if (data.tables.length === 0) {
+                tableListElement.innerHTML = '<div class="text-center">数据库中没有表。</div>';
+                return;
+            }
+            
+            let html = '';
+            data.tables.forEach(table => {
+                html += `
+                <li class="file-item">
+                    <span class="file-name">${table}</span>
+                    <div class="file-actions">
+                        <button class="btn btn-primary btn-sm" onclick="viewTableData('${table}')">查看数据</button>
+                        <button class="btn btn-warning btn-sm" onclick="viewTableQuery('${table}')">查询</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteTable('${table}')">删除表</button>
+                    </div>
+                </li>`;
+            });
+            
+            tableListElement.innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading table list:', error);
+            tableListElement.innerHTML = '<div class="alert alert-danger">加载表列表失败</div>';
         });
 }
 
@@ -143,7 +181,6 @@ function uploadFile(file) {
 }
 
 // 导入文件
-// 导入文件
 function importFile(filename) {
     const formData = new FormData();
     formData.append('filename', filename);
@@ -212,11 +249,28 @@ function importFile(filename) {
                 data.preview_data.forEach(row => {
                     previewHtml += '<tr>';
                     headers.forEach(header => {
-                        previewHtml += `<td>${row[header] !== null ? row[header] : ''}</td>`;
+                        let value = row[header] !== null ? row[header] : '';
+                        // 在这里加上时间转换
+                        if (header === "record_time" && value !== "") {
+                            console.log("record_time 原始值:", value, "类型:", typeof value);
+                            
+                            // 处理字符串类型
+                            const numValue = parseInt(value);
+                            console.log("转换为数字:", numValue);
+                            
+                            // 将秒数转换为分钟，再格式化为时间
+                            const totalSeconds = numValue;
+                            const totalMinutes = totalSeconds / 60; // 秒转分钟
+                            const hours = Math.floor(totalMinutes / 60) % 24;
+                            const minutes = Math.floor(totalMinutes % 60);
+                            value = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+                            
+                            console.log("转换后:", value);
+                        }
+                        previewHtml += `<td>${value}</td>`;
                     });
                     previewHtml += '</tr>';
                 });
-                
                 previewHtml += '</tbody></table></div>';
             }
             
@@ -235,6 +289,9 @@ function importFile(filename) {
                 ${previewHtml}
             `;
         }
+        
+        // 刷新表列表
+        loadTableList();
     })
     .catch(error => {
         console.error('Error importing file:', error);
@@ -262,6 +319,7 @@ function importFile(filename) {
         }
     });
 }
+
 // 删除文件
 function deleteFile(filename) {
     if (!confirm(`确定要删除文件 ${filename} 吗？`)) {
@@ -316,6 +374,9 @@ function importAllFiles() {
             `;
         });
         
+        // 启动状态检查定时器
+        checkImportStatus();
+        
         importAllBtn.disabled = false;
         importAllBtn.innerHTML = '导入所有文件';
     })
@@ -326,6 +387,44 @@ function importAllFiles() {
         importAllBtn.disabled = false;
         importAllBtn.innerHTML = '导入所有文件';
     });
+}
+
+// 检查导入状态
+function checkImportStatus() {
+    // 每隔5秒检查一次文件列表状态
+    const interval = setInterval(() => {
+        fetch('/files')
+            .then(response => response.json())
+            .then(data => {
+                // 检查是否还有文件处于"导入中"状态
+                const processingItems = document.querySelectorAll('.status-processing');
+                if (processingItems.length === 0) {
+                    // 如果没有处理中的项目，停止检查
+                    clearInterval(interval);
+                    return;
+                }
+                
+                // 重新加载文件列表以更新状态
+                loadFileList();
+                
+                // 检查是否所有文件都已处理完成
+                setTimeout(() => {
+                    const processingItems = document.querySelectorAll('.status-processing');
+                    if (processingItems.length === 0) {
+                        clearInterval(interval);
+                        showAlert('所有文件导入完成', 'success');
+                        // 刷新列表以显示导入成功状态
+                        setTimeout(() => {
+                            loadFileList();
+                            loadTableList(); // 同时刷新表列表
+                        }, 1000);
+                    }
+                }, 1000);
+            })
+            .catch(error => {
+                console.error('Error checking import status:', error);
+            });
+    }, 5000); // 每5秒检查一次
 }
 
 // 查看表数据
@@ -356,12 +455,33 @@ function viewTableData(tableName) {
     `;
     document.body.appendChild(modal);
     
+    // 确保模态框在视口中可见
+    modal.style.display = 'block';
+    
     // 关闭模态框事件
     modal.querySelector('.close-modal').addEventListener('click', () => {
         document.body.removeChild(modal);
     });
+    
     modal.querySelector('.close-btn').addEventListener('click', () => {
         document.body.removeChild(modal);
+    });
+    
+    // 点击模态框背景关闭
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            document.body.removeChild(modal);
+        }
+    });
+    
+    // 按ESC键关闭模态框
+    document.addEventListener('keydown', function escapeHandler(e) {
+        if (e.key === 'Escape') {
+            if (document.body.contains(modal)) {
+                document.body.removeChild(modal);
+            }
+            document.removeEventListener('keydown', escapeHandler);
+        }
     });
     
     // 加载表数据
@@ -372,6 +492,7 @@ function viewTableData(tableName) {
             
             if (result.data && result.data.length > 0) {
                 let tableHtml = `<div class="table-info">总记录数: ${result.total}</div>`;
+                tableHtml += '<div class="table-container" style="max-height: 500px; overflow-y: auto;">';
                 tableHtml += '<table class="data-table"><thead><tr>';
                 
                 // 表头
@@ -387,38 +508,23 @@ function viewTableData(tableName) {
                     headers.forEach(header => {
                         let value = row[header] !== null ? row[header] : '';
                         // 特别处理 record_time 字段
-                        // static/js/main.js
-
-                        // 在 viewTableData 函数中，找到处理 record_time 的部分并替换为：
-
-                        // 特别处理 record_time 字段
-                        if (header === 'record_time' && value !== '') {
-                            // 如果是数字格式的时间（如 900 -> 00:15, 1800 -> 18:00）
-                            if (typeof value === 'number') {
-                                const hours = Math.floor(value / 100);
-                                const minutes = value % 100;
-                                value = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-                            }
-                            // 如果是字符串格式的数字
-                            else if (typeof value === 'string' && !isNaN(value)) {
-                                const numValue = parseInt(value);
-                                const hours = Math.floor(numValue / 100);
-                                const minutes = numValue % 100;
-                                value = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-                            }
-                            // 如果是时间对象格式
-                            else if (value instanceof Date) {
-                                const hours = value.getHours();
-                                const minutes = value.getMinutes();
-                                value = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-                            }
-                        }
+                        if (header === "record_time" && value !== "") {
+                            // 将秒数转换为分钟，再格式化为时间
+                            const totalSeconds = parseInt(value);
+                            const totalMinutes = totalSeconds / 60; // 秒转分钟
+                            const hours = Math.floor(totalMinutes / 60) % 24;
+                            const minutes = Math.floor(totalMinutes % 60);
+                            value = `${hours.toString().padStart(2, "0")}:${minutes
+                              .toString()
+                              .padStart(2, "0")}`;
+                          }
                         tableHtml += `<td>${value}</td>`;
                     });
                     tableHtml += '</tr>';
                 });
                 
                 tableHtml += '</tbody></table>';
+                tableHtml += '</div>';
                 modalBody.innerHTML = tableHtml;
             } else {
                 modalBody.innerHTML = '<div class="alert alert-info">表中没有数据</div>';
@@ -426,8 +532,15 @@ function viewTableData(tableName) {
         })
         .catch(error => {
             console.error('Error loading table data:', error);
-            modal.querySelector('.modal-body').innerHTML = '<div class="alert alert-danger">加载表数据失败: ' + error.message + '</div>';
+            const modalBody = modal.querySelector('.modal-body');
+            modalBody.innerHTML = '<div class="alert alert-danger">加载表数据失败: ' + error.message + '</div>';
         });
+}
+
+// 查看表查询页面
+function viewTableQuery(tableName) {
+    // 跳转到查询页面
+    window.open(`/table_query?table_name=${encodeURIComponent(tableName)}`, '_blank');
 }
 
 // 删除表
@@ -451,6 +564,9 @@ function deleteTable(tableName) {
         
         // 更新文件列表，以便更新状态
         loadFileList();
+        
+        // 更新表列表
+        loadTableList();
     })
     .catch(error => {
         console.error('Error deleting table:', error);

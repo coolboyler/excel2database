@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ table_name }} - 数据查询</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <style>
+      .query-form {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+
+      .query-form .form-group {
+        display: flex;
+        flex-direction: column;
+        min-width: 150px;
+      }
+
+      .query-form label {
+        font-size: 14px;
+        margin-bottom: 5px;
+        font-weight: 500;
+      }
+
+      .query-form select,
+      .query-form input {
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+
+      .query-form button {
+        height: 36px;
+        align-self: flex-end;
+      }
+
+      .pagination {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      .pagination button {
+        padding: 8px 12px;
+        background-color: #f0f0f0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+
+      .pagination button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .pagination button.active {
+        background-color: #3498db;
+        color: white;
+      }
+
+      .table-info {
+        margin-bottom: 15px;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="container">
+        <h1>Excel2SQL</h1>
+        <div>
+          <a href="/" class="btn btn-secondary">返回主页</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="container">
+      <div id="alerts"></div>
+
+      <div class="card">
+        <h2>表: {{ table_name }}</h2>
+
+        <div class="table-info">
+          总记录数: <span id="total-count">加载中...</span>
+        </div>
+
+        <div class="query-form">
+          <div class="form-group">
+            <label for="column-select">字段</label>
+            <select id="column-select">
+              <option value="">选择字段</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="operator-select">操作符</label>
+            <select id="operator-select">
+              <option value="">选择操作符</option>
+              <option value="=">=</option>
+              <option value="!=">!=</option>
+              <option value=">">></option>
+              <option value="<"><</option>
+              <option value=">=">>=</option>
+              <option value="<="><=</option>
+              <option value="LIKE">包含</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="value-input">值</label>
+            <input type="text" id="value-input" placeholder="输入查询值" />
+          </div>
+
+          <button class="btn btn-primary" onclick="executeQuery()">查询</button>
+          <button class="btn btn-secondary" onclick="resetQuery()">重置</button>
+        </div>
+
+        <div id="table-data-container">
+          <div class="text-center">
+            <div class="spinner"></div>
+            加载中...
+          </div>
+        </div>
+
+        <div class="pagination" id="pagination">
+          <!-- 分页控件将在这里生成 -->
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <div class="container">
+        <p>Excel2SQL - 数据导入工具 &copy; 2023</p>
+      </div>
+    </footer>
+
+    <script>
+      const tableName = "{{ table_name }}";
+      let currentPage = 0;
+      const pageSize = 20;
+      let totalRecords = 0;
+      let schema = [];
+
+      // 页面加载完成后初始化
+      document.addEventListener("DOMContentLoaded", function () {
+        loadTableSchema();
+        loadTableData();
+      });
+
+      // 加载表结构
+      function loadTableSchema() {
+        fetch(`/tables/${tableName}/schema`)
+          .then((response) => response.json())
+          .then((data) => {
+            schema = data.schema;
+            const columnSelect = document.getElementById("column-select");
+
+            // 填充字段下拉框
+            schema.forEach((field) => {
+              const option = document.createElement("option");
+              option.value = field.field;
+              option.textContent = field.field;
+              columnSelect.appendChild(option);
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading table schema:", error);
+            showAlert("加载表结构失败", "danger");
+          });
+      }
+
+      // 加载表数据
+      function loadTableData(offset = 0) {
+        const url = `/tables/${tableName}/query?offset=${offset}&limit=${pageSize}`;
+
+        fetch(url)
+          .then((response) => response.json())
+          .then((result) => {
+            totalRecords = result.total;
+            document.getElementById("total-count").textContent = totalRecords;
+            renderTableData(result.data);
+            renderPagination(offset);
+          })
+          .catch((error) => {
+            console.error("Error loading table data:", error);
+            showAlert("加载表数据失败", "danger");
+          });
+      }
+
+      // 执行查询
+      function executeQuery() {
+        const column = document.getElementById("column-select").value;
+        const operator = document.getElementById("operator-select").value;
+        const value = document.getElementById("value-input").value;
+
+        if (!column || !operator || !value) {
+          loadTableData(0);
+          return;
+        }
+
+        let url = `/tables/${tableName}/query?offset=0&limit=${pageSize}`;
+        url += `&column=${encodeURIComponent(column)}`;
+        url += `&operator=${encodeURIComponent(operator)}`;
+        url += `&value=${encodeURIComponent(value)}`;
+
+        fetch(url)
+          .then((response) => response.json())
+          .then((result) => {
+            totalRecords = result.total;
+            document.getElementById("total-count").textContent = totalRecords;
+            renderTableData(result.data);
+            renderPagination(0);
+            currentPage = 0;
+          })
+          .catch((error) => {
+            console.error("Error executing query:", error);
+            showAlert("执行查询失败", "danger");
+          });
+      }
+
+      // 重置查询
+      function resetQuery() {
+        document.getElementById("column-select").value = "";
+        document.getElementById("operator-select").value = "";
+        document.getElementById("value-input").value = "";
+        loadTableData(0);
+        currentPage = 0;
+      }
+
+      // 渲染表格数据
+      function renderTableData(data) {
+        const container = document.getElementById("table-data-container");
+
+        if (!data || data.length === 0) {
+          container.innerHTML =
+            '<div class="alert alert-info">表中没有数据</div>';
+          return;
+        }
+
+        let tableHtml =
+          '<div class="table-container" style="max-height: 500px; overflow-y: auto;">';
+        tableHtml += '<table class="data-table"><thead><tr>';
+
+        // 表头
+        const headers = Object.keys(data[0]);
+        headers.forEach((header) => {
+          tableHtml += `<th>${header}</th>`;
+        });
+        tableHtml += "</tr></thead><tbody>";
+
+        // 表格数据
+        data.forEach((row, index) => {
+          tableHtml += "<tr>";
+          headers.forEach((header) => {
+            let value = row[header] !== null ? row[header] : "";
+            // 特别处理 record_time 字段
+            if (header === "record_time" && value !== "") {
+              // 将秒数转换为分钟，再格式化为时间
+              const totalSeconds = parseInt(value);
+              const totalMinutes = totalSeconds / 60; // 秒转分钟
+              const hours = Math.floor(totalMinutes / 60) % 24;
+              const minutes = Math.floor(totalMinutes % 60);
+              value = `${hours.toString().padStart(2, "0")}:${minutes
+                .toString()
+                .padStart(2, "0")}`;
+            }
+            tableHtml += `<td>${value}</td>`;
+          });
+          tableHtml += "</tr>";
+        });
+
+        tableHtml += "</tbody></table>";
+        tableHtml += "</div>";
+        container.innerHTML = tableHtml;
+      }
+
+      // 渲染分页控件
+      function renderPagination(offset) {
+        const pagination = document.getElementById("pagination");
+        const totalPages = Math.ceil(totalRecords / pageSize);
+        currentPage = Math.floor(offset / pageSize);
+
+        if (totalPages <= 1) {
+          pagination.innerHTML = "";
+          return;
+        }
+
+        let paginationHtml = "";
+
+        // 上一页按钮
+        paginationHtml += `<button ${
+          currentPage === 0 ? "disabled" : ""
+        } onclick="changePage(${currentPage - 1})">上一页</button>`;
+
+        // 页码按钮
+        const startPage = Math.max(0, currentPage - 2);
+        const endPage = Math.min(totalPages - 1, currentPage + 2);
+
+        for (let i = startPage; i <= endPage; i++) {
+          paginationHtml += `<button class="${
+            i === currentPage ? "active" : ""
+          }" onclick="changePage(${i})">${i + 1}</button>`;
+        }
+
+        // 下一页按钮
+        paginationHtml += `<button ${
+          currentPage === totalPages - 1 ? "disabled" : ""
+        } onclick="changePage(${currentPage + 1})">下一页</button>`;
+
+        pagination.innerHTML = paginationHtml;
+      }
+
+      // 切换页面
+      function changePage(page) {
+        const offset = page * pageSize;
+        const column = document.getElementById("column-select").value;
+        const operator = document.getElementById("operator-select").value;
+        const value = document.getElementById("value-input").value;
+
+        let url = `/tables/${tableName}/query?offset=${offset}&limit=${pageSize}`;
+
+        if (column && operator && value) {
+          url += `&column=${encodeURIComponent(column)}`;
+          url += `&operator=${encodeURIComponent(operator)}`;
+          url += `&value=${encodeURIComponent(value)}`;
+        }
+
+        fetch(url)
+          .then((response) => response.json())
+          .then((result) => {
+            renderTableData(result.data);
+            renderPagination(offset);
+            currentPage = page;
+          })
+          .catch((error) => {
+            console.error("Error changing page:", error);
+            showAlert("切换页面失败", "danger");
+          });
+      }
+
+      // 显示提示信息
+      function showAlert(message, type) {
+        const alertsContainer = document.getElementById("alerts");
+        if (!alertsContainer) return;
+
+        const alert = document.createElement("div");
+        alert.className = `alert alert-${type}`;
+        alert.textContent = message;
+
+        alertsContainer.appendChild(alert);
+
+        // 3秒后自动消失
+        setTimeout(() => {
+          alert.style.opacity = "0";
+          setTimeout(() => {
+            alertsContainer.removeChild(alert);
+          }, 300);
+        }, 3000);
+      }
+    </script>
+  </body>
+</html>
