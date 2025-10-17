@@ -226,7 +226,7 @@ class PowerDataImporter:
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     record_date DATE NOT NULL,
-                    record_time TIME NOT NULL,
+                    record_time TIME,
                     type VARCHAR(255),
                     channel_name VARCHAR(255),
                     value DECIMAL(10,2),
@@ -400,7 +400,7 @@ class PowerDataImporter:
                     continue
                 record = {
                     "record_date": data_date,
-                    "record_time": datetime.datetime.now().time(),  # 入库时间
+                    "record_time": None,  # 入库时间
                     "channel_name": channel_names[col_idx],
                     "value": value,
                     "type": data_type,
@@ -593,7 +593,7 @@ class PowerDataImporter:
 
                 records.append({
                     "record_date": record_date,
-                    "record_time": datetime.datetime.now().time(),
+                    "record_time": None,
                     "channel_name": col,
                     "value": value,
                     "type": data_type,
@@ -650,8 +650,8 @@ class PowerDataImporter:
             records.append({
                 "record_date": record_date,
                 "channel_name": channel_name,
-                "record_time": datetime.datetime.now().time(),
-                "value": 1,
+                "record_time": None,
+                "value": None,
                 "type": data_type,
                 "sheet_name": sheet_name,
                 "created_at": datetime.datetime.now(),

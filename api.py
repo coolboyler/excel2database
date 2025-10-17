@@ -206,6 +206,54 @@ async def query_table_data(table_name: str,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询数据失败: {str(e)}")
 
+@app.get("/tables/{table_name}/export")
+async def export_table_data(table_name: str,
+                           column: str = None,
+                           operator: str = None,
+                           value: str = None):
+    """导出指定表的数据为CSV格式，支持条件查询"""
+    try:
+        with db_manager.engine.connect() as conn:
+            # 构建查询条件
+            where_clause = ""
+            params = {}
+            
+            if column and operator and value:
+                # 简单的SQL注入防护
+                allowed_operators = ['=', '!=', '>', '<', '>=', '<=', 'LIKE']
+                if operator not in allowed_operators:
+                    raise HTTPException(status_code=400, detail="不支持的操作符")
+                
+                if operator == 'LIKE':
+                    where_clause = f"WHERE {column} LIKE :value"
+                    params["value"] = f"%{value}%"
+                else:
+                    where_clause = f"WHERE {column} {operator} :value"
+                    # 尝试转换数值类型
+                    try:
+                        params["value"] = int(value)
+                    except ValueError:
+                        try:
+                            params["value"] = float(value)
+                        except ValueError:
+                            params["value"] = value
+            
+            # 获取所有数据
+            data_query = f"SELECT * FROM {table_name} {where_clause}"
+            data_result = conn.execute(text(data_query), params)
+            
+            data = []
+            for row in data_result:
+                row_dict = dict(row._mapping)
+                data.append(row_dict)
+            
+            return {
+                "data": data,
+                "total": len(data)
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"导出数据失败: {str(e)}")
+
 @app.delete("/tables/{table_name}")
 async def delete_table(table_name: str):
     """删除指定表"""

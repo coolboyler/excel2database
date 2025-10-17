@@ -118,6 +118,7 @@
 
           <button class="btn btn-primary" onclick="executeQuery()">查询</button>
           <button class="btn btn-secondary" onclick="resetQuery()">重置</button>
+          <button class="btn btn-success" onclick="exportData()">导出</button>
         </div>
 
         <div id="table-data-container">
@@ -361,6 +362,82 @@
             alertsContainer.removeChild(alert);
           }, 300);
         }, 3000);
+      }
+
+      // 导出数据为CSV格式
+      function exportData() {
+        // 获取当前查询条件
+        const column = document.getElementById("column-select").value;
+        const operator = document.getElementById("operator-select").value;
+        const value = document.getElementById("value-input").value;
+
+        let url = `/tables/${tableName}/export?`;
+        
+        if (column && operator && value) {
+          url += `&column=${encodeURIComponent(column)}`;
+          url += `&operator=${encodeURIComponent(operator)}`;
+          url += `&value=${encodeURIComponent(value)}`;
+        }
+
+        // 获取所有数据
+        fetch(url)
+          .then(response => response.json())
+          .then(result => {
+            if (!result.data || result.data.length === 0) {
+              showAlert("没有数据可以导出", "warning");
+              return;
+            }
+
+            // 创建CSV内容
+            const data = result.data;
+            const headers = Object.keys(data[0]);
+            
+            // 创建表头
+            let csvContent = headers.join(",") + "\n";
+            
+            // 添加数据行
+            data.forEach(row => {
+              const values = headers.map(header => {
+                let value = row[header] !== null ? row[header] : "";
+                
+                // 特别处理 record_time 字段
+                if (header === "record_time" && value !== "") {
+                  // 将秒数转换为分钟，再格式化为时间
+                  const totalSeconds = parseInt(value);
+                  const totalMinutes = totalSeconds / 60; // 秒转分钟
+                  const hours = Math.floor(totalMinutes / 60) % 24;
+                  const minutes = Math.floor(totalMinutes % 60);
+                  value = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+                }
+                
+                // 转义包含逗号或引号的值
+                if (typeof value === "string" && (value.includes(",") || value.includes('"'))) {
+                  value = `"${value.replace(/"/g, '""')}"`;
+                }
+                return value;
+              });
+              csvContent += values.join(",") + "\n";
+            });
+
+            // 创建并下载文件
+            const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+            const link = document.createElement("a");
+            const fileName = `${tableName}_${new Date().toISOString().slice(0, 10)}.csv`;
+            
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName;
+            link.style.visibility = "hidden";
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showAlert(`成功导出 ${data.length} 条记录`, "success");
+          })
+          .catch(error => {
+            console.error("Error exporting data:", error);
+            showAlert("导出数据失败: " + error.message, "danger");
+          });
       }
     </script>
   </body>
