@@ -770,6 +770,7 @@ class PowerDataImporter:
     def process_mean_by_column(self, df, data_date, sheet_name, data_type):
         """
         针对节点电价等表格：对每一列（从第3列开始）求均值，并生成记录
+        毎一列の均値データ放在最後，其他データ按順序都存一下
         """
         records = []
 
@@ -783,20 +784,73 @@ class PowerDataImporter:
             print(f"⚠️ Sheet {sheet_name} 没有发现时间列")
             return records
 
-        # 对每列求均值
+        # 将时间列按每4个分组（每小时4个15分钟间隔）
+        time_groups = {}
         for t in time_cols:
-            mean_value = df[t].mean()
-            record = {
-                "record_date": pd.to_datetime(data_date).date(),
-                "record_time": t,              # 这里是 "00:00", "00:15" 之类
-                "channel_name": f"{data_type}_均值",
-                "value": round(mean_value, 2), # 这里才是均值
-                "type": data_type,
-                "sheet_name": sheet_name,
-                "created_at": pd.Timestamp.now(),
-            }
-            records.append(record)
+            # 从 "HH:MM" 格式中提取小时
+            hour = t.split(':')[0]
+            if hour not in time_groups:
+                time_groups[hour] = []
+            time_groups[hour].append(t)
 
-        print(f"✅ {data_type} 均值生成 {len(records)} 条记录")
+        # 先保存原有的数据（按小时分组）
+        # 预先计算每行每小时的均值
+        hourly_means = {}  # {(row_index, hour): mean_value}
+        
+        for _, row in df.iterrows():
+            # 检查第一列是否有有效数据，如果没有则跳过（处理标题行）
+            channel_name = row.iloc[0]  # 第一列作为通道名称
+            if pd.isna(channel_name) or channel_name == "":
+                continue
+                
+            # 为每行每小时计算均值
+            for hour, times in time_groups.items():
+                # 计算该小时内四个时间点的均值
+                values = []
+                for t in times:
+                    value = row[t]
+                    if not pd.isna(value):
+                        values.append(value)
+                
+                # 如果有有效值，则计算均值
+                if values:
+                    hourly_mean = sum(values) / len(values)
+                    hourly_means[(_, hour)] = hourly_mean
+                    
+                    record = {
+                        "record_date": pd.to_datetime(data_date).date(),
+                        "record_time": f"{hour}:00",  # 按小时存储
+                        "channel_name": channel_name,
+                        "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均值
+                        "type": data_type,
+                        "sheet_name": sheet_name,
+                        "created_at": pd.Timestamp.now(),
+                    }
+                    records.append(record)
+
+        # 再添加每小时的均値データ（所有行在该小时的均値）
+        for hour, times in time_groups.items():
+            # 获取这些时间点的値并計算均値
+            values = []
+            for t in times:
+                # 計算該時間点在所有行中的均値
+                mean_value = df[t].mean()
+                values.append(mean_value)
+            
+            # 計算4つの時間点の総均値
+            if values:
+                overall_mean = sum(values) / len(values)
+                record = {
+                    "record_date": pd.to_datetime(data_date).date(),
+                    "record_time": f"{hour}:00",   # "HH:00" にフォーマット
+                    "channel_name": f"{data_type}_均値",
+                    "value": round(overall_mean, 2),
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": pd.Timestamp.now(),
+                }
+                records.append(record)
+
+        print(f"✅ {data_type} 均値生成 {len(records)} 条記錄")
         return records
 

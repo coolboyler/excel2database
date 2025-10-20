@@ -67,6 +67,35 @@
         margin-bottom: 15px;
         font-weight: 500;
       }
+
+      .condition-group {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+        align-items: end;
+      }
+
+      .remove-condition {
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        width: 36px;
+        height: 36px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+
+      .add-condition {
+        background-color: #2ecc71;
+        color: white;
+        border: none;
+        width: 36px;
+        height: 36px;
+        border-radius: 4px;
+        cursor: pointer;
+        align-self: flex-end;
+        margin-bottom: 10px;
+      }
     </style>
   </head>
   <body>
@@ -89,36 +118,61 @@
           总记录数: <span id="total-count">加载中...</span>
         </div>
 
-        <div class="query-form">
-          <div class="form-group">
-            <label for="column-select">字段</label>
-            <select id="column-select">
-              <option value="">选择字段</option>
-            </select>
-          </div>
+        <div id="query-section">
+          <div id="conditions-container">
+            <div class="condition-group">
+              <div class="form-group">
+                <label for="column-select-0">字段</label>
+                <select id="column-select-0" class="column-select">
+                  <option value="">选择字段</option>
+                </select>
+              </div>
 
-          <div class="form-group">
-            <label for="operator-select">操作符</label>
-            <select id="operator-select">
-              <option value="">选择操作符</option>
-              <option value="=">=</option>
-              <option value="!=">!=</option>
-              <option value=">">></option>
-              <option value="<"><</option>
-              <option value=">=">>=</option>
-              <option value="<="><=</option>
-              <option value="LIKE">包含</option>
-            </select>
-          </div>
+              <div class="form-group">
+                <label for="operator-select-0">操作符</label>
+                <select id="operator-select-0" class="operator-select">
+                  <option value="">选择操作符</option>
+                  <option value="=">=</option>
+                  <option value="!=">!=</option>
+                  <option value=">">></option>
+                  <option value="<"><</option>
+                  <option value=">=">>=</option>
+                  <option value="<="><=</option>
+                  <option value="LIKE">包含</option>
+                </select>
+              </div>
 
-          <div class="form-group">
-            <label for="value-input">值</label>
-            <input type="text" id="value-input" placeholder="输入查询值" />
+              <div class="form-group">
+                <label for="value-input-0">值</label>
+                <input
+                  type="text"
+                  id="value-input-0"
+                  class="value-input"
+                  placeholder="输入查询值"
+                />
+              </div>
+              <button
+                class="remove-condition"
+                onclick="removeCondition(0)"
+                style="display: none"
+              >
+                -
+              </button>
+            </div>
           </div>
+          <button class="add-condition" onclick="addCondition()">+</button>
 
-          <button class="btn btn-primary" onclick="executeQuery()">查询</button>
-          <button class="btn btn-secondary" onclick="resetQuery()">重置</button>
-          <button class="btn btn-success" onclick="exportData()">导出</button>
+          <div class="query-form">
+            <button class="btn btn-primary" onclick="executeQuery()">
+              查询
+            </button>
+            <button class="btn btn-secondary" onclick="resetQuery()">
+              重置
+            </button>
+            <button id="export-btn" class="btn btn-success" onclick="exportData()">
+              导出CSV
+            </button>
+          </div>
         </div>
 
         <div id="table-data-container">
@@ -146,6 +200,7 @@
       const pageSize = 20;
       let totalRecords = 0;
       let schema = [];
+      let conditionCounter = 1;
 
       // 页面加载完成后初始化
       document.addEventListener("DOMContentLoaded", function () {
@@ -159,20 +214,86 @@
           .then((response) => response.json())
           .then((data) => {
             schema = data.schema;
-            const columnSelect = document.getElementById("column-select");
-
-            // 填充字段下拉框
-            schema.forEach((field) => {
-              const option = document.createElement("option");
-              option.value = field.field;
-              option.textContent = field.field;
-              columnSelect.appendChild(option);
-            });
+            updateColumnSelects();
           })
           .catch((error) => {
             console.error("Error loading table schema:", error);
             showAlert("加载表结构失败", "danger");
           });
+      }
+
+      // 更新所有字段下拉框
+      function updateColumnSelects() {
+        const columnSelects = document.querySelectorAll(".column-select");
+        columnSelects.forEach((select) => {
+          // 保存当前选中值
+          const currentValue = select.value;
+
+          // 清空选项
+          select.innerHTML = '<option value="">选择字段</option>';
+
+          // 填充字段选项
+          schema.forEach((field) => {
+            const option = document.createElement("option");
+            option.value = field.field;
+            option.textContent = field.field;
+            if (field.field === currentValue) {
+              option.selected = true;
+            }
+            select.appendChild(option);
+          });
+        });
+      }
+
+      // 添加查询条件
+      function addCondition() {
+        const container = document.getElementById("conditions-container");
+        const conditionGroup = document.createElement("div");
+        conditionGroup.className = "condition-group";
+        conditionGroup.innerHTML = `
+          <div class="form-group">
+            <label for="column-select-${conditionCounter}">字段</label>
+            <select id="column-select-${conditionCounter}" class="column-select">
+              <option value="">选择字段</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="operator-select-${conditionCounter}">操作符</label>
+            <select id="operator-select-${conditionCounter}" class="operator-select">
+              <option value="">选择操作符</option>
+              <option value="=">=</option>
+              <option value="!=">!=</option>
+              <option value=">">></option>
+              <option value="<"><</option>
+              <option value=">=">>=</option>
+              <option value="<="><=</option>
+              <option value="LIKE">包含</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="value-input-${conditionCounter}">值</label>
+            <input type="text" id="value-input-${conditionCounter}" class="value-input" placeholder="输入查询值" />
+          </div>
+          <button class="remove-condition" onclick="removeCondition(${conditionCounter})">-</button>
+        `;
+        container.appendChild(conditionGroup);
+
+        // 更新字段下拉框
+        updateColumnSelects();
+
+        conditionCounter++;
+      }
+
+      // 移除查询条件
+      function removeCondition(index) {
+        const conditionGroup = document
+          .querySelector(`#column-select-${index}`)
+          .closest(".condition-group");
+        if (conditionGroup) {
+          conditionGroup.remove();
+        }
       }
 
       // 加载表数据
@@ -195,19 +316,37 @@
 
       // 执行查询
       function executeQuery() {
-        const column = document.getElementById("column-select").value;
-        const operator = document.getElementById("operator-select").value;
-        const value = document.getElementById("value-input").value;
+        const conditions = [];
 
-        if (!column || !operator || !value) {
-          loadTableData(0);
-          return;
+        // 收集所有条件
+        for (let i = 0; i < conditionCounter; i++) {
+          const column = document.getElementById(`column-select-${i}`);
+          const operator = document.getElementById(`operator-select-${i}`);
+          const value = document.getElementById(`value-input-${i}`);
+
+          // 检查元素是否存在
+          if (column && operator && value) {
+            const columnValue = column.value;
+            const operatorValue = operator.value;
+            const valueValue = value.value;
+
+            if (columnValue && operatorValue && valueValue) {
+              conditions.push({
+                column: columnValue,
+                operator: operatorValue,
+                value: valueValue,
+              });
+            }
+          }
         }
 
         let url = `/tables/${tableName}/query?offset=0&limit=${pageSize}`;
-        url += `&column=${encodeURIComponent(column)}`;
-        url += `&operator=${encodeURIComponent(operator)}`;
-        url += `&value=${encodeURIComponent(value)}`;
+
+        if (conditions.length > 0) {
+          url += `&conditions=${encodeURIComponent(
+            JSON.stringify(conditions)
+          )}`;
+        }
 
         fetch(url)
           .then((response) => response.json())
@@ -226,9 +365,26 @@
 
       // 重置查询
       function resetQuery() {
-        document.getElementById("column-select").value = "";
-        document.getElementById("operator-select").value = "";
-        document.getElementById("value-input").value = "";
+        // 保留第一个条件框，移除其他所有条件框
+        const container = document.getElementById("conditions-container");
+        const conditionGroups = container.querySelectorAll(".condition-group");
+
+        // 保留第一个，移除其他的
+        for (let i = 1; i < conditionGroups.length; i++) {
+          conditionGroups[i].remove();
+        }
+
+        // 重置第一个条件框的值
+        if (conditionGroups.length > 0) {
+          const firstGroup = conditionGroups[0];
+          firstGroup.querySelector(".column-select").value = "";
+          firstGroup.querySelector(".operator-select").value = "";
+          firstGroup.querySelector(".value-input").value = "";
+        }
+
+        // 重置条件计数器
+        conditionCounter = 1;
+
         loadTableData(0);
         currentPage = 0;
       }
@@ -303,9 +459,13 @@
         const endPage = Math.min(totalPages - 1, currentPage + 2);
 
         for (let i = startPage; i <= endPage; i++) {
-          paginationHtml += `<button class="${
-            i === currentPage ? "active" : ""
-          }" onclick="changePage(${i})">${i + 1}</button>`;
+          if (i === currentPage) {
+            paginationHtml += `<button class="active">${i + 1}</button>`;
+          } else {
+            paginationHtml += `<button onclick="changePage(${i})">${
+              i + 1
+            }</button>`;
+          }
         }
 
         // 下一页按钮
@@ -319,125 +479,158 @@
       // 切换页面
       function changePage(page) {
         const offset = page * pageSize;
-        const column = document.getElementById("column-select").value;
-        const operator = document.getElementById("operator-select").value;
-        const value = document.getElementById("value-input").value;
+        const conditions = [];
+
+        // 收集所有条件
+        for (let i = 0; i < conditionCounter; i++) {
+          const column = document.getElementById(`column-select-${i}`);
+          const operator = document.getElementById(`operator-select-${i}`);
+          const value = document.getElementById(`value-input-${i}`);
+
+          // 检查元素是否存在
+          if (column && operator && value) {
+            const columnValue = column.value;
+            const operatorValue = operator.value;
+            const valueValue = value.value;
+
+            if (columnValue && operatorValue && valueValue) {
+              conditions.push({
+                column: columnValue,
+                operator: operatorValue,
+                value: valueValue,
+              });
+            }
+          }
+        }
 
         let url = `/tables/${tableName}/query?offset=${offset}&limit=${pageSize}`;
 
-        if (column && operator && value) {
-          url += `&column=${encodeURIComponent(column)}`;
-          url += `&operator=${encodeURIComponent(operator)}`;
-          url += `&value=${encodeURIComponent(value)}`;
+        if (conditions.length > 0) {
+          url += `&conditions=${encodeURIComponent(
+            JSON.stringify(conditions)
+          )}`;
         }
 
         fetch(url)
           .then((response) => response.json())
           .then((result) => {
+            totalRecords = result.total;
+            document.getElementById("total-count").textContent = totalRecords;
             renderTableData(result.data);
             renderPagination(offset);
             currentPage = page;
           })
           .catch((error) => {
-            console.error("Error changing page:", error);
-            showAlert("切换页面失败", "danger");
+            console.error("Error loading table data:", error);
+            showAlert("加载表数据失败", "danger");
+          });
+      }
+
+      // 导出数据
+      function exportData() {
+        const conditions = [];
+
+        // 收集所有条件
+        for (let i = 0; i < conditionCounter; i++) {
+          const column = document.getElementById(`column-select-${i}`);
+          const operator = document.getElementById(`operator-select-${i}`);
+          const value = document.getElementById(`value-input-${i}`);
+
+          // 检查元素是否存在
+          if (column && operator && value) {
+            const columnValue = column.value;
+            const operatorValue = operator.value;
+            const valueValue = value.value;
+
+            if (columnValue && operatorValue && valueValue) {
+              conditions.push({
+                column: columnValue,
+                operator: operatorValue,
+                value: valueValue,
+              });
+            }
+          }
+        }
+
+        let url = `/tables/${tableName}/export`;
+
+        if (conditions.length > 0) {
+          url += `?conditions=${encodeURIComponent(
+            JSON.stringify(conditions)
+          )}`;
+        }
+
+        // 显示导出提示
+        showAlert("正在导出数据，请稍候...", "info");
+        
+        // 禁用导出按钮，防止重复点击
+        const exportBtn = document.getElementById("export-btn");
+        const originalText = exportBtn.innerHTML;
+        exportBtn.disabled = true;
+        exportBtn.innerHTML =
+          '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 导出中...';
+
+        // 使用fetch API获取文件数据
+        fetch(url)
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error("导出失败: " + response.status);
+            }
+            return response.json();
+          })
+          .then((data) => {
+            if (data.status === "success") {
+              // 显示成功消息
+              showAlert(`文件生成成功: ${data.filename}`, "success");
+              
+              // 创建下载链接元素
+              const downloadContainer = document.createElement("div");
+              downloadContainer.className = "mt-3 p-3 bg-light border rounded";
+              
+              const title = document.createElement("h6");
+              title.textContent = "文件已生成，点击下方链接下载：";
+              title.className = "mb-2";
+              
+              const downloadLink = document.createElement("a");
+              downloadLink.href = data.download_url;
+              downloadLink.textContent = data.filename;
+              downloadLink.className = "btn btn-primary";
+              downloadLink.download = data.filename;
+              
+              downloadContainer.appendChild(title);
+              downloadContainer.appendChild(downloadLink);
+              
+              // 将下载链接添加到alerts容器中
+              const alertsContainer = document.getElementById("alerts");
+              alertsContainer.appendChild(downloadContainer);
+              
+              // 恢复导出按钮
+              exportBtn.disabled = false;
+              exportBtn.innerHTML = originalText;
+            } else {
+              throw new Error(data.message || "导出失败");
+            }
+          })
+          .catch((error) => {
+            console.error("导出错误:", error);
+            showAlert("导出失败: " + error.message, "danger");
+            // 恢复导出按钮
+            exportBtn.disabled = false;
+            exportBtn.innerHTML = originalText;
           });
       }
 
       // 显示提示信息
-      function showAlert(message, type) {
+      function showAlert(message, type = "info") {
         const alertsContainer = document.getElementById("alerts");
-        if (!alertsContainer) return;
+        const alertDiv = document.createElement("div");
+        alertDiv.className = `alert alert-${type}`;
+        alertDiv.textContent = message;
+        alertsContainer.appendChild(alertDiv);
 
-        const alert = document.createElement("div");
-        alert.className = `alert alert-${type}`;
-        alert.textContent = message;
-
-        alertsContainer.appendChild(alert);
-
-        // 3秒后自动消失
         setTimeout(() => {
-          alert.style.opacity = "0";
-          setTimeout(() => {
-            alertsContainer.removeChild(alert);
-          }, 300);
+          alertDiv.remove();
         }, 3000);
-      }
-
-      // 导出数据为CSV格式
-      function exportData() {
-        // 获取当前查询条件
-        const column = document.getElementById("column-select").value;
-        const operator = document.getElementById("operator-select").value;
-        const value = document.getElementById("value-input").value;
-
-        let url = `/tables/${tableName}/export?`;
-        
-        if (column && operator && value) {
-          url += `&column=${encodeURIComponent(column)}`;
-          url += `&operator=${encodeURIComponent(operator)}`;
-          url += `&value=${encodeURIComponent(value)}`;
-        }
-
-        // 获取所有数据
-        fetch(url)
-          .then(response => response.json())
-          .then(result => {
-            if (!result.data || result.data.length === 0) {
-              showAlert("没有数据可以导出", "warning");
-              return;
-            }
-
-            // 创建CSV内容
-            const data = result.data;
-            const headers = Object.keys(data[0]);
-            
-            // 创建表头
-            let csvContent = headers.join(",") + "\n";
-            
-            // 添加数据行
-            data.forEach(row => {
-              const values = headers.map(header => {
-                let value = row[header] !== null ? row[header] : "";
-                
-                // 特别处理 record_time 字段
-                if (header === "record_time" && value !== "") {
-                  // 将秒数转换为分钟，再格式化为时间
-                  const totalSeconds = parseInt(value);
-                  const totalMinutes = totalSeconds / 60; // 秒转分钟
-                  const hours = Math.floor(totalMinutes / 60) % 24;
-                  const minutes = Math.floor(totalMinutes % 60);
-                  value = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
-                }
-                
-                // 转义包含逗号或引号的值
-                if (typeof value === "string" && (value.includes(",") || value.includes('"'))) {
-                  value = `"${value.replace(/"/g, '""')}"`;
-                }
-                return value;
-              });
-              csvContent += values.join(",") + "\n";
-            });
-
-            // 创建并下载文件
-            const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
-            const link = document.createElement("a");
-            const fileName = `${tableName}_${new Date().toISOString().slice(0, 10)}.csv`;
-            
-            link.href = URL.createObjectURL(blob);
-            link.download = fileName;
-            link.style.visibility = "hidden";
-            
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            
-            showAlert(`成功导出 ${data.length} 条记录`, "success");
-          })
-          .catch(error => {
-            console.error("Error exporting data:", error);
-            showAlert("导出数据失败: " + error.message, "danger");
-          });
       }
     </script>
   </body>

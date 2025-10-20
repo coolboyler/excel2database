@@ -1,6 +1,7 @@
 # api.py
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
+import time
+from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -151,36 +152,55 @@ async def get_table_schema(table_name: str):
 @app.get("/tables/{table_name}/query")
 async def query_table_data(table_name: str, 
                           offset: int = 0, 
-                          limit: int = 20, 
-                          column: str = None,
-                          operator: str = None,
-                          value: str = None):
-    """查询指定表的数据，支持条件查询"""
+                          limit: int = 20,
+                          conditions: str = None):
+    """查询指定表的数据，支持多条件查询
+    conditions: JSON字符串，格式如 [{"column": "col1", "operator": "=", "value": "val1"}, 
+                                   {"column": "col2", "operator": ">", "value": "val2"}]
+    """
     try:
         with db_manager.engine.connect() as conn:
             # 构建查询条件
-            where_clause = ""
+            where_clauses = []
             params = {}
             
-            if column and operator and value:
-                # 简单的SQL注入防护
-                allowed_operators = ['=', '!=', '>', '<', '>=', '<=', 'LIKE']
-                if operator not in allowed_operators:
-                    raise HTTPException(status_code=400, detail="不支持的操作符")
-                
-                if operator == 'LIKE':
-                    where_clause = f"WHERE {column} LIKE :value"
-                    params["value"] = f"%{value}%"
-                else:
-                    where_clause = f"WHERE {column} {operator} :value"
-                    # 尝试转换数值类型
-                    try:
-                        params["value"] = int(value)
-                    except ValueError:
-                        try:
-                            params["value"] = float(value)
-                        except ValueError:
-                            params["value"] = value
+            if conditions:
+                import json
+                try:
+                    condition_list = json.loads(conditions)
+                    if isinstance(condition_list, list):
+                        for i, cond in enumerate(condition_list):
+                            column = cond.get("column")
+                            operator = cond.get("operator")
+                            value = cond.get("value")
+                            
+                            if column and operator and value is not None:
+                                # 简单的SQL注入防护
+                                allowed_operators = ['=', '!=', '>', '<', '>=', '<=', 'LIKE']
+                                if operator not in allowed_operators:
+                                    raise HTTPException(status_code=400, detail=f"不支持的操作符: {operator}")
+                                
+                                param_name = f"value_{i}"
+                                if operator == 'LIKE':
+                                    where_clauses.append(f"{column} LIKE :{param_name}")
+                                    params[param_name] = f"%{value}%"
+                                else:
+                                    where_clauses.append(f"{column} {operator} :{param_name}")
+                                    # 尝试转换数值类型
+                                    try:
+                                        params[param_name] = int(value)
+                                    except ValueError:
+                                        try:
+                                            params[param_name] = float(value)
+                                        except ValueError:
+                                            params[param_name] = value
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="条件格式错误")
+            
+            # 构建WHERE子句
+            where_clause = ""
+            if where_clauses:
+                where_clause = "WHERE " + " AND ".join(where_clauses)
             
             # 获取总记录数
             count_query = f"SELECT COUNT(*) FROM {table_name} {where_clause}"
@@ -203,43 +223,67 @@ async def query_table_data(table_name: str,
                 "offset": offset,
                 "limit": limit
             }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询数据失败: {str(e)}")
 
 @app.get("/tables/{table_name}/export")
 async def export_table_data(table_name: str,
-                           column: str = None,
-                           operator: str = None,
-                           value: str = None):
-    """导出指定表的数据为CSV格式，支持条件查询"""
+                           conditions: str = None):
+    """导出指定表的数据为Excel格式，支持多条件查询
+    conditions: JSON字符串，格式如 [{"column": "col1", "operator": "=", "value": "val1"}, 
+                                   {"column": "col2", "operator": ">", "value": "val2"}]
+    """
     try:
+        print(f"导出请求开始: table_name={table_name}, conditions={conditions}")
+        
         with db_manager.engine.connect() as conn:
             # 构建查询条件
-            where_clause = ""
+            where_clauses = []
             params = {}
             
-            if column and operator and value:
-                # 简单的SQL注入防护
-                allowed_operators = ['=', '!=', '>', '<', '>=', '<=', 'LIKE']
-                if operator not in allowed_operators:
-                    raise HTTPException(status_code=400, detail="不支持的操作符")
-                
-                if operator == 'LIKE':
-                    where_clause = f"WHERE {column} LIKE :value"
-                    params["value"] = f"%{value}%"
-                else:
-                    where_clause = f"WHERE {column} {operator} :value"
-                    # 尝试转换数值类型
-                    try:
-                        params["value"] = int(value)
-                    except ValueError:
-                        try:
-                            params["value"] = float(value)
-                        except ValueError:
-                            params["value"] = value
+            if conditions:
+                import json
+                try:
+                    condition_list = json.loads(conditions)
+                    if isinstance(condition_list, list):
+                        for i, cond in enumerate(condition_list):
+                            column = cond.get("column")
+                            operator = cond.get("operator")
+                            value = cond.get("value")
+                            
+                            if column and operator and value is not None:
+                                # 简单的SQL注入防护
+                                allowed_operators = ['=', '!=', '>', '<', '>=', '<=', 'LIKE']
+                                if operator not in allowed_operators:
+                                    raise HTTPException(status_code=400, detail=f"不支持的操作符: {operator}")
+                                
+                                param_name = f"value_{i}"
+                                if operator == 'LIKE':
+                                    where_clauses.append(f"{column} LIKE :{param_name}")
+                                    params[param_name] = f"%{value}%"
+                                else:
+                                    where_clauses.append(f"{column} {operator} :{param_name}")
+                                    # 尝试转换数值类型
+                                    try:
+                                        params[param_name] = int(value)
+                                    except ValueError:
+                                        try:
+                                            params[param_name] = float(value)
+                                        except ValueError:
+                                            params[param_name] = value
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="条件格式错误")
+            
+            # 构建WHERE子句
+            where_clause = ""
+            if where_clauses:
+                where_clause = "WHERE " + " AND ".join(where_clauses)
             
             # 获取所有数据
             data_query = f"SELECT * FROM {table_name} {where_clause}"
+            print(f"执行查询: {data_query}, 参数: {params}")
             data_result = conn.execute(text(data_query), params)
             
             data = []
@@ -247,12 +291,273 @@ async def export_table_data(table_name: str,
                 row_dict = dict(row._mapping)
                 data.append(row_dict)
             
-            return {
-                "data": data,
-                "total": len(data)
-            }
+            print(f"查询结果数量: {len(data)}")
+            if len(data) > 0:
+                print(f"前几条数据示例: {data[:2]}")
+            
+            # 如果没有数据，返回空Excel
+            if not data:
+                import pandas as pd
+                import numpy as np
+                from io import BytesIO
+                df = pd.DataFrame()
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                output.seek(0)
+                
+                from fastapi.responses import StreamingResponse
+                return StreamingResponse(
+                    iter([output.getvalue()]),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename={table_name}.xlsx"}
+                )
+            
+            # 转换为DataFrame进行处理
+            import pandas as pd
+            import numpy as np
+            from io import BytesIO
+            import os
+            from datetime import datetime
+            
+            df = pd.DataFrame(data)
+            print(f"DataFrame列: {df.columns.tolist()}")
+            print(f"DataFrame形状: {df.shape}")
+            if len(df) > 0:
+                print(f"DataFrame前几行:\n{df.head(2)}")
+            
+            # 删除id列（如果存在）
+            if 'id' in df.columns:
+                df = df.drop(columns=['id'])
+                print("已删除id列")
+            
+            # 检查是否包含必要的列
+            required_columns = ['channel_name', 'record_date', 'record_time', 'value', 'sheet_name']
+            if not all(col in df.columns for col in required_columns):
+                print(f"缺少必要列，当前列: {df.columns.tolist()}")
+                print("使用原始导出方式")
+                # 如果不包含必要列，使用原始导出方式
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                output.seek(0)
+                
+                # 生成文件名
+                record_date = df['record_date'].iloc[0] if 'record_date' in df.columns and len(df) > 0 else 'unknown'
+                data_type = df['type'].iloc[0] if 'type' in df.columns and len(df) > 0 else 'unknown'
+                
+                # 格式化record_date为字符串
+                if hasattr(record_date, 'strftime'):
+                    record_date_str = record_date.strftime('%Y-%m-%d')
+                else:
+                    record_date_str = str(record_date)
+                
+                filename = f"{record_date_str}_{data_type}.xlsx"
+                
+                import urllib.parse
+                encoded_filename = urllib.parse.quote(filename)
+                from fastapi.responses import StreamingResponse
+                return StreamingResponse(
+                    iter([output.getvalue()]),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+                    }
+                )
+            
+            # 类似preHandle.py的处理方式
+            # 提取唯一的sheet_name（假设数据中sheet_name唯一）
+            sheet_name = df['sheet_name'].unique()[0] if len(df['sheet_name'].unique()) > 0 else 'Sheet1'
+            # 提取唯一的日期（假设数据中日期唯一）
+            record_date = df['record_date'].unique()[0] if len(df['record_date'].unique()) > 0 else pd.Timestamp.now().date()
+            
+            # 格式化日期为YYYY-MM-DD
+            if hasattr(record_date, 'strftime'):
+                record_date_str = record_date.strftime('%Y-%m-%d')
+            else:
+                record_date_str = str(record_date)
+            
+            # 处理文件名特殊字符（避免斜杠、空格等导致保存失败）
+            sheet_name_clean = str(sheet_name).replace('/', '_').replace('\\', '_').replace(' ', '')
+            # 构造文件名：{sheet_name}({日期})_小时.xlsx
+            filename = f"{sheet_name_clean}({record_date_str})_小时.xlsx"
+            print(f"生成文件名: {filename}")
+            
+            # 检查record_time格式并处理
+            print(f"record_time示例值: {df['record_time'].head()}")
+            
+            # 转换record_time为小时（处理各种可能的格式）
+            def extract_hour(time_value):
+                if pd.isna(time_value):
+                    return None
+                if isinstance(time_value, str):
+                    if ':' in time_value:
+                        # 格式如 "01:00", "1:00"
+                        return int(time_value.split(':')[0])
+                    else:
+                        # 可能是数字字符串如 "100" 表示 01:00
+                        try:
+                            time_int = int(time_value)
+                            return time_int // 100
+                        except:
+                            return None
+                elif isinstance(time_value, (int, float)):
+                    # 数字格式如 100 表示 01:00
+                    return int(time_value) // 100
+                else:
+                    # timedelta或其他格式
+                    try:
+                        # 如果是timedelta对象
+                        hours = time_value.seconds // 3600
+                        return hours
+                    except:
+                        return None
+            
+            # 应用小时提取函数
+            df['hour'] = df['record_time'].apply(extract_hour)
+            print(f"提取的小时列示例: {df['hour'].head()}")
+            
+            # 删除hour为NaN的行
+            df = df.dropna(subset=['hour'])
+            print(f"删除无效小时后DataFrame形状: {df.shape}")
+            
+            # 生成电站级透视表
+            if len(df) > 0:
+                print("开始创建透视表")
+                pivot_df = pd.pivot_table(
+                    df,
+                    index=['channel_name', 'record_date'],
+                    columns='hour',
+                    values='value',
+                    aggfunc='mean'
+                )
+                print(f"透视表创建完成，形状: {pivot_df.shape}")
+                print(f"透视表列: {pivot_df.columns.tolist()}")
+                
+                # 重新索引确保有24小时列
+                pivot_df = pivot_df.reindex(columns=range(24), fill_value=np.nan)
+                pivot_df.columns = [f'{int(h)}:00' for h in pivot_df.columns]
+                pivot_df = pivot_df.reset_index()
+                
+                # 修改前两列名称
+                pivot_df = pivot_df.rename(columns={
+                    'channel_name': '节点名称',
+                    'record_date': '日期'
+                })
+                
+                # 插入单位列
+                pivot_df.insert(
+                    loc=2,
+                    column='单位',
+                    value='电价(元/MWh)'
+                )
+                
+                # 添加发电侧全省统一均价行
+                hour_columns = [f'{h}:00' for h in range(24)]
+                # 确保所有小时列都存在
+                for col in hour_columns:
+                    if col not in pivot_df.columns:
+                        pivot_df[col] = np.nan
+                
+                # 在计算平均值前，确保所有列为数值类型
+                for col in hour_columns:
+                    pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce')
+                
+                province_avg = pivot_df[hour_columns].mean(skipna=True).round(2)
+                
+                province_row = pd.DataFrame({
+                    '节点名称': ['发电侧全省统一均价'],
+                    '日期': [record_date_str],
+                    '单位': ['电价(元/MWh)'],
+                    **{col: [province_avg.get(col, np.nan)] for col in hour_columns}
+                })
+                
+                final_df = pd.concat([pivot_df, province_row], ignore_index=True)
+                print(f"最终DataFrame形状: {final_df.shape}")
+                print(f"最终DataFrame列: {final_df.columns.tolist()}")
+                if len(final_df) > 0:
+                    print(f"最终DataFrame前几行:\n{final_df.head()}")
+            else:
+                # 如果处理后没有数据，创建空的DataFrame
+                print("处理后没有有效数据，创建空DataFrame")
+                columns = ['节点名称', '日期', '单位'] + [f'{h}:00' for h in range(24)]
+                final_df = pd.DataFrame(columns=columns)
+            
+            # 确保created文件夹存在
+            created_folder = "created"
+            if not os.path.exists(created_folder):
+                os.makedirs(created_folder)
+                print(f"创建文件夹: {created_folder}")
+            
+            # 生成文件名（带时间戳避免重复）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_name_with_timestamp = f"{sheet_name_clean}_{timestamp}.xlsx"
+            file_path = os.path.join(created_folder, file_name_with_timestamp)
+            print(f"生成文件路径: {file_path}")
+            
+            # 将处理后的final_df保存到服务器文件夹
+            print("开始生成Excel文件到服务器")
+            try:
+                # 使用openpyxl引擎直接导出
+                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                    final_df.to_excel(writer, index=False, sheet_name=sheet_name_clean[:31])
+                print(f"Excel文件生成完成: {file_path}")
+                
+            except Exception as e:
+                print(f"Excel文件生成失败: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # 回退到CSV格式
+                file_name_with_timestamp = file_name_with_timestamp.replace('.xlsx', '.csv')
+                file_path = os.path.join(created_folder, file_name_with_timestamp)
+                final_df.to_csv(file_path, index=False)
+                print(f"CSV文件生成完成: {file_path}")
+            
+            # 返回文件下载链接
+            from fastapi.responses import JSONResponse
+            download_url = f"/download/{file_name_with_timestamp}"
+            return JSONResponse({
+                "status": "success",
+                "message": "文件生成成功",
+                "download_url": download_url,
+                "filename": file_name_with_timestamp
+            })
+            
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"导出数据失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"导出数据失败: {str(e)}")
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    """下载生成的文件"""
+    import os
+    from fastapi.responses import FileResponse
+    from fastapi import HTTPException
+    
+    file_path = os.path.join("created", filename)
+    
+    # 检查文件是否存在
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    # 根据文件扩展名设置正确的媒体类型
+    if filename.endswith('.xlsx'):
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif filename.endswith('.csv'):
+        media_type = "text/csv"
+    else:
+        media_type = "application/octet-stream"
+    
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename
+    )
 
 @app.delete("/tables/{table_name}")
 async def delete_table(table_name: str):
