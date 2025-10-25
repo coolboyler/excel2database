@@ -74,11 +74,18 @@
           <div class="text-center">加载中...</div>
         </ul>
       </div>
+
+      <div class="card">
+        <h2>拓展功能</h2>
+        <div class="actions">
+          <a href="/join_query" class="btn btn-primary">多天均值查询</a>
+        </div>
+      </div>
     </div>
 
     <footer>
       <div class="container">
-        <p>Excel2SQL - 数据导入工具 &copy; 2023</p>
+        <p>Excel2SQL - 数据导入工具 &copy; 2025</p>
       </div>
     </footer>
 
@@ -103,9 +110,9 @@
           dbStatus.className = "status-badge status-error";
           dbStatus.textContent = "连接错误";
         });
-        
+
       // 页面加载完成后获取表列表
-      document.addEventListener('DOMContentLoaded', function() {
+      document.addEventListener("DOMContentLoaded", function () {
         loadTableList();
       });
     </script>

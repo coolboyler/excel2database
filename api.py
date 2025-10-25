@@ -41,6 +41,12 @@ async def table_query_page(request: Request, table_name: str):
     """返回表查询页面"""
     return templates.TemplateResponse("table_query.html", {"request": request, "table_name": table_name})
 
+# 新增：联表查询页面
+@app.get("/join_query", response_class=HTMLResponse)
+async def join_query_page(request: Request):
+    """返回联表查询页面"""
+    return templates.TemplateResponse("join_query.html", {"request": request})
+
 @app.get("/health")
 async def health_check():
     """健康检查接口"""
@@ -463,16 +469,7 @@ async def export_table_data(table_name: str,
                 for col in hour_columns:
                     pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce')
                 
-                province_avg = pivot_df[hour_columns].mean(skipna=True).round(2)
-                
-                province_row = pd.DataFrame({
-                    '节点名称': ['发电侧全省统一均价'],
-                    '日期': [record_date_str],
-                    '单位': ['电价(元/MWh)'],
-                    **{col: [province_avg.get(col, np.nan)] for col in hour_columns}
-                })
-                
-                final_df = pd.concat([pivot_df, province_row], ignore_index=True)
+                final_df = pivot_df
                 print(f"最终DataFrame形状: {final_df.shape}")
                 print(f"最终DataFrame列: {final_df.columns.tolist()}")
                 if len(final_df) > 0:
@@ -605,6 +602,34 @@ async def delete_file(filename: str):
         return {"filename": filename, "status": "deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
+
+@app.post("/daily-averages")
+async def query_daily_averages(
+    dates: str = Form(..., description="日期列表，JSON格式，例如: [\"2023-09-18\", \"2023-09-19\"]"),
+    data_type_keyword: str = Form("日前节点电价", description="数据类型关键字")
+):
+    """
+    查询多天的均值数据
+    
+    参数:
+    - dates: 日期列表，JSON格式
+    - data_type_keyword: 数据类型关键字
+    
+    返回:
+    - 查询结果
+    """
+    try:
+        import json
+        date_list = json.loads(dates)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
+    
+    result = importer.query_daily_averages(date_list, data_type_keyword)
+    
+    if result["total"] == 0:
+        return {"total": 0, "data": []}
+    
+    return result
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)

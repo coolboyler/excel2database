@@ -156,6 +156,108 @@ class DatabaseManager:
             print(f"❌ 删除表失败: {str(e)}")
             return False
 
+    def join_query(self, table_names, join_conditions=None, select_fields="*", where_conditions=None, limit=None):
+        """
+        执行联表查询
+        
+        Args:
+            table_names (list): 要连接的表名列表
+            join_conditions (list): 连接条件列表，格式为 [("table1.field", "table2.field"), ...]
+            select_fields (str): 要选择的字段，默认为"*"
+            where_conditions (str): WHERE条件语句
+            limit (int): 限制返回记录数
+            
+        Returns:
+            dict: 包含查询结果和总记录数的字典
+        """
+        if not table_names or len(table_names) < 2:
+            print("❌ 至少需要两个表进行联表查询")
+            return {"data": [], "total": 0}
+
+        try:
+            # 构建JOIN语句
+            join_parts = []
+            for i in range(1, len(table_names)):
+                if join_conditions and i-1 < len(join_conditions):
+                    condition = join_conditions[i-1]
+                    if isinstance(condition, tuple) and len(condition) == 2:
+                        join_parts.append(f"JOIN {table_names[i]} ON {condition[0]} = {condition[1]}")
+                    else:
+                        # 默认使用id字段连接
+                        join_parts.append(f"JOIN {table_names[i]} ON {table_names[0]}.id = {table_names[i]}.id")
+                else:
+                    # 默认使用id字段连接
+                    join_parts.append(f"JOIN {table_names[i]} ON {table_names[0]}.id = {table_names[i]}.id")
+            
+            # 构建完整SQL
+            sql = f"SELECT {select_fields} FROM {table_names[0]} " + " ".join(join_parts)
+            
+            # 添加WHERE条件
+            if where_conditions:
+                sql += f" WHERE {where_conditions}"
+                
+            # 添加LIMIT
+            if limit:
+                sql += f" LIMIT {limit}"
+            
+            print(f"🔍 执行联表查询: {sql}")
+            
+            with self.engine.connect() as conn:
+                # 执行查询
+                result = conn.execute(text(sql))
+                data = []
+                for row in result:
+                    # 正确处理SQLAlchemy行对象
+                    row_dict = dict(row._mapping)
+                    data.append(row_dict)
+                
+                # 获取记录总数
+                count_sql = f"SELECT COUNT(*) FROM {table_names[0]} " + " ".join(join_parts)
+                if where_conditions:
+                    count_sql += f" WHERE {where_conditions}"
+                    
+                count_result = conn.execute(text(count_sql))
+                total_count = count_result.scalar()
+                
+                return {"data": data, "total": total_count}
+        except Exception as e:
+            print(f"❌ 联表查询失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"data": [], "total": 0}
+
+    def complex_query(self, sql_query, params=None):
+        """
+        执行复杂自定义查询
+        
+        Args:
+            sql_query (str): SQL查询语句
+            params (dict): 查询参数
+            
+        Returns:
+            dict: 包含查询结果和总记录数的字典
+        """
+        try:
+            with self.engine.connect() as conn:
+                # 执行查询
+                if params:
+                    result = conn.execute(text(sql_query), params)
+                else:
+                    result = conn.execute(text(sql_query))
+                    
+                data = []
+                for row in result:
+                    # 正确处理SQLAlchemy行对象
+                    row_dict = dict(row._mapping)
+                    data.append(row_dict)
+                
+                return {"data": data, "total": len(data)}
+        except Exception as e:
+            print(f"❌ 复杂查询失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"data": [], "total": 0}
+
 if __name__ == "__main__":
     db = DatabaseManager()
     db.test_connection()

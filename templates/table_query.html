@@ -169,7 +169,11 @@
             <button class="btn btn-secondary" onclick="resetQuery()">
               重置
             </button>
-            <button id="export-btn" class="btn btn-success" onclick="exportData()">
+            <button
+              id="export-btn"
+              class="btn btn-success"
+              onclick="exportData()"
+            >
               导出CSV
             </button>
           </div>
@@ -562,7 +566,7 @@
 
         // 显示导出提示
         showAlert("正在导出数据，请稍候...", "info");
-        
+
         // 禁用导出按钮，防止重复点击
         const exportBtn = document.getElementById("export-btn");
         const originalText = exportBtn.innerHTML;
@@ -582,28 +586,28 @@
             if (data.status === "success") {
               // 显示成功消息
               showAlert(`文件生成成功: ${data.filename}`, "success");
-              
+
               // 创建下载链接元素
               const downloadContainer = document.createElement("div");
               downloadContainer.className = "mt-3 p-3 bg-light border rounded";
-              
+
               const title = document.createElement("h6");
               title.textContent = "文件已生成，点击下方链接下载：";
               title.className = "mb-2";
-              
+
               const downloadLink = document.createElement("a");
               downloadLink.href = data.download_url;
               downloadLink.textContent = data.filename;
               downloadLink.className = "btn btn-primary";
               downloadLink.download = data.filename;
-              
+
               downloadContainer.appendChild(title);
               downloadContainer.appendChild(downloadLink);
-              
+
               // 将下载链接添加到alerts容器中
               const alertsContainer = document.getElementById("alerts");
               alertsContainer.appendChild(downloadContainer);
-              
+
               // 恢复导出按钮
               exportBtn.disabled = false;
               exportBtn.innerHTML = originalText;

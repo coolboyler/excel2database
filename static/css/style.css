@@ -267,37 +267,51 @@ footer {
     font-size: 14px;
 }
 
-/* 数据预览表格 */
+/* 数据预览表格容器 - 支持横向滚动 */
 .data-preview {
     margin-top: 15px;
     overflow-x: auto;
+    max-width: 100%;
+    border: 1px solid #ddd;
+    border-radius: 4px;
 }
 
+/* 预览表格样式 */
 .preview-table, .data-table {
     width: 100%;
+    min-width: 600px; /* 确保小屏幕下仍可滚动查看 */
     border-collapse: collapse;
-    margin-top: 10px;
+    margin-top: 0;
     font-size: 14px;
+    table-layout: fixed; /* 固定布局以便控制列宽 */
 }
 
 .preview-table th, .data-table th {
     background-color: #f0f0f0;
-    padding: 8px;
+    padding: 8px 12px;
     text-align: left;
     border: 1px solid #ddd;
+    white-space: nowrap;
+    font-weight: 600;
 }
 
 .preview-table td, .data-table td {
-    padding: 6px 8px;
+    padding: 6px 12px;
     border: 1px solid #ddd;
-    max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.preview-table tr:nth-child(even), .data-table tr:nth-child(even) {
+.preview-table tr:nth-child(even),
+.data-table tr:nth-child(even) {
     background-color: #f9f9f9;
+}
+
+/* 悬停效果增强 */
+.preview-table tbody tr:hover,
+.data-table tbody tr:hover {
+    background-color: #f5f5f5;
 }
 
 /* 模态框 */

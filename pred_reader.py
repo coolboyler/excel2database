@@ -821,7 +821,7 @@ class PowerDataImporter:
                         "record_date": pd.to_datetime(data_date).date(),
                         "record_time": f"{hour}:00",  # 按小时存储
                         "channel_name": channel_name,
-                        "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均值
+                        "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均値
                         "type": data_type,
                         "sheet_name": sheet_name,
                         "created_at": pd.Timestamp.now(),
@@ -843,7 +843,7 @@ class PowerDataImporter:
                 record = {
                     "record_date": pd.to_datetime(data_date).date(),
                     "record_time": f"{hour}:00",   # "HH:00" にフォーマット
-                    "channel_name": f"{data_type}_均値",
+                    "channel_name": f"{data_type}_均值",
                     "value": round(overall_mean, 2),
                     "type": data_type,
                     "sheet_name": sheet_name,
@@ -854,3 +854,370 @@ class PowerDataImporter:
         print(f"✅ {data_type} 均値生成 {len(records)} 条記錄")
         return records
 
+    def import_and_create_new_table(self, excel_file, custom_table_name=None):
+        """
+        导入Excel数据并创建新表
+        
+        Args:
+            excel_file (str): Excel文件路径
+            custom_table_name (str, optional): 自定义表名，如果不提供则自动生成
+            
+        Returns:
+            tuple: (success: bool, table_name: str, record_count: int, preview_data: list)
+        """
+        try:
+            # 读取Excel文件的所有sheet
+            sheet_dict = pd.read_excel(excel_file, sheet_name=None, header=0)
+        except Exception as e:
+            print(f"❌ 无法读取Excel文件: {e}")
+            return False, None, 0, []
+
+        # 获取文件名用于类型识别
+        file_name = str(excel_file)
+        chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
+        if chinese_match:
+            data_type = chinese_match.group(1)
+            print(f"📁 文件类型识别: {data_type}")
+        else:
+            print(f"⚠️ 未能在文件名中找到汉字：{file_name}，使用默认类型。")
+            data_type = "未知类型"
+
+        all_records = []
+        data_date = None
+
+        # 处理每个sheet
+        for sheet_name, df in sheet_dict.items():
+            print(f"\n🔹 正在处理 Sheet: {sheet_name}")
+            
+            # 识别日期
+            match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", sheet_name)
+            if match:
+                data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+            else:
+                # 如果sheet名中没有日期，尝试从文件名获取
+                file_match = re.search(r"(\d{4}[年-]\d{1,2}[月-]\d{1,2})", file_name)
+                if file_match:
+                    date_str = file_match.group(1).replace('年', '-').replace('月', '-')
+                    if date_str.count('-') == 2 and date_str[-1] != '-':
+                        try:
+                            data_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+                        except:
+                            data_date = datetime.date.today()
+                else:
+                    data_date = datetime.date.today()
+            
+            # 标准化列名
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            # 处理数据
+            sheet_records = self._process_generic_sheet(df, data_date, sheet_name, data_type)
+            all_records.extend(sheet_records)
+            print(f"✅ Sheet {sheet_name} 处理完成，共 {len(sheet_records)} 条记录")
+
+        if not all_records:
+            print("❌ 没有生成任何有效记录")
+            return False, None, 0, []
+
+        # 确定表名
+        if custom_table_name:
+            table_name = custom_table_name
+        else:
+            # 根据数据类型和日期生成表名
+            table_name = f"{data_type}_{data_date.strftime('%Y%m%d')}"
+            # 确保表名符合MySQL命名规范
+            table_name = re.sub(r'[^\w]', '_', table_name)
+            table_name = re.sub(r'_+', '_', table_name)  # 替换连续下划线为单个下划线
+            
+        # 保存到数据库
+        success, actual_table_name, record_count, preview_data = self.save_to_new_table(
+            all_records, table_name)
+        return success, actual_table_name, record_count, preview_data
+
+    def query_daily_averages(self, date_list, data_type_keyword="日前节点电价"):
+        """
+        查询多天的均值数据（适用于已计算好的均值记录）
+        
+        Args:
+            date_list (list): 日期列表，格式为 "YYYY-MM-DD"
+            data_type_keyword (str): 数据类型关键字，用于筛选特定类型的数据
+            
+        Returns:
+            dict: 包含查询结果的字典
+        """
+        try:
+            # 构造表名列表
+            table_names = []
+            for date_str in date_list:
+                # 将日期格式转换为表名格式 (YYYY-MM-DD -> YYYYMMDD)
+                date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                table_name = f"power_data_{date_obj.strftime('%Y%m%d')}"
+                print(f"🔍 查询表: {table_name}")
+                table_names.append(table_name)
+                
+            
+            # 验证表是否存在
+            existing_tables = self.db_manager.get_tables()
+            valid_tables = [table for table in table_names if table in existing_tables]
+            
+            if not valid_tables:
+                return {"data": [], "total": 0, "message": "没有找到有效的数据表"}
+            
+            # 构造UNION查询语句：查找包含指定关键字和"均值"的记录
+            union_parts = []
+            for table in valid_tables:
+                union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均值%' AND channel_name LIKE '%{data_type_keyword}%'""")
+            
+            if not union_parts:
+                return {"data": [], "total": 0, "message": "没有找到匹配的数据"}
+                
+            union_query = " UNION ALL ".join(union_parts)
+            print(f"🚀 执行UNION查询: {union_query}")
+            final_query = f"""
+                SELECT * FROM ({union_query}) as combined_data
+                ORDER BY record_date, record_time
+            """
+            
+            # 执行查询
+            result = self.db_manager.complex_query(final_query)
+            # print(f"✅ 查询成功，共 {len(result)} 条记录")
+            # print(result)
+            
+            # 构造返回结果
+            return {
+                "data": result.get("data"),
+                "total": result.get("total"),
+                "message": "查询成功"
+            }
+            
+        except Exception as e:
+            print(f"❌ 查询多天均值数据失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
+
+    def _process_generic_sheet(self, df, data_date, sheet_name, data_type):
+        """
+        通用的sheet处理方法
+        
+        Args:
+            df: DataFrame对象
+            data_date: 数据日期
+            sheet_name: sheet名称
+            data_type: 数据类型
+            
+        Returns:
+            list: 记录列表
+        """
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        
+        if df.empty:
+            return records
+            
+        # 尝试几种常见的数据格式处理方式
+        
+        # 方式1: 如果有"通道名称"或"类型"列
+        channel_col = None
+        for col in ["通道名称", "类型", "指标名称"]:
+            if col in df.columns:
+                channel_col = col
+                break
+                
+        if channel_col:
+            # 查找时间列（形如 00:00、01:15）
+            time_cols = [c for c in df.columns if re.match(r"\d{1,2}:\d{2}", str(c))]
+            if time_cols:
+                # 处理每一行
+                for _, row in df.iterrows():
+                    channel_name = str(row[channel_col]).strip()
+                    if not channel_name or pd.isna(row[channel_col]):
+                        continue
+                        
+                    for t in time_cols:
+                        value = row[t]
+                        if pd.isna(value):
+                            continue
+                        try:
+                            value = float(value)
+                        except:
+                            continue
+                            
+                        record = {
+                            "record_date": data_date,
+                            "record_time": str(t),
+                            "channel_name": channel_name,
+                            "value": value,
+                            "type": data_type,
+                            "sheet_name": sheet_name,
+                            "created_at": datetime.datetime.now(),
+                        }
+                        records.append(record)
+                return records
+        
+        # 方式2: 如果有明确的日期列和数值列
+        date_cols = [c for c in df.columns if "日期" in str(c)]
+        value_cols = [c for c in df.columns if c not in date_cols and c != "序号"]
+        
+        if date_cols and value_cols:
+            date_col = date_cols[0]
+            for _, row in df.iterrows():
+                # 解析日期
+                record_date = data_date
+                if pd.notna(row[date_col]):
+                    try:
+                        record_date = pd.to_datetime(str(row[date_col])).date()
+                    except:
+                        pass
+                
+                # 处理每个数值列
+                for col in value_cols:
+                    value = row[col]
+                    if pd.isna(value):
+                        continue
+                    try:
+                        value = float(value)
+                    except:
+                        continue
+                        
+                    record = {
+                        "record_date": record_date,
+                        "record_time": None,
+                        "channel_name": str(col),
+                        "value": value,
+                        "type": data_type,
+                        "sheet_name": sheet_name,
+                        "created_at": datetime.datetime.now(),
+                    }
+                    records.append(record)
+            return records
+            
+        # 方式3: 默认处理方式 - 将DataFrame转为记录列表
+        for _, row in df.iterrows():
+            for col in df.columns:
+                value = row[col]
+                if pd.isna(value):
+                    continue
+                    
+                record = {
+                    "record_date": data_date,
+                    "record_time": None,
+                    "channel_name": str(col),
+                    "value": float(value) if not isinstance(value, str) else value,
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": datetime.datetime.now(),
+                }
+                records.append(record)
+                
+        return records
+
+    def save_to_new_table(self, records, table_name):
+        """
+        保存记录到新表
+        
+        Args:
+            records: 记录列表
+            table_name: 表名
+            
+        Returns:
+            tuple: (success: bool, table_name: str, record_count: int, preview_data: list)
+        """
+        if not records:
+            print("❌ 没有可保存的记录")
+            return False, None, 0, []
+
+        # 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 过滤无效记录
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            # 不强制要求特定字段，因为我们是创建新表
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return False, None, 0, []
+
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # 创建新表
+                create_table_sql = f"""
+                CREATE TABLE {table_name} (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    record_date DATE,
+                    record_time VARCHAR(10),
+                    type VARCHAR(255),
+                    channel_name VARCHAR(255),
+                    value DECIMAL(15,4),
+                    sheet_name VARCHAR(255),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+                try:
+                    conn.execute(text(create_table_sql))
+                    print(f"✅ 表 {table_name} 创建成功")
+                except Exception as e:
+                    if "already exists" in str(e) or "already exist" in str(e):
+                        print(f"⚠️ 表 {table_name} 已存在")
+                    else:
+                        raise e
+
+                # 准备插入语句（只插入存在的字段）
+                if valid_records:
+                    # 获取第一条记录的字段
+                    sample_record = valid_records[0]
+                    fields = [k for k in sample_record.keys() if k in [
+                        "record_date", "record_time", "type", "channel_name", "value", "sheet_name"]]
+                    
+                    field_placeholders = ", ".join(fields)
+                    value_placeholders = ", ".join([f":{field}" for field in fields])
+                    
+                    insert_stmt = text(f"""
+                    INSERT INTO {table_name} ({field_placeholders})
+                    VALUES ({value_placeholders})
+                    """)
+
+                    # 批量插入
+                    batch_size = 200
+                    for i in range(0, len(valid_records), batch_size):
+                        batch = valid_records[i:i + batch_size]
+                        # 只保留存在的字段
+                        filtered_batch = []
+                        for record in batch:
+                            filtered_record = {k: v for k, v in record.items() if k in fields}
+                            filtered_batch.append(filtered_record)
+                        
+                        conn.execute(insert_stmt, filtered_batch)
+                        print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(filtered_batch)} 条)")
+
+                # 获取记录总数
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name}")
+                count = conn.execute(count_stmt).scalar()
+                
+                # 获取前5行数据预览
+                preview_stmt = text(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT 5")
+                result = conn.execute(preview_stmt)
+                # 修复：正确处理SQLAlchemy行对象
+                preview_data = []
+                for row in result:
+                    # 将行对象转换为字典
+                    preview_data.append(dict(zip(result.keys(), row)))
+                
+                print(f"✅ 数据库保存成功: {count} 条记录")
+                return True, table_name, count, preview_data
+
+        except Exception as e:
+            print(f"❌ 数据库保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
