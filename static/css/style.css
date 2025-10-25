@@ -224,8 +224,7 @@ h1, h2, h3 {
     to { transform: rotate(360deg); }
 }
 
-    margin-right: 5px;
-}
+
 
 @keyframes spin {
     to { transform: rotate(360deg); }

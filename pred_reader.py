@@ -291,7 +291,7 @@ class PowerDataImporter:
         print(f"📘 检测到 {len(sheet_names)} 个Sheet: {sheet_names}")
 
         # 要处理的sheet编号（1-based）
-        target_indexes = [0, 1, 3, 4, 5]  # 对应第1,2,4,5,6个sheet
+        target_indexes = [0, 1, 3, 4, 5,6,-2,-1]  # 对应第1,2,4,5,6个sheet
 
         all_records = []
 
@@ -312,6 +312,10 @@ class PowerDataImporter:
                 records = self._process_time_as_channel(df, data_date, sheet_name, data_type)
             elif i in [1, 5]:  # 第2,6个sheet：第一行→channel_name
                 records = self._process_first_row_as_channel(df, data_date, sheet_name, data_type)
+            elif i in [6]:
+                records = self._process_fsc_as_channel(df, data_date, sheet_name, data_type)
+            # elif i in [-2]:
+            #     records = self._process_new_as_table(df, data_date, sheet_name, data_type)
             else:
                 print(f"⚠️ 第{i+1}个sheet未定义处理规则，跳过")
                 continue
@@ -342,7 +346,6 @@ class PowerDataImporter:
         if not time_cols:
             print(f"⚠️ 未找到时间列: {df.columns.tolist()}")
             return []
-
         # 遍历每一行（每一类指标）
         for _, row in df.iterrows():
             # 跳过无效行或标题行
@@ -372,6 +375,51 @@ class PowerDataImporter:
                 records.append(record)
         return records
 
+    def _process_fsc_as_channel(self, df, data_date, sheet_name, data_type):
+        """将时刻列名映射为channel_name"""
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        df.columns = [str(c).strip() for c in df.iloc[0]]  # 第一行作列名
+        df = df[1:]  # 去掉标题行
+        
+        first_col = df.columns[0]
+        second_col = df.columns[1]
+       
+        # 查找时间列（形如 00:00、01:15 或数字格式 0, 1, 2...）
+        time_cols = [c for c in df.columns if re.match(r"\d{2}:\d{2}", c)]
+        if not time_cols:
+            print(f"⚠️ 未找到时间列: {df.columns.tolist()}")
+            return []
+
+        # 遍历每一行（每一类指标）
+        for _, row in df.iterrows():
+            # 跳过无效行或标题行
+            if not isinstance(row[time_cols[0]], (int, float)) and not str(row[time_cols[0]]).replace('.', '', 1).isdigit():
+                continue
+            
+            # 生成 channel_name：第一列和第二列用下划线连接
+            channel_name = f"{row[first_col]}_{row[second_col]}"
+
+            for t in time_cols:
+                value = row[t]
+                if pd.isna(value):
+                    continue
+                try:
+                    value = float(value)
+                except:
+                    continue  # 跳过非数值的单元格
+
+                record = {
+                    "record_date": data_date,
+                    "record_time": t,
+                    "channel_name": channel_name,  # 用指标名作通道名
+                    "value": value,
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": datetime.datetime.now(),
+                }
+                records.append(record)
+        return records
     def _process_first_row_as_channel(self, df, data_date, sheet_name, data_type):
         """
         处理格式：
@@ -400,7 +448,7 @@ class PowerDataImporter:
                     continue
                 record = {
                     "record_date": data_date,
-                    "record_time": None,  # 入库时间
+                    "record_time": None,  # 没有时间列
                     "channel_name": channel_names[col_idx],
                     "value": value,
                     "type": data_type,
@@ -453,7 +501,7 @@ class PowerDataImporter:
                 # 根据sheet序号调用不同映射函数
                 if i in [0]:  # 第1个sheet：时刻→channel_name
                     records = self._process_time_as_channel(df, data_date, sheet_name, data_type)
-                elif i in [1]:  # 第2,6个sheet：第一行→channel_name
+                elif i in [1]: 
                     records = self._process_1_channel(df, data_date, sheet_name, data_type)
                 elif i in [2]:  # 第3个sheet：时刻→channel_name
                     records = self._process_type_date_value(df, data_date, sheet_name, data_type)
@@ -854,85 +902,6 @@ class PowerDataImporter:
         print(f"✅ {data_type} 均値生成 {len(records)} 条記錄")
         return records
 
-    def import_and_create_new_table(self, excel_file, custom_table_name=None):
-        """
-        导入Excel数据并创建新表
-        
-        Args:
-            excel_file (str): Excel文件路径
-            custom_table_name (str, optional): 自定义表名，如果不提供则自动生成
-            
-        Returns:
-            tuple: (success: bool, table_name: str, record_count: int, preview_data: list)
-        """
-        try:
-            # 读取Excel文件的所有sheet
-            sheet_dict = pd.read_excel(excel_file, sheet_name=None, header=0)
-        except Exception as e:
-            print(f"❌ 无法读取Excel文件: {e}")
-            return False, None, 0, []
-
-        # 获取文件名用于类型识别
-        file_name = str(excel_file)
-        chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
-        if chinese_match:
-            data_type = chinese_match.group(1)
-            print(f"📁 文件类型识别: {data_type}")
-        else:
-            print(f"⚠️ 未能在文件名中找到汉字：{file_name}，使用默认类型。")
-            data_type = "未知类型"
-
-        all_records = []
-        data_date = None
-
-        # 处理每个sheet
-        for sheet_name, df in sheet_dict.items():
-            print(f"\n🔹 正在处理 Sheet: {sheet_name}")
-            
-            # 识别日期
-            match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", sheet_name)
-            if match:
-                data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
-            else:
-                # 如果sheet名中没有日期，尝试从文件名获取
-                file_match = re.search(r"(\d{4}[年-]\d{1,2}[月-]\d{1,2})", file_name)
-                if file_match:
-                    date_str = file_match.group(1).replace('年', '-').replace('月', '-')
-                    if date_str.count('-') == 2 and date_str[-1] != '-':
-                        try:
-                            data_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-                        except:
-                            data_date = datetime.date.today()
-                else:
-                    data_date = datetime.date.today()
-            
-            # 标准化列名
-            df.columns = [str(c).strip() for c in df.columns]
-            
-            # 处理数据
-            sheet_records = self._process_generic_sheet(df, data_date, sheet_name, data_type)
-            all_records.extend(sheet_records)
-            print(f"✅ Sheet {sheet_name} 处理完成，共 {len(sheet_records)} 条记录")
-
-        if not all_records:
-            print("❌ 没有生成任何有效记录")
-            return False, None, 0, []
-
-        # 确定表名
-        if custom_table_name:
-            table_name = custom_table_name
-        else:
-            # 根据数据类型和日期生成表名
-            table_name = f"{data_type}_{data_date.strftime('%Y%m%d')}"
-            # 确保表名符合MySQL命名规范
-            table_name = re.sub(r'[^\w]', '_', table_name)
-            table_name = re.sub(r'_+', '_', table_name)  # 替换连续下划线为单个下划线
-            
-        # 保存到数据库
-        success, actual_table_name, record_count, preview_data = self.save_to_new_table(
-            all_records, table_name)
-        return success, actual_table_name, record_count, preview_data
-
     def query_daily_averages(self, date_list, data_type_keyword="日前节点电价"):
         """
         查询多天的均值数据（适用于已计算好的均值记录）
@@ -995,121 +964,7 @@ class PowerDataImporter:
             traceback.print_exc()
             return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
 
-    def _process_generic_sheet(self, df, data_date, sheet_name, data_type):
-        """
-        通用的sheet处理方法
-        
-        Args:
-            df: DataFrame对象
-            data_date: 数据日期
-            sheet_name: sheet名称
-            data_type: 数据类型
-            
-        Returns:
-            list: 记录列表
-        """
-        records = []
-        df = df.dropna(how="all")  # 删除空行
-        
-        if df.empty:
-            return records
-            
-        # 尝试几种常见的数据格式处理方式
-        
-        # 方式1: 如果有"通道名称"或"类型"列
-        channel_col = None
-        for col in ["通道名称", "类型", "指标名称"]:
-            if col in df.columns:
-                channel_col = col
-                break
-                
-        if channel_col:
-            # 查找时间列（形如 00:00、01:15）
-            time_cols = [c for c in df.columns if re.match(r"\d{1,2}:\d{2}", str(c))]
-            if time_cols:
-                # 处理每一行
-                for _, row in df.iterrows():
-                    channel_name = str(row[channel_col]).strip()
-                    if not channel_name or pd.isna(row[channel_col]):
-                        continue
-                        
-                    for t in time_cols:
-                        value = row[t]
-                        if pd.isna(value):
-                            continue
-                        try:
-                            value = float(value)
-                        except:
-                            continue
-                            
-                        record = {
-                            "record_date": data_date,
-                            "record_time": str(t),
-                            "channel_name": channel_name,
-                            "value": value,
-                            "type": data_type,
-                            "sheet_name": sheet_name,
-                            "created_at": datetime.datetime.now(),
-                        }
-                        records.append(record)
-                return records
-        
-        # 方式2: 如果有明确的日期列和数值列
-        date_cols = [c for c in df.columns if "日期" in str(c)]
-        value_cols = [c for c in df.columns if c not in date_cols and c != "序号"]
-        
-        if date_cols and value_cols:
-            date_col = date_cols[0]
-            for _, row in df.iterrows():
-                # 解析日期
-                record_date = data_date
-                if pd.notna(row[date_col]):
-                    try:
-                        record_date = pd.to_datetime(str(row[date_col])).date()
-                    except:
-                        pass
-                
-                # 处理每个数值列
-                for col in value_cols:
-                    value = row[col]
-                    if pd.isna(value):
-                        continue
-                    try:
-                        value = float(value)
-                    except:
-                        continue
-                        
-                    record = {
-                        "record_date": record_date,
-                        "record_time": None,
-                        "channel_name": str(col),
-                        "value": value,
-                        "type": data_type,
-                        "sheet_name": sheet_name,
-                        "created_at": datetime.datetime.now(),
-                    }
-                    records.append(record)
-            return records
-            
-        # 方式3: 默认处理方式 - 将DataFrame转为记录列表
-        for _, row in df.iterrows():
-            for col in df.columns:
-                value = row[col]
-                if pd.isna(value):
-                    continue
-                    
-                record = {
-                    "record_date": data_date,
-                    "record_time": None,
-                    "channel_name": str(col),
-                    "value": float(value) if not isinstance(value, str) else value,
-                    "type": data_type,
-                    "sheet_name": sheet_name,
-                    "created_at": datetime.datetime.now(),
-                }
-                records.append(record)
-                
-        return records
+
 
     def save_to_new_table(self, records, table_name):
         """
