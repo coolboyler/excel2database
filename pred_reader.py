@@ -163,27 +163,7 @@ class PowerDataImporter:
                 records.append(record)
 
         return records
-
-    # -------------------------------
-    # 数据保存
-    # -------------------------------
-
-    # def save_to_database(self, records, data_date):
-    #     """按日期自动创建表并保存数据"""
-    #     if not records:
-    #         print("❌ 没有可保存的记录")
-    #         return False, None, 0, []
-
-    #     # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
-    #     if isinstance(records, pd.DataFrame):
-    #         records = records.to_dict# 获取前5行数据预览
-    #     preview_stmt = text(f"SELECT * FROM {table_name} LIMIT 5")
-    #     result = conn.execute(preview_stmt)
-    #     # 修复：正确处理SQLAlchemy行对象
-    #     preview_data = []
-    #     for row in result:
-    #         # 将行对象转换为字典
-    #         preview_data.append(dict(zip(result.keys(), row)))(orient="records")
+    # 保存数据到数据库
     def save_to_database(self, records, data_date):
         """按日期自动创建表并保存数据"""
         if not records:
@@ -269,7 +249,200 @@ class PowerDataImporter:
             import traceback
             traceback.print_exc()
             return False, None, 0, []
+    def save_to_outage_database(self, records, data_date):
+        """保存停电数据到固定表 power_outage"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return False, None, 0, []
 
+        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 🧩 2. 过滤无效记录
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            required_fields = ["device_name", "voltage_level", "device_type", "device_code", 
+                        "planned_power_off_time", "actual_power_off_time", "planned_power_on_time","actual_power_on_time"]
+            if not all(k in r for k in required_fields):
+                continue
+            # 添加 record_date 字段
+            r["record_date"] = data_date
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return False, None, 0, []
+
+        # --- 使用固定表名 ---
+        table_name = "power_outage"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # --- 创建表（如果不存在） ---
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS `{table_name}` (
+                    `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+                    `record_date` date NOT NULL COMMENT '记录日期',
+                    `device_name` varchar(200) NOT NULL COMMENT '设备名称（如101变压器开关、220kV#1主变）',
+                    `voltage_level` varchar(50) DEFAULT NULL COMMENT '电压等级（允许为空，部分设备可能未记录）',
+                    `device_type` varchar(100) NOT NULL COMMENT '设备类型（如开关、主变、母线）',
+                    `device_code` varchar(50) NOT NULL COMMENT '设备编号（唯一标识）',
+                    `planned_power_off_time` datetime DEFAULT NULL COMMENT '计划停电日期时间（格式：YYYY-MM-DD HH:MM:SS）',
+                    `actual_power_off_time` datetime DEFAULT NULL COMMENT '实际停电日期时间（格式：YYYY-MM-DD HH:MM:SS）',
+                    `planned_power_on_time` datetime DEFAULT NULL COMMENT '计划复电日期时间（格式：YYYY-MM-DD HH:MM:SS）',
+                    `actual_power_on_time` datetime DEFAULT NULL COMMENT '实际复电日期时间（格式：YYYY-MM-DD HH:MM:SS）',
+                    `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+                    `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+                    `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名',
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_device_code` (`device_code`) COMMENT '设备编号唯一约束'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='设备停电记录信息表';
+                """
+                conn.execute(text(create_table_sql))
+                print(f"✅ 表 {table_name} 已存在或创建成功")
+
+                # --- 批量插入 ---
+                insert_stmt = text(f"""
+                INSERT IGNORE INTO {table_name} 
+                (device_name, record_date, voltage_level, device_type, device_code, planned_power_off_time, actual_power_off_time, planned_power_on_time, actual_power_on_time, sheet_name)
+                VALUES (:device_name, :record_date, :voltage_level, :device_type, :device_code, STR_TO_DATE(:planned_power_off_time, '%Y%m%d_%H:%i:%s'), STR_TO_DATE(:actual_power_off_time, '%Y%m%d_%H:%i:%s'), STR_TO_DATE(:planned_power_on_time, '%Y%m%d_%H:%i:%s'), STR_TO_DATE(:actual_power_on_time, '%Y%m%d_%H:%i:%s'), :sheet_name)
+                """)
+
+                batch_size = 200
+                for i in range(0, len(valid_records), batch_size):
+                    batch = valid_records[i:i + batch_size]
+                    conn.execute(insert_stmt, batch)
+                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
+
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
+                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
+                
+                # 获取前5行数据预览
+                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date ORDER BY id DESC LIMIT 5")
+                result = conn.execute(preview_stmt, {"record_date": data_date})
+                # 修复：正确处理SQLAlchemy行对象
+                preview_data = []
+                for row in result:
+                    # 将行对象转换为字典
+                    preview_data.append(dict(zip(result.keys(), row)))
+                
+                print(f"✅ 数据库保存成功: {count} 条记录")
+                return True, table_name, count, preview_data
+
+        except Exception as e:
+            print(f"❌ 数据库保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+    
+    def save_to_internal_database(self, records, data_date):
+        """保存发电机干预记录到固定表 generator_intervention_records"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return False, None, 0, []
+
+        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 🧩 2. 过滤无效记录
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            required_fields = ["object_name", "object_id", "intervention_start_time", "intervention_end_time",
+                               "pre_intervention_max", "pre_intervention_min", "post_intervention_max", "post_intervention_min",
+                               "intervention_reason"]
+            if not all(k in r for k in required_fields):
+                continue
+            r["record_date"] = data_date
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return False, None, 0, []
+
+        # --- 使用固定表名 ---
+        table_name = "power_intervention"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # --- 创建表（如果不存在） ---
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS `{table_name}` (
+                  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+                  `record_date` date NOT NULL COMMENT '记录日期',
+                  `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名',
+                  `object_name` varchar(200) NOT NULL COMMENT '对象名称（如牛远厂#2发电机）',
+                  `object_id` varchar(50) NOT NULL COMMENT '对象ID（唯一标识，如40813871689367554）',
+                  `intervention_start_time` datetime DEFAULT NULL COMMENT '干预开始时间（格式：YYYY-MM-DD HH:MM:SS）',
+                  `intervention_end_time` datetime DEFAULT NULL COMMENT '干预结束时间（格式：YYYY-MM-DD HH:MM:SS）',
+                  `pre_intervention_max` decimal(10,3) DEFAULT NULL COMMENT '干预前最大值',
+                  `pre_intervention_min` decimal(10,3) DEFAULT NULL COMMENT '干预前最小值',
+                  `post_intervention_max` decimal(10,3) DEFAULT NULL COMMENT '干预后最大值',
+                  `post_intervention_min` decimal(10,3) DEFAULT NULL COMMENT '干预后最小值',
+                  `intervention_reason` varchar(500) DEFAULT NULL COMMENT '干预原因（如配合电厂工作:优化开机曲线）',
+                  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+                  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+                  PRIMARY KEY (`id`),
+                  KEY `idx_object_id` (`object_id`) COMMENT '对象ID索引，用于关联查询',
+                  KEY `idx_intervention_time` (`intervention_start_time`, `intervention_end_time`) COMMENT '干预时间索引，用于时间范围查询'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='发电机干预记录信息表';
+                """
+                conn.execute(text(create_table_sql))
+                print(f"✅ 表 {table_name} 已存在或创建成功")
+
+                # --- 批量插入 ---
+                insert_stmt = text(f"""
+                INSERT IGNORE INTO {table_name} 
+                (record_date, sheet_name, object_name, object_id, intervention_start_time, intervention_end_time, 
+                 pre_intervention_max, pre_intervention_min, post_intervention_max, post_intervention_min, 
+                 intervention_reason)
+                VALUES (:record_date, :sheet_name, :object_name, :object_id, :intervention_start_time, :intervention_end_time,
+                        :pre_intervention_max, :pre_intervention_min, :post_intervention_max, :post_intervention_min,
+                        :intervention_reason)
+                """)
+
+                batch_size = 200
+                for i in range(0, len(valid_records), batch_size):
+                    batch = valid_records[i:i + batch_size]
+                    conn.execute(insert_stmt, batch)
+                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
+
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name}")
+                count = conn.execute(count_stmt).scalar()
+                
+                # 获取前5行数据预览
+                preview_stmt = text(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT 5")
+                result = conn.execute(preview_stmt)
+                # 修复：正确处理SQLAlchemy行对象
+                preview_data = []
+                for row in result:
+                    # 将行对象转换为字典
+                    preview_data.append(dict(zip(result.keys(), row)))
+                
+                print(f"✅ 数据库保存成功: {count} 条记录")
+                return True, table_name, count, preview_data
+
+        except Exception as e:
+            print(f"❌ 数据库保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+    
     def import_custom_excel(self, excel_file):
         """导入指定的5个sheet，并按固定规则映射"""
         try:
@@ -294,6 +467,8 @@ class PowerDataImporter:
         target_indexes = [0, 1, 3, 4, 5,6,-2,-1]  # 对应第1,2,4,5,6个sheet
 
         all_records = []
+        outage_records = []
+        ineternal_records = []
 
         for i in target_indexes:
             if i >= len(sheet_names):
@@ -314,21 +489,30 @@ class PowerDataImporter:
                 records = self._process_first_row_as_channel(df, data_date, sheet_name, data_type)
             elif i in [6]:
                 records = self._process_fsc_as_channel(df, data_date, sheet_name, data_type)
-            # elif i in [-2]:
-            #     records = self._process_new_as_table(df, data_date, sheet_name, data_type)
+            elif i in [-2]:
+                outage_records = self._process_outage_as_table(df, data_date, sheet_name)
+            elif i in [-1]:
+                ineternal_records = self._process_internal_as_table(df, data_date, sheet_name)
             else:
                 print(f"⚠️ 第{i+1}个sheet未定义处理规则，跳过")
                 continue
 
             print(f"✅ Sheet{i+1} 处理完成，共 {len(records)} 条记录")
             all_records.extend(records)
-
+        
+        if not outage_records:
+            print("❌ 没有生成任何停电记录")
+            return False
         if not all_records:
             print("❌ 没有生成任何有效记录")
             return False
 
-        return self.save_to_database(all_records, data_date)
-
+        success1, table_name1, count1, preview_data1 = self.save_to_database(all_records, data_date)
+        success2, table_name2, count2, preview_data2 = self.save_to_outage_database(outage_records, data_date)
+        success3, table_name3, count3, preview_data3 = self.save_to_internal_database(ineternal_records, data_date)
+        
+        # 返回两个操作的结果
+        return (success1, table_name1, count1, preview_data1), (success2, table_name2, count2, preview_data2),(success3, table_name3, count3, preview_data3)
     def _process_time_as_channel(self, df, data_date, sheet_name, data_type):
         """将时刻列名映射为channel_name"""
         records = []
@@ -374,11 +558,13 @@ class PowerDataImporter:
                 }
                 records.append(record)
         return records
-
     def _process_fsc_as_channel(self, df, data_date, sheet_name, data_type):
         """将时刻列名映射为channel_name"""
         records = []
         df = df.dropna(how="all")  # 删除空行
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据（所有行都是空行）")
+            return records  # 返回空列表，避免后续报错
         df.columns = [str(c).strip() for c in df.iloc[0]]  # 第一行作列名
         df = df[1:]  # 去掉标题行
         
@@ -420,6 +606,54 @@ class PowerDataImporter:
                 }
                 records.append(record)
         return records
+    
+    def _process_5_as_channel(self, df, data_date, sheet_name, data_type):
+        """将时刻列名映射为channel_name"""
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据（所有行都是空行）")
+            return records  # 返回空列表，避免后续报错
+        
+        first_col = df.columns[0]
+        second_col = df.columns[1]
+       
+        # 查找时间列（形如 00:00、01:15 或数字格式 0, 1, 2...）
+        time_cols = [c for c in df.columns if re.match(r"\d{2}:\d{2}", c)]
+        if not time_cols:
+            print(f"⚠️ 未找到时间列: {df.columns.tolist()}")
+            return []
+
+        # 遍历每一行（每一类指标）
+        for _, row in df.iterrows():
+            # 跳过无效行或标题行
+            if not isinstance(row[time_cols[0]], (int, float)) and not str(row[time_cols[0]]).replace('.', '', 1).isdigit():
+                continue
+            
+            # 生成 channel_name：第一列和第二列用下划线连接
+            channel_name = f"{row[first_col]}_{row[second_col]}"
+
+            for t in time_cols:
+                value = row[t]
+                if pd.isna(value):
+                    continue
+                try:
+                    value = float(value)
+                except:
+                    continue  # 跳过非数值的单元格
+
+                record = {
+                    "record_date": data_date,
+                    "record_time": t,
+                    "channel_name": channel_name,  # 用指标名作通道名
+                    "value": value,
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": datetime.datetime.now(),
+                }
+                records.append(record)
+        return records
+
     def _process_first_row_as_channel(self, df, data_date, sheet_name, data_type):
         """
         处理格式：
@@ -469,7 +703,10 @@ class PowerDataImporter:
                 print(f"❌ 无法读取Excel: {e}")
                 return False
             file_name = str(excel_file)
-            
+            single_match = re.search(r"\((\d{4}-\d{1,2}-\d{1,2})", file_name)
+            single_data_date_str = single_match.group(1)
+            single_data_date = datetime.datetime.strptime(single_data_date_str, "%Y-%m-%d").date()
+            print("识别到的日期：", single_data_date)
             chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
             if chinese_match:
                 data_type = chinese_match.group(1) + "预测信息"
@@ -481,7 +718,7 @@ class PowerDataImporter:
             print(f"📘 检测到 {len(sheet_names)} 个Sheet: {sheet_names}")
 
             # 要处理的sheet编号（1-based）
-            target_indexes = [0, 1, 2, -3, -2, -1]  # 对应第1,2,4,5,6个sheet
+            target_indexes = [0, 1, 2, 6,-4,-3, -2, -1]  # 对应第1,2,4,5,6个sheet
 
             all_records = []
 
@@ -495,8 +732,15 @@ class PowerDataImporter:
                 print(f"\n🔹 正在处理 Sheet {i+1}: {sheet_name}")
 
                 # 统一识别日期
-                match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", sheet_name)
-                data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+                match = re.search(r"\((\d{4}-\d{1,2}-\d{1,2})", sheet_name)
+
+                if match:
+                    # 提取捕获的日期字符串并转换为date类型
+                    data_date_str = match.group(1)
+                    data_date = datetime.datetime.strptime(data_date_str, "%Y-%m-%d").date()
+                    print("识别到的日期：", data_date)  # 输出：识别到的日期：2025-09-01（若输入是2025-09-1，会自动补0为2025-09-01）
+                else:
+                    print("未识别到日期格式")
 
                 # 根据sheet序号调用不同映射函数
                 if i in [0]:  # 第1个sheet：时刻→channel_name
@@ -509,6 +753,9 @@ class PowerDataImporter:
                     records = self._process_3_channel(df, data_date, sheet_name, data_type)
                 elif i in [-2, -1]:  # 第7,8个sheet：第一行→channel_name
                     records = self._process_2_channel(df, data_date, sheet_name, data_type)
+                elif i in [-4,6]:  # 第9个sheet
+                    records = self._process_5_as_channel(df, single_data_date, sheet_name, data_type)
+                
                 else:
                     print(f"⚠️ 第{i+1}个sheet未定义处理规则，跳过")
                     continue
@@ -891,7 +1138,7 @@ class PowerDataImporter:
                 record = {
                     "record_date": pd.to_datetime(data_date).date(),
                     "record_time": f"{hour}:00",   # "HH:00" にフォーマット
-                    "channel_name": f"{data_type}_均值",
+                    "channel_name": f"{data_type}_均値",
                     "value": round(overall_mean, 2),
                     "type": data_type,
                     "sheet_name": sheet_name,
@@ -934,7 +1181,7 @@ class PowerDataImporter:
             # 构造UNION查询语句：查找包含指定关键字和"均值"的记录
             union_parts = []
             for table in valid_tables:
-                union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均值%' AND channel_name LIKE '%{data_type_keyword}%'""")
+                union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均値%' AND channel_name LIKE '%{data_type_keyword}%'""")
             
             if not union_parts:
                 return {"data": [], "total": 0, "message": "没有找到匹配的数据"}
@@ -964,115 +1211,115 @@ class PowerDataImporter:
             traceback.print_exc()
             return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
 
-
-
-    def save_to_new_table(self, records, table_name):
-        """
-        保存记录到新表
+    def _process_outage_as_table(self, df, data_date, sheet_name):
+        """将表格数据映射为停电记录，适配文件格式"""
+        records = []
+        df = df.dropna(how="all")  # 删除空行
         
-        Args:
-            records: 记录列表
-            table_name: 表名
-            
-        Returns:
-            tuple: (success: bool, table_name: str, record_count: int, preview_data: list)
-        """
-        if not records:
-            print("❌ 没有可保存的记录")
-            return False, None, 0, []
-
-        # 如果传入的是 DataFrame，转成 list[dict]
-        if isinstance(records, pd.DataFrame):
-            records = records.to_dict(orient="records")
-
-        if not isinstance(records, list):
-            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
-            return False, None, 0, []
-
-        # 过滤无效记录
-        valid_records = []
-        for i, r in enumerate(records):
-            if not isinstance(r, dict):
+        # 处理表头（确保列名正确映射）
+        df.columns = [str(c).strip() for c in df.iloc[0]]  # 第一行作列名
+        df = df[1:]  # 去掉标题行
+        # 清洗列名，去除空格和特殊字符
+        df.columns = [str(col).strip().replace('\n', '').replace(' ', '') for col in df.columns]
+        # 验证必要列是否存在
+        required_cols = ["设备名称", "电压等级", "设备类型", "设备编号", 
+                        "计划停电日期", "实际停电日期", "计划复电时间", "实际复电时间"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"缺失必要列: {missing_cols}")
+        
+        # 遍历每一行数据
+        for idx, row in df.iterrows():
+            # 跳过空行和标题行（如果有残留）
+            device_name = str(row.get("设备名称", "")).strip()
+            if not device_name:
                 continue
-            # 不强制要求特定字段，因为我们是创建新表
-            valid_records.append(r)
-
-        if not valid_records:
-            print("❌ 没有可保存的有效记录")
-            return False, None, 0, []
-
-        preview_data = []
-
-        try:
-            with self.db_manager.engine.begin() as conn:
-                # 创建新表
-                create_table_sql = f"""
-                CREATE TABLE {table_name} (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    record_date DATE,
-                    record_time VARCHAR(10),
-                    type VARCHAR(255),
-                    channel_name VARCHAR(255),
-                    value DECIMAL(15,4),
-                    sheet_name VARCHAR(255),
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-                try:
-                    conn.execute(text(create_table_sql))
-                    print(f"✅ 表 {table_name} 创建成功")
-                except Exception as e:
-                    if "already exists" in str(e) or "already exist" in str(e):
-                        print(f"⚠️ 表 {table_name} 已存在")
+            
+            # 构建记录字典
+            record = {
+                "device_name": device_name,
+                "record_date": data_date,
+                "sheet_name": sheet_name,
+                "voltage_level": str(row.get("电压等级", "")).strip() or None,  # 空值处理为None
+                "device_type": str(row.get("设备类型", "")).strip(),
+                "device_code": str(row.get("设备编号", "")).strip(),
+                # 时间字段保持原始格式（数据库插入时会用STR_TO_DATE转换）
+                "planned_power_off_time": str(row.get("计划停电日期", "")).strip(),
+                "actual_power_off_time": str(row.get("实际停电日期", "")).strip(),
+                "planned_power_on_time": str(row.get("计划复电时间", "")).strip(),
+                "actual_power_on_time": str(row.get("实际复电时间", "")).strip(),
+            }
+            
+            # 验证关键字段
+            if not record["device_code"]:
+                print(f"跳过无效行（无设备编号）：{idx}行")
+                continue
+            if not all([record["planned_power_off_time"], record["planned_power_on_time"]]):
+                print(f"跳过无效行（时间不完整）：{idx}行")
+                continue
+            
+            records.append(record)
+        
+        return records
+    
+    def _process_internal_as_table(self, df, data_date, sheet_name):
+        """将表格数据映射为发电机干预记录，适配文件格式"""
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        
+        # 处理表头（确保列名正确映射）
+        df.columns = [str(c).strip() for c in df.iloc[0]]  # 第一行作列名
+        df = df[1:]  # 去掉标题行
+        # 清洗列名，去除空格和特殊字符
+        df.columns = [str(col).strip().replace('\n', '').replace(' ', '') for col in df.columns]
+        # 验证必要列是否存在
+        required_cols = ["对象名称", "对象id", "干预开始时间", "干预结束时间", 
+                        "干预前最大值", "干预前最小值", "干预后最大值", "干预后最小值", "干预原因"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"缺失必要列: {missing_cols}")
+        
+        # 遍历每一行数据
+        for idx, row in df.iterrows():
+            # 跳过空行和标题行（如果有残留）
+            object_name = str(row.get("对象名称", "")).strip()
+            if not object_name:
+                continue
+            
+            # 构建记录字典
+            record = {
+                "record_date": data_date,
+                "sheet_name": sheet_name,
+                "object_name": object_name,
+                "object_id": str(row.get("对象id", "")).strip(),
+                "intervention_start_time": str(row.get("干预开始时间", "")).strip(),
+                "intervention_end_time": str(row.get("干预结束时间", "")).strip(),
+                "pre_intervention_max": row.get("干预前最大值"),
+                "pre_intervention_min": row.get("干预前最小值"),
+                "post_intervention_max": row.get("干预后最大值"),
+                "post_intervention_min": row.get("干预后最小值"),
+                "intervention_reason": str(row.get("干预原因", "")).strip(),
+            }
+            
+            # 验证关键字段
+            if not record["object_id"]:
+                print(f"跳过无效行（无对象ID）：{idx}行")
+                continue
+            if not all([record["intervention_start_time"], record["intervention_end_time"]]):
+                print(f"跳过无效行（时间不完整）：{idx}行")
+                continue
+            
+            # 尝试转换数值字段
+            try:
+                for field in ["pre_intervention_max", "pre_intervention_min", "post_intervention_max", "post_intervention_min"]:
+                    if record[field] is not None and str(record[field]).strip() != "":
+                        record[field] = float(record[field])
                     else:
-                        raise e
-
-                # 准备插入语句（只插入存在的字段）
-                if valid_records:
-                    # 获取第一条记录的字段
-                    sample_record = valid_records[0]
-                    fields = [k for k in sample_record.keys() if k in [
-                        "record_date", "record_time", "type", "channel_name", "value", "sheet_name"]]
-                    
-                    field_placeholders = ", ".join(fields)
-                    value_placeholders = ", ".join([f":{field}" for field in fields])
-                    
-                    insert_stmt = text(f"""
-                    INSERT INTO {table_name} ({field_placeholders})
-                    VALUES ({value_placeholders})
-                    """)
-
-                    # 批量插入
-                    batch_size = 200
-                    for i in range(0, len(valid_records), batch_size):
-                        batch = valid_records[i:i + batch_size]
-                        # 只保留存在的字段
-                        filtered_batch = []
-                        for record in batch:
-                            filtered_record = {k: v for k, v in record.items() if k in fields}
-                            filtered_batch.append(filtered_record)
-                        
-                        conn.execute(insert_stmt, filtered_batch)
-                        print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(filtered_batch)} 条)")
-
-                # 获取记录总数
-                count_stmt = text(f"SELECT COUNT(*) FROM {table_name}")
-                count = conn.execute(count_stmt).scalar()
-                
-                # 获取前5行数据预览
-                preview_stmt = text(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT 5")
-                result = conn.execute(preview_stmt)
-                # 修复：正确处理SQLAlchemy行对象
-                preview_data = []
-                for row in result:
-                    # 将行对象转换为字典
-                    preview_data.append(dict(zip(result.keys(), row)))
-                
-                print(f"✅ 数据库保存成功: {count} 条记录")
-                return True, table_name, count, preview_data
-
-        except Exception as e:
-            print(f"❌ 数据库保存失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return False, None, 0, []
+                        record[field] = None
+            except ValueError as e:
+                print(f"跳过无效行（数值转换失败）：{idx}行, 错误: {e}")
+                continue
+            
+            records.append(record)
+        
+        return records

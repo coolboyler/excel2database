@@ -109,7 +109,21 @@ async def import_file(filename: str = Form(...)):
         raise HTTPException(status_code=400, detail=f"无匹配的导入规则: {filename}")
     
     # 执行同步导入
-    success, table_name, record_count, preview_data = method(file_path)
+    result = method(file_path)
+    
+    # import_custom_excel 返回两个结果元组，其他方法返回单个四元组
+    if method == importer.import_custom_excel:
+        # 解包两个结果元组
+        (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2),(success3,table_name3,record_count3,preview_data3) = result
+        # 合并结果，这里我们使用两个结果的组合
+        success = success1 and success2 and success3
+        table_name = f"{table_name1}, {table_name2}, {table_name3}"
+        record_count = record_count1 + record_count2 + record_count3
+        preview_data = preview_data1 + preview_data2 + preview_data3
+    else:
+        # 其他导入方法的常规处理
+        success, table_name, record_count, preview_data = result
+        
     if success:
         return {
             "filename": filename, 
