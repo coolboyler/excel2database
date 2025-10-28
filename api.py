@@ -41,6 +41,12 @@ async def table_query_page(request: Request, table_name: str):
     """返回表查询页面"""
     return templates.TemplateResponse("table_query.html", {"request": request, "table_name": table_name})
 
+# 新增：联表查询页面
+@app.get("/join_query", response_class=HTMLResponse)
+async def join_query_page(request: Request):
+    """返回联表查询页面"""
+    return templates.TemplateResponse("join_query.html", {"request": request})
+
 @app.get("/health")
 async def health_check():
     """健康检查接口"""
@@ -103,7 +109,28 @@ async def import_file(filename: str = Form(...)):
         raise HTTPException(status_code=400, detail=f"无匹配的导入规则: {filename}")
     
     # 执行同步导入
-    success, table_name, record_count, preview_data = method(file_path)
+    result = method(file_path)
+    
+    # import_custom_excel 返回两个结果元组，其他方法返回单个四元组
+    if method == importer.import_custom_excel:
+        # 解包三个结果元组
+        (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2),(success3,table_name3,record_count3,preview_data3) = result
+        # 合并结果，这里我们使用三个结果的组合
+        success = success1 and success2 and success3
+        table_name = f"{table_name1}, {table_name2}, {table_name3}"
+        record_count = record_count1 + record_count2 + record_count3
+        preview_data = preview_data1 + preview_data2 + preview_data3
+    elif method == importer.import_custom_excel_pred:
+        (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2), (success4, table_name4, record_count4, preview_data4), (success5, table_nam5, record_count5, preview_data5) = result
+        # 合并结果，这里我们使用三个结果的组合
+        success = success1 and success2 and success4 and success5
+        table_name = f"{table_name1}, {table_name2}, {table_name4}, {table_nam5}"
+        record_count = record_count1 + record_count2 + record_count4 + record_count5 
+        preview_data = preview_data1 + preview_data2 + preview_data4 + preview_data5 
+    else:
+        # 其他导入方法的常规处理
+        success, table_name, record_count, preview_data = result
+        
     if success:
         return {
             "filename": filename, 
@@ -463,16 +490,7 @@ async def export_table_data(table_name: str,
                 for col in hour_columns:
                     pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce')
                 
-                province_avg = pivot_df[hour_columns].mean(skipna=True).round(2)
-                
-                province_row = pd.DataFrame({
-                    '节点名称': ['发电侧全省统一均价'],
-                    '日期': [record_date_str],
-                    '单位': ['电价(元/MWh)'],
-                    **{col: [province_avg.get(col, np.nan)] for col in hour_columns}
-                })
-                
-                final_df = pd.concat([pivot_df, province_row], ignore_index=True)
+                final_df = pivot_df
                 print(f"最终DataFrame形状: {final_df.shape}")
                 print(f"最终DataFrame列: {final_df.columns.tolist()}")
                 if len(final_df) > 0:
@@ -606,5 +624,33 @@ async def delete_file(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
 
+@app.post("/daily-averages")
+async def query_daily_averages(
+    dates: str = Form(..., description="日期列表，JSON格式，例如: [\"2023-09-18\", \"2023-09-19\"]"),
+    data_type_keyword: str = Form("日前节点电价", description="数据类型关键字")
+):
+    """
+    查询多天的均值数据
+    
+    参数:
+    - dates: 日期列表，JSON格式
+    - data_type_keyword: 数据类型关键字
+    
+    返回:
+    - 查询结果
+    """
+    try:
+        import json
+        date_list = json.loads(dates)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
+    
+    result = importer.query_daily_averages(date_list, data_type_keyword)
+    
+    if result["total"] == 0:
+        return {"total": 0, "data": []}
+    
+    return result
+
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8002, reload=True)

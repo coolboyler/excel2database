@@ -78,27 +78,96 @@ function loadTableList() {
         });
 }
 
-// 设置上传表单
+// 设置上传表单 - 支持批量上传
 function setupUploadForm() {
     const uploadForm = document.getElementById('upload-form');
-    if (!uploadForm) return;
+    const fileInput = document.getElementById('file-input');
     
+    if (!uploadForm || !fileInput) {
+        console.error('上传表单元素未找到');
+        return;
+    }
+    
+    const selectedFileDiv = document.getElementById('selected-file');
+    const selectedFileNameSpan = document.getElementById('selected-file-name');
+    const uploadButton = document.getElementById('upload-button');
+    
+    // 修改文件输入框为多选
+    fileInput.multiple = true;
+    
+    // 监听文件选择事件
+    fileInput.addEventListener('change', function(e) {
+        console.log('文件选择事件触发', e.target.files);
+        const files = Array.from(e.target.files);
+        
+        if (files.length > 0) {
+            // 检查文件类型
+            const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
+            const invalidFiles = files.filter(file => !file.name.endsWith('.xlsx'));
+            
+            if (invalidFiles.length > 0) {
+                const invalidFileNames = invalidFiles.map(f => f.name).join(', ');
+                showAlert(`以下文件不是.xlsx格式，将被忽略: ${invalidFileNames}`, 'warning');
+            }
+            
+            if (validFiles.length > 0) {
+                console.log('选择的有效文件:', validFiles.map(f => f.name));
+                if (selectedFileDiv && selectedFileNameSpan) {
+                    selectedFileNameSpan.textContent = `${validFiles.length} 个文件`;
+                    selectedFileDiv.style.display = 'block';
+                    console.log('显示文件选择区域');
+                }
+            } else {
+                console.error('没有有效的文件');
+                showAlert('请选择至少一个.xlsx格式的Excel文件', 'danger');
+                if (selectedFileDiv) {
+                    selectedFileDiv.style.display = 'none';
+                }
+                fileInput.value = '';
+            }
+        } else {
+            console.log('用户取消了文件选择');
+            if (selectedFileDiv) {
+                selectedFileDiv.style.display = 'none';
+            }
+        }
+    });
+    
+    // 监听上传按钮点击事件
+    if (uploadButton) {
+        uploadButton.addEventListener('click', function(e) {
+            e.preventDefault(); // 防止表单提交
+            console.log('上传按钮被点击');
+            
+            const files = Array.from(fileInput.files);
+            const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
+            
+            if (validFiles.length > 0) {
+                console.log('开始上传文件:', validFiles.map(f => f.name));
+                uploadFiles(validFiles);
+            } else {
+                showAlert('请选择至少一个有效的Excel文件 (.xlsx)', 'danger');
+            }
+        });
+    }
+    
+    // 表单提交事件处理
     uploadForm.addEventListener('submit', function(e) {
         e.preventDefault();
+        console.log('表单提交事件');
         
-        const fileInput = document.getElementById('file-input');
-        const file = fileInput.files[0];
+        const files = Array.from(fileInput.files);
+        const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
         
-        if (!file) {
-            showAlert('请选择一个Excel文件', 'danger');
-            return;
+        if (validFiles.length > 0) {
+            uploadFiles(validFiles);
+        } else {
+            showAlert('请选择至少一个有效的Excel文件 (.xlsx)', 'danger');
         }
-        
-        uploadFile(file);
     });
 }
 
-// 设置拖放上传
+// 设置拖放上传 - 支持批量上传
 function setupDragAndDrop() {
     const dropArea = document.getElementById('drop-area');
     if (!dropArea) return;
@@ -128,55 +197,144 @@ function setupDragAndDrop() {
     
     function handleDrop(e) {
         const dt = e.dataTransfer;
-        const file = dt.files[0];
+        const files = Array.from(dt.files);
+        const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
+        const invalidFiles = files.filter(file => !file.name.endsWith('.xlsx'));
         
-        if (file && file.name.endsWith('.xlsx')) {
-            uploadFile(file);
+        if (invalidFiles.length > 0) {
+            const invalidFileNames = invalidFiles.map(f => f.name).join(', ');
+            showAlert(`以下文件不是.xlsx格式，将被忽略: ${invalidFileNames}`, 'warning');
+        }
+        
+        if (validFiles.length > 0) {
+            uploadFiles(validFiles);
         } else {
-            showAlert('请上传.xlsx格式的Excel文件', 'danger');
+            showAlert('请至少上传一个.xlsx格式的Excel文件', 'danger');
         }
     }
 }
 
-// 上传文件
-function uploadFile(file) {
-    const formData = new FormData();
-    formData.append('file', file);
+// 上传多个文件 - 支持重复文件检测
+async function uploadFiles(files) {
+    console.log('开始上传文件:', files.map(f => f.name));
     
+    // 获取当前文件列表
+    let currentFiles = [];
+    try {
+        const response = await fetch('/files');
+        const data = await response.json();
+        currentFiles = data.files || [];
+    } catch (error) {
+        console.error('获取当前文件列表失败:', error);
+    }
+    
+    // 检查是否有重复文件
+    const duplicateFiles = files.filter(file => currentFiles.includes(file.name));
+    const newFiles = files.filter(file => !currentFiles.includes(file.name));
+    
+    let filesToUpload = [...files]; // 默认上传所有文件
+    
+    if (duplicateFiles.length > 0) {
+        const duplicateFileNames = duplicateFiles.map(f => f.name).join(', ');
+        const message = `以下文件已存在: ${duplicateFileNames}\n是否要覆盖这些文件?`;
+        
+        if (!confirm(message)) {
+            // 用户选择不覆盖，只上传新文件
+            filesToUpload = newFiles;
+            if (filesToUpload.length === 0) {
+                showAlert('没有需要上传的新文件', 'info');
+                return;
+            }
+        }
+    }
+    
+    // 逐个上传文件
     const progressBar = document.getElementById('progress-bar');
     const progressContainer = document.getElementById('progress-container');
     
-    progressContainer.classList.remove('hidden');
-    progressBar.style.width = '0%';
+    // 显示进度条
+    if (progressContainer) {
+        progressContainer.classList.remove('hidden');
+    }
     
-    fetch('/upload', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => {
-        progressBar.style.width = '100%';
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (let i = 0; i < filesToUpload.length; i++) {
+        const file = filesToUpload[i];
+        const progress = Math.round(((i + 1) / filesToUpload.length) * 100);
         
-        if (!response.ok) {
-            throw new Error('上传失败');
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`;
         }
-        return response.json();
-    })
-    .then(data => {
-        showAlert(`文件 ${data.filename} 上传成功`, 'success');
-        loadFileList();
         
-        // 重置表单
-        document.getElementById('upload-form').reset();
-        
-        setTimeout(() => {
+        try {
+            await uploadSingleFile(file);
+            successCount++;
+        } catch (error) {
+            console.error(`上传文件 ${file.name} 失败:`, error);
+            failCount++;
+        }
+    }
+    
+    // 完成后隐藏进度条
+    setTimeout(() => {
+        if (progressContainer) {
             progressContainer.classList.add('hidden');
+        }
+        if (progressBar) {
             progressBar.style.width = '0%';
-        }, 1000);
-    })
-    .catch(error => {
-        console.error('Error uploading file:', error);
-        showAlert('上传文件失败', 'danger');
-        progressContainer.classList.add('hidden');
+        }
+    }, 1000);
+    
+    // 显示结果
+    if (failCount === 0) {
+        showAlert(`成功上传 ${successCount} 个文件`, 'success');
+    } else {
+        showAlert(`上传完成: ${successCount} 个成功, ${failCount} 个失败`, failCount > 0 ? 'warning' : 'success');
+    }
+    
+    // 重置文件输入框
+    const fileInput = document.getElementById('file-input');
+    const selectedFileDiv = document.getElementById('selected-file');
+    
+    if (fileInput) {
+        fileInput.value = '';
+    }
+    if (selectedFileDiv) {
+        selectedFileDiv.style.display = 'none';
+    }
+    
+    // 刷新文件列表
+    loadFileList();
+}
+
+// 上传单个文件
+function uploadSingleFile(file) {
+    return new Promise((resolve, reject) => {
+        console.log('开始上传单个文件:', file.name);
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/upload', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('上传失败，服务器返回错误状态: ' + response.status);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('上传成功:', data);
+            resolve(data);
+        })
+        .catch(error => {
+            console.error('上传文件失败:', error);
+            reject(error);
+        });
     });
 }
 
