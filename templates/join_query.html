@@ -245,7 +245,12 @@
         <form id="daily-averages-form">
           <div class="form-group">
             <label for="data-type-keyword">数据类型关键字:</label>
-            <input type="text" id="data-type-keyword" value="日前节点电价" placeholder="例如: 日前节点电价">
+            <input
+              type="text"
+              id="data-type-keyword"
+              value="日前节点电价"
+              placeholder="例如: 日前节点电价"
+            />
           </div>
 
           <div class="form-group">
@@ -258,9 +263,26 @@
                 <option value="">选择月份</option>
               </select>
             </div>
-            <div id="date-checkboxes" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-top: 10px;">
+            <div
+              id="date-checkboxes"
+              style="
+                max-height: 300px;
+                overflow-y: auto;
+                border: 1px solid #ddd;
+                padding: 10px;
+                margin-top: 10px;
+              "
+            >
               <!-- 日期复选框将在这里动态生成 -->
-              <div id="no-dates-message" style="text-align: center; color: #666; padding: 20px; display: none;">
+              <div
+                id="no-dates-message"
+                style="
+                  text-align: center;
+                  color: #666;
+                  padding: 20px;
+                  display: none;
+                "
+              >
                 暂无可用日期数据
               </div>
             </div>
@@ -288,7 +310,7 @@
 
     <footer>
       <div class="container">
-        <p>Excel2SQL - 数据导入工具 &copy; 2023</p>
+        <p>Excel2SQL - 数据导入工具 &copy; 2025</p>
       </div>
     </footer>
 
@@ -299,22 +321,24 @@
       let selectedTables = [];
 
       // 页面加载完成后初始化
-      document.addEventListener('DOMContentLoaded', function() {
+      document.addEventListener("DOMContentLoaded", function () {
         loadTableList();
-        document.getElementById('daily-averages-form').addEventListener('submit', executeDailyAveragesQuery);
+        document
+          .getElementById("daily-averages-form")
+          .addEventListener("submit", executeDailyAveragesQuery);
       });
 
       // 加载表列表
       function loadTableList() {
-        fetch('/tables')
-          .then(response => response.json())
-          .then(data => {
+        fetch("/tables")
+          .then((response) => response.json())
+          .then((data) => {
             // 为多天均值查询准备日期选项
             populateDateOptions(data.tables);
             populateYearMonthOptions();
           })
-          .catch(error => {
-            showAlert('加载表列表失败: ' + error.message, 'error');
+          .catch((error) => {
+            showAlert("加载表列表失败: " + error.message, "error");
           });
       }
 
@@ -322,7 +346,7 @@
       function populateDateOptions(tables) {
         // 从表名中提取日期信息
         const dates = [];
-        tables.forEach(table => {
+        tables.forEach((table) => {
           // 匹配 power_data_YYYYMMDD 格式的表名
           const match = table.match(/^power_data_(\d{8})$/);
           if (match) {
@@ -335,11 +359,11 @@
               date: `${year}-${month}-${day}`,
               year: year,
               month: month,
-              day: day
+              day: day,
             });
           }
         });
-        
+
         // 保存日期信息供后续使用
         window.availableDates = dates;
       }
@@ -347,40 +371,44 @@
       // 添加年份和月份选项
       function populateYearMonthOptions() {
         if (!window.availableDates) return;
-        
-        const years = [...new Set(window.availableDates.map(d => d.year))].sort((a, b) => b - a);
-        const months = [...new Set(window.availableDates.map(d => d.month))].sort();
-        
-        const yearSelect = document.getElementById('year-select');
-        const monthSelect = document.getElementById('month-select');
-        
+
+        const years = [
+          ...new Set(window.availableDates.map((d) => d.year)),
+        ].sort((a, b) => b - a);
+        const months = [
+          ...new Set(window.availableDates.map((d) => d.month)),
+        ].sort();
+
+        const yearSelect = document.getElementById("year-select");
+        const monthSelect = document.getElementById("month-select");
+
         // 保存当前选择
         const currentYear = yearSelect.value;
         const currentMonth = monthSelect.value;
-        
+
         // 填充年份选项
         yearSelect.innerHTML = '<option value="">选择年份</option>';
-        years.forEach(year => {
-          const option = document.createElement('option');
+        years.forEach((year) => {
+          const option = document.createElement("option");
           option.value = year;
           option.textContent = year;
           yearSelect.appendChild(option);
         });
-        
+
         // 恢复当前选择
         if (currentYear) {
           yearSelect.value = currentYear;
         }
-        
+
         // 填充月份选项
         monthSelect.innerHTML = '<option value="">选择月份</option>';
-        months.forEach(month => {
-          const option = document.createElement('option');
+        months.forEach((month) => {
+          const option = document.createElement("option");
           option.value = month;
           option.textContent = month;
           monthSelect.appendChild(option);
         });
-        
+
         // 恢复当前选择
         if (currentMonth) {
           monthSelect.value = currentMonth;
@@ -389,40 +417,42 @@
 
       // 根据选择的年份和月份更新日期选项
       function updateDateOptions() {
-        const yearSelect = document.getElementById('year-select');
-        const monthSelect = document.getElementById('month-select');
+        const yearSelect = document.getElementById("year-select");
+        const monthSelect = document.getElementById("month-select");
         const year = yearSelect.value;
         const month = monthSelect.value;
-        
-        const dateCheckboxes = document.getElementById('date-checkboxes');
-        const noDatesMessage = document.getElementById('no-dates-message');
-        
+
+        const dateCheckboxes = document.getElementById("date-checkboxes");
+        const noDatesMessage = document.getElementById("no-dates-message");
+
         // 清空现有内容
-        dateCheckboxes.innerHTML = '';
-        
+        dateCheckboxes.innerHTML = "";
+
         if (!year || !month || !window.availableDates) {
           // 显示无数据提示
-          noDatesMessage.style.display = 'block';
+          noDatesMessage.style.display = "block";
           dateCheckboxes.appendChild(noDatesMessage);
           return;
         }
-        
+
         // 筛选匹配的日期
-        const filteredDates = window.availableDates.filter(d => d.year === year && d.month === month);
-        
+        const filteredDates = window.availableDates.filter(
+          (d) => d.year === year && d.month === month
+        );
+
         if (filteredDates.length === 0) {
           // 显示无数据提示
-          noDatesMessage.style.display = 'block';
+          noDatesMessage.style.display = "block";
           dateCheckboxes.appendChild(noDatesMessage);
           return;
         }
-        
+
         // 隐藏无数据提示
-        noDatesMessage.style.display = 'none';
-        
+        noDatesMessage.style.display = "none";
+
         // 创建全选行
-        const selectAllDiv = document.createElement('div');
-        selectAllDiv.className = 'select-all-row';
+        const selectAllDiv = document.createElement("div");
+        selectAllDiv.className = "select-all-row";
         selectAllDiv.innerHTML = `
           <label class="select-all-label">
             <input type="checkbox" id="select-all-checkbox" onchange="toggleAllDates(this.checked)">
@@ -430,18 +460,18 @@
           </label>
         `;
         dateCheckboxes.appendChild(selectAllDiv);
-        
+
         // 按日期排序
         filteredDates.sort((a, b) => a.date.localeCompare(b.date));
-        
+
         // 创建复选框容器
-        const checkboxesContainer = document.createElement('div');
-        checkboxesContainer.className = 'checkboxes-container';
-        
+        const checkboxesContainer = document.createElement("div");
+        checkboxesContainer.className = "checkboxes-container";
+
         // 创建复选框
-        filteredDates.forEach(dateInfo => {
-          const div = document.createElement('div');
-          div.className = 'date-option';
+        filteredDates.forEach((dateInfo) => {
+          const div = document.createElement("div");
+          div.className = "date-option";
           div.innerHTML = `
             <label>
               <input type="checkbox" name="selected-dates" value="${dateInfo.date}">
@@ -450,17 +480,19 @@
           `;
           checkboxesContainer.appendChild(div);
         });
-        
+
         dateCheckboxes.appendChild(checkboxesContainer);
-        
+
         // 重新添加无数据提示（隐藏状态）
         dateCheckboxes.appendChild(noDatesMessage);
       }
 
       // 全选/取消全选日期
       function toggleAllDates(checked) {
-        const checkboxes = document.querySelectorAll('input[name="selected-dates"]');
-        checkboxes.forEach(checkbox => {
+        const checkboxes = document.querySelectorAll(
+          'input[name="selected-dates"]'
+        );
+        checkboxes.forEach((checkbox) => {
           checkbox.checked = checked;
         });
       }
@@ -528,7 +560,8 @@
         if (!queryResult || queryResult.length === 0) {
           document.getElementById("result-info").textContent = "总共 0 条记录";
           document.getElementById("result-header").innerHTML = "";
-          document.getElementById("result-body").innerHTML = '<tr><td colspan="100%">无数据</td></tr>';
+          document.getElementById("result-body").innerHTML =
+            '<tr><td colspan="100%">无数据</td></tr>';
           document.getElementById("pagination").innerHTML = "";
           return;
         }
@@ -583,21 +616,34 @@
             const value = row[key];
 
             // 特殊处理 record_time 字段
-            if (key === "record_time" && value !== null && value !== undefined && value !== "") {
+            if (
+              key === "record_time" &&
+              value !== null &&
+              value !== undefined &&
+              value !== ""
+            ) {
               // 处理 timedelta 对象 (如: datetime.timedelta(seconds=3600))
               if (typeof value === "object" && value.seconds !== undefined) {
                 const hours = Math.floor(value.seconds / 3600);
                 const minutes = Math.floor((value.seconds % 3600) / 60);
-                td.textContent = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+                td.textContent = `${String(hours).padStart(2, "0")}:${String(
+                  minutes
+                ).padStart(2, "0")}`;
               }
               // 处理秒数格式 (如: 43200)
               else if (typeof value === "number") {
                 const hours = Math.floor(value / 3600);
                 const minutes = Math.floor((value % 3600) / 60);
-                td.textContent = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+                td.textContent = `${String(hours).padStart(2, "0")}:${String(
+                  minutes
+                ).padStart(2, "0")}`;
               }
               // 处理数值格式时间 (如: 900 表示 09:00)
-              else if (typeof value === "string" && !isNaN(parseInt(value)) && parseInt(value) < 2400) {
+              else if (
+                typeof value === "string" &&
+                !isNaN(parseInt(value)) &&
+                parseInt(value) < 2400
+              ) {
                 const numValue = parseInt(value);
                 const strValue = String(numValue).padStart(4, "0");
                 const hour = strValue.substring(0, 2);
@@ -609,7 +655,9 @@
                 const numValue = parseInt(value);
                 const hours = Math.floor(numValue / 3600);
                 const minutes = Math.floor((numValue % 3600) / 60);
-                td.textContent = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+                td.textContent = `${String(hours).padStart(2, "0")}:${String(
+                  minutes
+                ).padStart(2, "0")}`;
               }
               // 其他情况保持原样
               else {
@@ -695,16 +743,16 @@
       // 显示提示信息
       function showAlert(message, type) {
         // 移除现有的alert
-        const existingAlert = document.querySelector('.alert');
+        const existingAlert = document.querySelector(".alert");
         if (existingAlert) {
           existingAlert.remove();
         }
 
-        const alert = document.createElement('div');
+        const alert = document.createElement("div");
         alert.className = `alert alert-${type}`;
         alert.textContent = message;
 
-        const form = document.getElementById('daily-averages-form');
+        const form = document.getElementById("daily-averages-form");
         form.parentNode.insertBefore(alert, form.nextSibling);
 
         // 3秒后自动移除
