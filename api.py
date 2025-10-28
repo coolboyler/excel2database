@@ -113,13 +113,20 @@ async def import_file(filename: str = Form(...)):
     
     # import_custom_excel 返回两个结果元组，其他方法返回单个四元组
     if method == importer.import_custom_excel:
-        # 解包两个结果元组
+        # 解包三个结果元组
         (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2),(success3,table_name3,record_count3,preview_data3) = result
-        # 合并结果，这里我们使用两个结果的组合
+        # 合并结果，这里我们使用三个结果的组合
         success = success1 and success2 and success3
         table_name = f"{table_name1}, {table_name2}, {table_name3}"
         record_count = record_count1 + record_count2 + record_count3
         preview_data = preview_data1 + preview_data2 + preview_data3
+    elif method == importer.import_custom_excel_pred:
+        (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2), (success4, table_name4, record_count4, preview_data4), (success5, table_nam5, record_count5, preview_data5) = result
+        # 合并结果，这里我们使用三个结果的组合
+        success = success1 and success2 and success4 and success5
+        table_name = f"{table_name1}, {table_name2}, {table_name4}, {table_nam5}"
+        record_count = record_count1 + record_count2 + record_count4 + record_count5 
+        preview_data = preview_data1 + preview_data2 + preview_data4 + preview_data5 
     else:
         # 其他导入方法的常规处理
         success, table_name, record_count, preview_data = result
@@ -646,4 +653,4 @@ async def query_daily_averages(
     return result
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=True)

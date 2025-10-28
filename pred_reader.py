@@ -229,12 +229,12 @@ class PowerDataImporter:
                     conn.execute(insert_stmt, batch)
                     print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
 
-                count_stmt = text(f"SELECT COUNT(*) FROM {table_name}")
-                count = conn.execute(count_stmt).scalar()
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
+                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
                 
                 # 获取前5行数据预览
-                preview_stmt = text(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT 5")
-                result = conn.execute(preview_stmt)
+                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date ORDER BY id DESC LIMIT 5")
+                result = conn.execute(preview_stmt, {"record_date": data_date})
                 # 修复：正确处理SQLAlchemy行对象
                 preview_data = []
                 for row in result:
@@ -321,24 +321,109 @@ class PowerDataImporter:
                     batch = valid_records[i:i + batch_size]
                     conn.execute(insert_stmt, batch)
                     print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
+                # 获取插入的数据总量
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
+                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
 
+                print(f"✅ {table_name} 数据库保存成功: {count} 条记录")
+                return True, table_name, count, []
+        
+        except Exception as e:
+            print(f"❌ 数据库保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []    
+
+  
+    def save_to_ynjichu_database(self, records, data_date):
+        """保存停电数据到固定表 power_ynjichu"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return True, None, 0, []
+
+        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 🧩 2. 过滤无效记录
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            # 添加 record_date 字段
+            r["record_date"] = data_date
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return True, None, 0, []
+
+        # --- 使用固定表名 ---
+        table_name = "power_jizujichu"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # --- 创建表（如果不存在）---
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS `power_ynjichu` (
+                `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键，唯一标识一条记录',
+                `record_date` date NOT NULL COMMENT '记录日期',
+                `unit_group_name` varchar(200) DEFAULT NULL COMMENT '机组群名（允许为空）',
+                `power_plant_id` varchar(50) DEFAULT NULL COMMENT '电厂ID（允许为空）',
+                `power_plant_name` varchar(200) DEFAULT NULL COMMENT '电厂名称（允许为空）',
+                `unit_id` varchar(50) DEFAULT NULL COMMENT '机组ID（允许为空）',
+                `unit_name` varchar(200) DEFAULT NULL COMMENT '机组名称（允许为空）',
+                `proportion` decimal(10,4) DEFAULT NULL COMMENT '所占比例（允许为空，如0.35表示35%）',
+                `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名（允许为空）',
+                `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录入库时间（自动生成）',
+                `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间（自动更新）',
+                PRIMARY KEY (`id`),
+                KEY `idx_unit_group` (`unit_group_name`) COMMENT '机组群名索引'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='机组群-机组分配比例记录表（所有字段允许为空）';
+                """
+                conn.execute(text(create_table_sql))
+                print(f"✅ 表 {table_name} 已存在或创建成功")
+
+                # 删除该日期的旧数据
+                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :record_date"), 
+                             {"record_date": data_date})
+                print(f"🗑️ 已删除 {data_date} 的旧数据")
+
+                # --- 批量插入 ---
+                insert_stmt = text(f"""
+                INSERT IGNORE INTO {table_name} 
+                (record_date, unit_group_name, power_plant_id, power_plant_name, unit_id, unit_name, proportion, sheet_name)
+                VALUES 
+                (:record_date, :unit_group_name, :power_plant_id, :power_plant_name, :unit_id, :unit_name, :proportion, :sheet_name)
+                """)
+                
+                # 批量插入数据
+                batch_size = 200
+                for i in range(0, len(valid_records), batch_size):
+                    batch = valid_records[i:i + batch_size]
+                    conn.execute(insert_stmt, batch)
+                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
+
+                # 获取插入的数据总量
                 count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
                 count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
                 
-                # 获取前5行数据预览
-                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date ORDER BY id DESC LIMIT 5")
-                result = conn.execute(preview_stmt, {"record_date": data_date})
-                # 修复：正确处理SQLAlchemy行对象
-                preview_data = []
-                for row in result:
-                    # 将行对象转换为字典
-                    preview_data.append(dict(zip(result.keys(), row)))
-                
-                print(f"✅ 数据库保存成功: {count} 条记录")
-                return True, table_name, count, preview_data
+                # 获取预览数据
+                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date LIMIT 5")
+                preview_result = conn.execute(preview_stmt, {"record_date": data_date})
+                for row in preview_result:
+                    preview_data.append(dict(row._mapping))
+
+                print(f"✅ {table_name} 数据库保存成功: {count} 条记录")
+                return True, table_name, count, []
 
         except Exception as e:
-            print(f"❌ 数据库保存失败: {e}")
+            print(f"❌ {table_name} 数据库保存失败: {e}")
             import traceback
             traceback.print_exc()
             return False, None, 0, []
@@ -435,7 +520,7 @@ class PowerDataImporter:
                     preview_data.append(dict(zip(result.keys(), row)))
                 
                 print(f"✅ 数据库保存成功: {count} 条记录")
-                return True, table_name, count, preview_data
+                return True, table_name, count, []
 
         except Exception as e:
             print(f"❌ 数据库保存失败: {e}")
@@ -607,6 +692,158 @@ class PowerDataImporter:
                 records.append(record)
         return records
     
+    def _process_3_as_channel(self, df, data_date, sheet_name):
+        """
+        处理设备电压等级信息sheet，提取设备电压等级数据
+        """
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据（所有行都是空行）")
+            return records  # 返回空列表，避免后续报错
+
+        # 确保列名正确
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 检查必要的列是否存在
+        required_columns = ["序号", "日期", "设备名称", "电压等级(kV)"]
+        if not all(col in df.columns for col in required_columns):
+            print(f"⚠️  sheet '{sheet_name}' 缺少必要的列: {required_columns}")
+            return records
+
+        # 遍历每一行数据
+        for _, row in df.iterrows():
+            # 跳过空行
+            if pd.isna(row["序号"]) and pd.isna(row["日期"]) and pd.isna(row["设备名称"]):
+                continue
+                
+            # 处理序号字段
+            def convert_serial_number(value):
+                if pd.isna(value):
+                    return None
+                try:
+                    return int(value)
+                except:
+                    return None
+
+            record = {
+                "serial_number": convert_serial_number(row["序号"]),
+                "record_date": data_date,  # 使用统一的日期
+                "device_name": str(row["设备名称"]) if not pd.isna(row["设备名称"]) else None,
+                "voltage_level": str(row["电压等级(kV)"]) if not pd.isna(row["电压等级(kV)"]) else None,
+                "sheet_name": sheet_name
+            }
+            records.append(record)
+            
+        print(f"✅ Sheet '{sheet_name}' 解析完成，共 {len(records)} 条记录")
+        return records
+
+    def _process_4_as_channel(self, df, data_date, sheet_name):
+        """
+        处理机组基础信息sheet，提取机组群、电厂和机组信息
+        """
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据（所有行都是空行）")
+            return records  # 返回空列表，避免后续报错
+
+        # 确保列名正确
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 检查必要的列是否存在
+        required_columns = ["机组群名", "电厂ID", "电厂名称", "机组ID", "机组名称", "所占比例"]
+        if not all(col in df.columns for col in required_columns):
+            print(f"⚠️  sheet '{sheet_name}' 缺少必要的列: {required_columns}")
+            return records
+
+        # 遍历每一行数据
+        for _, row in df.iterrows():
+            # 跳过空行
+            if pd.isna(row["机组群名"]) and pd.isna(row["电厂ID"]) and pd.isna(row["机组ID"]):
+                continue
+                
+            record = {
+                "record_date": data_date,
+                "unit_group_name": str(row["机组群名"]) if not pd.isna(row["机组群名"]) else None,
+                "power_plant_id": str(row["电厂ID"]) if not pd.isna(row["电厂ID"]) else None,
+                "power_plant_name": str(row["电厂名称"]) if not pd.isna(row["电厂名称"]) else None,
+                "unit_id": str(row["机组ID"]) if not pd.isna(row["机组ID"]) else None,
+                "unit_name": str(row["机组名称"]) if not pd.isna(row["机组名称"]) else None,
+                "proportion": float(row["所占比例"]) if not pd.isna(row["所占比例"]) else None,
+                "sheet_name": sheet_name
+            }
+            records.append(record)
+            
+        print(f"✅ Sheet '{sheet_name}' 解析完成，共 {len(records)} 条记录")
+        return records
+
+    def _process_5_channel(self, df, data_date, sheet_name):
+        """
+        处理机组约束信息sheet，提取机组群约束配置
+        """
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据（所有行都是空行）")
+            return records  # 返回空列表，避免后续报错
+
+        # 确保列名正确
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 检查必要的列是否存在
+        required_columns = ["机组群名", "生效时间", "失效时间", "电力约束", "电量约束", "最大运行方式约束", "最小运行方式约束", "最大电量", "最小电量"]
+        if not all(col in df.columns for col in required_columns):
+            print(f"⚠️  sheet '{sheet_name}' 缺少必要的列: {required_columns}")
+            return records
+
+        # 遍历每一行数据
+        for _, row in df.iterrows():
+            # 跳过空行
+            if pd.isna(row["机组群名"]) and pd.isna(row["生效时间"]) and pd.isna(row["失效时间"]):
+                continue
+                
+            # 处理约束字段，将"是"/"否"转换为1/0
+            def convert_constraint(value):
+                if pd.isna(value):
+                    return None
+                if str(value).strip() == "是":
+                    return 1
+                elif str(value).strip() == "否":
+                    return 0
+                else:
+                    return None
+                    
+            # 处理数值字段
+            def convert_numeric(value):
+                if pd.isna(value):
+                    return None
+                try:
+                    return float(value)
+                except:
+                    return None
+
+            record = {
+                "record_date": data_date,
+                "unit_group_name": str(row["机组群名"]) if not pd.isna(row["机组群名"]) else None,
+                "effective_time": str(row["生效时间"]) if not pd.isna(row["生效时间"]) else None,
+                "expire_time": str(row["失效时间"]) if not pd.isna(row["失效时间"]) else None,
+                "power_constraint": convert_constraint(row["电力约束"]),
+                "electricity_constraint": convert_constraint(row["电量约束"]),
+                "max_operation_constraint": convert_constraint(row["最大运行方式约束"]),
+                "min_operation_constraint": convert_constraint(row["最小运行方式约束"]),
+                "max_electricity": convert_numeric(row["最大电量"]),
+                "min_electricity": convert_numeric(row["最小电量"]),
+                "sheet_name": sheet_name
+            }
+            records.append(record)
+            
+        print(f"✅ Sheet '{sheet_name}' 解析完成，共 {len(records)} 条记录")
+        return records
+
     def _process_5_as_channel(self, df, data_date, sheet_name, data_type):
         """将时刻列名映射为channel_name"""
         records = []
@@ -718,9 +955,16 @@ class PowerDataImporter:
             print(f"📘 检测到 {len(sheet_names)} 个Sheet: {sheet_names}")
 
             # 要处理的sheet编号（1-based）
-            target_indexes = [0, 1, 2, 6,-4,-3, -2, -1]  # 对应第1,2,4,5,6个sheet
+            target_indexes = [0, 1, 2,3,4, 5,6,7,-5,-4,-3, -2, -1]  # 对应第1,2,4,5,6个sheet
 
             all_records = []
+            jichu_records = []
+            yueshu_records = []
+            ynjichu_records = []
+            jizujichu_records = []
+            jizuyueshu_records = []
+            ynyueshu_records = []
+            shubiandian_records = []
 
             for i in target_indexes:
                 if i >= len(sheet_names):
@@ -749,12 +993,22 @@ class PowerDataImporter:
                     records = self._process_1_channel(df, data_date, sheet_name, data_type)
                 elif i in [2]:  # 第3个sheet：时刻→channel_name
                     records = self._process_type_date_value(df, data_date, sheet_name, data_type)
+                elif i in [3]: 
+                    shubiandian_records = self._process_3_as_channel(df, data_date, sheet_name)
+                elif i in [4]:  # 第4个sheet：第一行→channel_name
+                    jizujichu_records = self._process_4_as_channel(df, data_date, sheet_name)
+                elif i in [5]:  # 第5个sheet：时刻→channel_name
+                    jizuyueshu_records = self._process_5_channel(df, data_date, sheet_name)
+                elif i in [-5]:  # 第6个sheet：时刻→channel_name
+                    ynyueshu_records = self._process_5_channel(df, single_data_date, sheet_name)
                 elif i in [-3]:  # 第4,5个sheet：时刻→channel_name
                     records = self._process_3_channel(df, data_date, sheet_name, data_type)
                 elif i in [-2, -1]:  # 第7,8个sheet：第一行→channel_name
                     records = self._process_2_channel(df, data_date, sheet_name, data_type)
                 elif i in [-4,6]:  # 第9个sheet
                     records = self._process_5_as_channel(df, single_data_date, sheet_name, data_type)
+                elif i in [7]:
+                    ynjichu_records = self._process_4_as_channel(df, single_data_date, sheet_name)
                 
                 else:
                     print(f"⚠️ 第{i+1}个sheet未定义处理规则，跳过")
@@ -762,13 +1016,27 @@ class PowerDataImporter:
 
                 print(f"✅ Sheet{i+1} 处理完成，共 {len(records)} 条记录")
                 all_records.extend(records)
-
+               
+               
+            jichu_records.extend(ynjichu_records)
+            jichu_records.extend(jizujichu_records)
+            yueshu_records.extend(jizuyueshu_records)
+            yueshu_records.extend(ynyueshu_records)
+                
             if not all_records:
                 print("❌ 没有生成任何有效记录")
                 return False
+           
+            success1, table_name1, count1, preview_data1 = self.save_to_database(all_records, data_date)
+            success2, table_name2, count2, preview_data2 = self.save_to_jizujichu_database(jichu_records, data_date)
+            success4, table_name4, count4, preview_data4 = self.save_to_jizuyueshu_database(yueshu_records, data_date)
+            success5, table_name5, count5, preview_data5 = self.save_to_shubiandian_database(shubiandian_records, data_date)
 
-            return self.save_to_database(all_records, data_date)
-        
+            # 返回两个操作的结果
+            return (success1, table_name1, count1, preview_data1), (success2, table_name2, count2, preview_data2), (success4, table_name4, count4, preview_data4), (success5, table_name5, count5, preview_data5)
+
+            # return self.save_to_database(all_records, data_date)
+    
     def _process_1_channel(self, df, data_date, sheet_name, data_type):
         """
         多指标时刻型sheet处理：
@@ -1323,3 +1591,322 @@ class PowerDataImporter:
             records.append(record)
         
         return records
+    
+    def _process_7_channel(self, df, data_date, sheet_name):
+        """将表格数据映射为机组群比例记录，适配所有字段可空的表结构"""
+        records = []
+        df = df.dropna(how="all")  # 删除全空行
+        # 清洗列名：去除空格、换行符，确保与表字段匹配
+        df.columns = [str(col).strip().replace('\n', '').replace(' ', '') for col in df.columns]
+        
+        # 空DataFrame校验
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据（所有行都是空行）")
+            return records 
+        
+        # 遍历每一行数据（适配“机组群名~所占比例”表字段）
+        for idx, row in df.iterrows():
+            # 构建记录字典：对应表中8个业务字段，所有字段允许为空
+            record = {
+                "record_date": data_date,  # 外部传入的日期（如数据所属日期）
+                "sheet_name": sheet_name,  # 数据来源表名
+                "unit_group_name": str(row.get("机组群名", "")).strip() or None,  # 机组群名（空字符串转None）
+                "power_plant_id": str(row.get("电厂ID", "")).strip() or None,    # 电厂ID
+                "power_plant_name": str(row.get("电厂名称", "")).strip() or None,  # 电厂名称
+                "unit_id": str(row.get("机组ID", "")).strip() or None,            # 机组ID
+                "unit_name": str(row.get("机组名称", "")).strip() or None,          # 机组名称
+                "proportion": row.get("所占比例"),                                 # 所占比例（数值型）
+                "record_time": str(row.get("记录时间", "")).strip() or None         # 记录时间（原始格式，如20250918_15:45:00）
+            }
+            
+            # 数值字段转换：仅处理“所占比例”，空值或非数值直接设为None（不强制校验）
+            try:
+                if record["proportion"] is not None and str(record["proportion"]).strip():
+                    record["proportion"] = float(record["proportion"])
+                else:
+                    record["proportion"] = None
+            except ValueError as e:
+                print(f"行{idx}：'所占比例'字段非有效数值，设为None，错误：{e}")
+                record["proportion"] = None
+            
+            # 无强制关键字段校验（所有字段可空），直接添加记录
+            records.append(record)
+        
+        return records
+    
+    def save_to_shubiandian_database(self, records, data_date):
+        """保存设备电压等级数据到固定表 device_voltage_level"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return False, None, 0, []
+
+        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 🧩 2. 过滤无效记录并适配表字段
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            # 添加 record_date 字段
+            r["record_date"] = data_date
+            valid_records.append(r)
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+
+
+        # --- 使用设备电压等级表的固定表名 ---
+        table_name = "power_shubiandian"
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # --- 创建表（如果不存在），严格匹配设备电压等级表结构 ---
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS `{table_name}` (
+                    `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键，唯一标识一条设备电压记录',
+                    `record_date` date DEFAULT NULL COMMENT '日期（如2025-09-18）',
+                    `device_name` varchar(300) DEFAULT NULL COMMENT '设备名称（如“110kV白沙粤溪光伏电站...开关位置”）',
+                    `voltage_level` varchar(50) DEFAULT NULL COMMENT '电压等级(kV)（如“37kV”“115kV”）',
+                    `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名（如“设备电压等级表20250918”）',
+                    `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录入库时间',
+                    `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+                    PRIMARY KEY (`id`),
+                    KEY `idx_device_name` (`device_name`) COMMENT '设备名称索引',
+                    KEY `idx_record_date` (`record_date`) COMMENT '日期索引',
+                    KEY `idx_sheet_name` (`sheet_name`) COMMENT '数据来源索引'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                """
+                conn.execute(text(create_table_sql))
+
+                # --- 插入数据，字段与表结构严格对应 ---
+                insert_sql = text(f"""
+                INSERT INTO `{table_name}` (
+                    `record_date`,
+                    `device_name`,
+                    `voltage_level`,
+                    `sheet_name`
+                ) VALUES (
+                    :record_date,
+                    :device_name,
+                    :voltage_level,
+                    :sheet_name
+                )
+                """)
+                conn.execute(insert_sql, valid_records)
+
+                # --- 获取插入结果（预览前10条）---
+                preview_sql = text(f"""
+                SELECT * FROM `{table_name}`
+                WHERE `record_date` = :record_date
+                ORDER BY `record_date`
+                LIMIT 10;
+                """)
+                # preview_data = conn.execute(preview_sql, {"record_date": data_date}).fetchall()
+
+            return True, table_name, len(valid_records), []
+
+        except Exception as e:
+            print(f"保存数据时出错：{e}")
+            return False, None, 0, []
+
+    def save_to_jizuyueshu_database(self, records, data_date):
+        """保存机组约束数据到固定表 unit_group_constraint"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return True, None, 0, []
+
+        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 🧩 2. 过滤无效记录
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            # 添加 record_date 字段
+            r["record_date"] = data_date
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return False, None, 0, []
+
+        # --- 使用固定表名 ---
+        table_name = "power_yueshu"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # --- 创建表（如果不存在）---
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS `{table_name}` (
+                  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键，唯一标识一条约束记录',
+                  `unit_group_name` varchar(200) DEFAULT NULL COMMENT '机组群名（如"东方站短路电流控制""中珠片必开机组群1"）',
+                  `effective_time` datetime DEFAULT NULL COMMENT '生效时间（如2025-07-10 00:00:00，约束开始生效的时间）',
+                  `expire_time` datetime DEFAULT NULL COMMENT '失效时间（如2038-01-19 11:14:07，约束失效的时间，默认长期有效）',
+                  `power_constraint` tinyint(1) DEFAULT NULL COMMENT '电力约束（1=是，0=否，对应数据中的"是/否"）',
+                  `electricity_constraint` tinyint(1) DEFAULT NULL COMMENT '电量约束（1=是，0=否，对应数据中的"是/否"）',
+                  `max_operation_constraint` tinyint(1) DEFAULT NULL COMMENT '最大运行方式约束（1=是，0=否，对应数据中的"是/否"）',
+                  `min_operation_constraint` tinyint(1) DEFAULT NULL COMMENT '最小运行方式约束（1=是，0=否，对应数据中的"是/否"）',
+                  `max_electricity` decimal(18,2) DEFAULT NULL COMMENT '最大电量（数据中为0，支持小数，单位根据业务定义如MWh）',
+                  `min_electricity` decimal(18,2) DEFAULT NULL COMMENT '最小电量（数据中为0，支持小数，单位同最大电量）',
+                  `record_date` date DEFAULT NULL COMMENT '数据所属日期（如2025-09-18，统一标识该批数据的时间维度）',
+                  `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名（如"机组群约束配置表202509"，用于数据溯源）',
+                  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录入库时间（自动生成，无需手动插入）',
+                  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间（自动更新，无需维护）',
+                  PRIMARY KEY (`id`),
+                  KEY `idx_unit_group` (`unit_group_name`) COMMENT '机组群名索引，优化"按机组群查询约束"场景',
+                  KEY `idx_effective_time` (`effective_time`, `expire_time`) COMMENT '生效-失效时间联合索引，优化"查询当前有效约束"场景',
+                  KEY `idx_record_date` (`record_date`) COMMENT '数据日期索引，优化"按日期筛选批次数据"场景'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='机组群约束配置表（存储机组群的电力/电量/运行方式约束配置）';
+                """
+                conn.execute(text(create_table_sql))
+                print(f"✅ 表 {table_name} 已存在或创建成功")
+
+                # 删除该日期的旧数据
+                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :record_date"), 
+                             {"record_date": data_date})
+                print(f"🗑️ 已删除 {data_date} 的旧数据")
+
+                # --- 批量插入 ---
+                insert_stmt = text(f"""
+                INSERT IGNORE INTO {table_name} 
+                (unit_group_name, effective_time, expire_time, power_constraint, electricity_constraint, 
+                 max_operation_constraint, min_operation_constraint, max_electricity, min_electricity, 
+                 record_date, sheet_name)
+                VALUES 
+                (:unit_group_name, :effective_time, :expire_time, :power_constraint, :electricity_constraint, 
+                 :max_operation_constraint, :min_operation_constraint, :max_electricity, :min_electricity, 
+                 :record_date, :sheet_name)
+                """)
+                
+                # 批量插入数据
+                batch_size = 200
+                for i in range(0, len(valid_records), batch_size):
+                    batch = valid_records[i:i + batch_size]
+                    conn.execute(insert_stmt, batch)
+                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
+
+                # 获取插入的数据总量
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
+                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
+                
+                # 获取预览数据
+                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date LIMIT 5")
+                preview_result = conn.execute(preview_stmt, {"record_date": data_date})
+                for row in preview_result:
+                    preview_data.append(dict(row._mapping))
+
+                print(f"✅ {table_name} 数据库保存成功: {count} 条记录")
+                return True, table_name, count, []
+        except Exception as e:
+            print(f"❌ {table_name} 数据库保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+
+    def save_to_jizujichu_database(self, records, data_date):
+        """保存机组基础数据到固定表 jizujichu"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return True, None, 0, []
+
+        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
+        if isinstance(records, pd.DataFrame):
+            records = records.to_dict(orient="records")
+
+        if not isinstance(records, list):
+            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            return False, None, 0, []
+
+        # 🧩 2. 过滤无效记录
+        valid_records = []
+        for i, r in enumerate(records):
+            if not isinstance(r, dict):
+                continue
+            # 添加 record_date 字段
+            r["record_date"] = data_date
+            valid_records.append(r)
+
+        if not valid_records:
+            print("❌ 没有可保存的有效记录")
+            return False, None, 0, []
+
+        # --- 使用固定表名 ---
+        table_name = "power_jichu"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # --- 创建表（如果不存在）---
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS `{table_name}` (
+                  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键，唯一标识一条记录',
+                  `unit_group_name` varchar(200) DEFAULT NULL COMMENT '机组群名（如"东方站短路电流控制""中珠片必开机组群1"）',
+                  `power_plant_id` varchar(50) DEFAULT NULL COMMENT '电厂ID（唯一标识，如"0300F15000014""0300F13000059"）',
+                  `power_plant_name` varchar(200) DEFAULT NULL COMMENT '电厂名称（如"沙角C厂""粤海厂"）',
+                  `unit_id` varchar(100) DEFAULT NULL COMMENT '机组ID（唯一标识，如"0300F150000140HNN00FAB001"）',
+                  `unit_name` varchar(100) DEFAULT NULL COMMENT '机组名称（如"C1F发电机""2G"）',
+                  `proportion` decimal(5,2) DEFAULT NULL COMMENT '所占比例（数据中为整数1，支持小数如0.5表示50%，精度保留2位）',
+                  `record_date` date DEFAULT NULL COMMENT '数据所属日期（如2025-09-18，统一标识数据的时间维度）',
+                  `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名（如"东方站机组群比例表20250918"，用于数据溯源）',
+                  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录入库时间（自动生成，无需手动插入）',
+                  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间（自动更新，无需维护）',
+                  PRIMARY KEY (`id`),
+                  KEY `idx_unit_group` (`unit_group_name`) COMMENT '机组群名索引，优化"按机组群查询所有机组"场景',
+                  KEY `idx_power_plant` (`power_plant_id`, `power_plant_name`) COMMENT '电厂ID+名称联合索引，优化"按电厂筛选"场景',
+                  KEY `idx_record_date` (`record_date`) COMMENT '数据日期索引，优化"按日期范围统计"场景'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='机组群-机组分配比例记录表（存储机组群与机组的归属比例关系）';
+                """
+                conn.execute(text(create_table_sql))
+                print(f"✅ 表 {table_name} 已存在或创建成功")
+
+                # 删除该日期的旧数据
+                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :record_date"), 
+                             {"record_date": data_date})
+                print(f"🗑️ 已删除 {data_date} 的旧数据")
+
+                # --- 批量插入 ---
+                insert_stmt = text(f"""
+                INSERT IGNORE INTO {table_name} 
+                (unit_group_name, power_plant_id, power_plant_name, unit_id, unit_name, proportion, record_date, sheet_name)
+                VALUES 
+                (:unit_group_name, :power_plant_id, :power_plant_name, :unit_id, :unit_name, :proportion, :record_date, :sheet_name)
+                """)
+                
+                # 批量插入数据
+                batch_size = 200
+                for i in range(0, len(valid_records), batch_size):
+                    batch = valid_records[i:i + batch_size]
+                    conn.execute(insert_stmt, batch)
+                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
+
+                # 获取插入的数据总量
+                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
+                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
+                
+                # 获取预览数据
+                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date LIMIT 5")
+                preview_result = conn.execute(preview_stmt, {"record_date": data_date})
+                for row in preview_result:
+                    preview_data.append(dict(row._mapping))
+
+                print(f"✅ {table_name} 数据库保存成功: {count} 条记录")
+                return True, table_name, count, []
+
+        except Exception as e:
+            print(f"❌ {table_name} 数据库保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
