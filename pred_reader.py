@@ -333,8 +333,6 @@ class PowerDataImporter:
             import traceback
             traceback.print_exc()
             return False, None, 0, []    
-
-  
     def save_to_ynjichu_database(self, records, data_date):
         """保存停电数据到固定表 power_ynjichu"""
         if not records:

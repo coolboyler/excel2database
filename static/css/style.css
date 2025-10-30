@@ -275,6 +275,13 @@ footer {
     border-radius: 4px;
 }
 
+.data-preview h4 {
+    margin-top: 0;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #ddd;
+}
+
 /* 预览表格样式 */
 .preview-table, .data-table {
     width: 100%;
@@ -282,24 +289,26 @@ footer {
     border-collapse: collapse;
     margin-top: 0;
     font-size: 14px;
-    table-layout: fixed; /* 固定布局以便控制列宽 */
+    table-layout: auto; /* 自动布局以实现内容自适应 */
 }
 
-.preview-table th, .data-table th {
-    background-color: #f0f0f0;
-    padding: 8px 12px;
-    text-align: left;
-    border: 1px solid #ddd;
-    white-space: nowrap;
-    font-weight: 600;
-}
-
+.preview-table th, .data-table th,
 .preview-table td, .data-table td {
-    padding: 6px 12px;
+    padding: 12px 15px;
+    text-align: left;
     border: 1px solid #ddd;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.preview-table th, .data-table th {
+    background-color: #f0f0f0;
+    font-weight: 600;
+}
+
+.preview-table td, .data-table td {
+    max-width: 200px;
 }
 
 .preview-table tr:nth-child(even),
@@ -311,6 +320,28 @@ footer {
 .preview-table tbody tr:hover,
 .data-table tbody tr:hover {
     background-color: #f5f5f5;
+}
+
+/* 表格容器 - 支持更好的滚动体验 */
+.table-container {
+    max-height: 500px;
+    overflow: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-top: 15px;
+}
+
+/* 表格响应式处理 */
+@media (max-width: 768px) {
+    .preview-table th, .data-table th,
+    .preview-table td, .data-table td {
+        padding: 8px 10px;
+        font-size: 13px;
+    }
+    
+    .table-container {
+        max-height: 400px;
+    }
 }
 
 /* 模态框 */

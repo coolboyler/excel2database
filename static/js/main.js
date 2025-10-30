@@ -394,16 +394,16 @@ function importFile(filename) {
             // 创建预览数据表格
             let previewHtml = '';
             if (data && data.preview_data && data.preview_data.length > 0) {
-                previewHtml = '<div class="data-preview"><h4>数据预览</h4><table class="preview-table"><thead><tr>';
+                previewHtml = '<div class="data-preview"><h4>数据预览</h4><div class="table-container"><table class="preview-table"><thead><tr>';
                 
-                // 表头
+                // 表头 - 添加标题提示
                 const headers = Object.keys(data.preview_data[0]);
                 headers.forEach(header => {
-                    previewHtml += `<th>${header}</th>`;
+                    previewHtml += `<th title="${header}">${header}</th>`;
                 });
                 previewHtml += '</tr></thead><tbody>';
                 
-                // 表格数据
+                // 表格数据 - 添加标题提示
                 data.preview_data.forEach(row => {
                     previewHtml += '<tr>';
                     headers.forEach(header => {
@@ -425,11 +425,13 @@ function importFile(filename) {
                             
                             console.log("转换后:", value);
                         }
-                        previewHtml += `<td>${value}</td>`;
+                        // 为单元格添加title属性以便查看完整内容
+                        previewHtml += `<td title="${value}">${value}</td>`;
                     });
                     previewHtml += '</tr>';
                 });
-                previewHtml += '</tbody></table></div>';
+
+                previewHtml += '</tbody></table></div></div>';
             }
             
             // 确保使用正确的数据字段（修复关键问题）
