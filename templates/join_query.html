@@ -228,6 +228,23 @@
         padding: 6px 12px;
         font-size: 14px;
       }
+      
+      .radio-group {
+        display: flex;
+        gap: 20px;
+        margin-top: 5px;
+      }
+      
+      .radio-group label {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        font-weight: normal;
+      }
+      
+      .radio-group input[type="radio"] {
+        margin-right: 8px;
+      }
     </style>
   </head>
   <body>
@@ -242,15 +259,32 @@
 
     <div class="container">
       <div class="card">
-        <form id="daily-averages-form">
+        <h2>多天均值查询</h2>
+        <form
+          id="daily-averages-form"
+          onsubmit="executeDailyAveragesQuery(event)"
+        >
           <div class="form-group">
-            <label for="data-type-keyword">数据类型关键字:</label>
-            <input
-              type="text"
-              id="data-type-keyword"
-              value="日前节点电价"
-              placeholder="例如: 日前节点电价"
-            />
+            <label>数据类型:</label>
+            <div class="radio-group">
+              <label>
+                <input 
+                  type="radio" 
+                  name="data-type" 
+                  value="日前节点电价" 
+                  checked 
+                />
+                日前节点电价
+              </label>
+              <label>
+                <input 
+                  type="radio" 
+                  name="data-type" 
+                  value="实时节点电价" 
+                />
+                实时节点电价
+              </label>
+            </div>
           </div>
 
           <div class="form-group">
@@ -288,16 +322,27 @@
             </div>
           </div>
 
-          <button type="submit" class="btn btn-primary">查询均值</button>
+          <button type="submit" class="btn btn-primary">查询</button>
+          <button
+            type="button"
+            class="btn btn-success"
+            id="export-btn"
+            onclick="exportDailyAveragesData()"
+            style="display: none"
+          >
+            导出Excel
+          </button>
         </form>
       </div>
 
-      <!-- 查询结果 -->
-      <div class="card hidden" id="result-section">
+      <div id="result-section" class="card hidden">
         <h2>查询结果</h2>
-        <div class="query-result-info" id="result-info"></div>
+        <div id="alerts"></div>
+        <div class="result-info">
+          <span id="result-info">总共 0 条记录</span>
+        </div>
         <div class="table-container">
-          <table class="result-table" id="result-table">
+          <table class="result-table">
             <thead>
               <tr id="result-header"></tr>
             </thead>
@@ -315,10 +360,10 @@
     </footer>
 
     <script>
+      // 全局变量存储查询结果
       let queryResult = [];
       let currentPage = 1;
       const itemsPerPage = 20;
-      let selectedTables = [];
 
       // 页面加载完成后初始化
       document.addEventListener("DOMContentLoaded", function () {
@@ -500,55 +545,94 @@
       // 执行多天均值查询
       function executeDailyAveragesQuery(event) {
         event.preventDefault();
+        
+        try {
+          console.log("开始执行多天均值查询...");
 
-        // 收集选中的日期
-        const selectedCheckboxes = document.querySelectorAll(
-          'input[name="selected-dates"]:checked'
-        );
-        const dates = Array.from(selectedCheckboxes).map((cb) => cb.value);
+          // 收集选中的日期
+          const selectedCheckboxes = document.querySelectorAll(
+            'input[name="selected-dates"]:checked'
+          );
+          const dates = Array.from(selectedCheckboxes).map((cb) => cb.value);
+          console.log("选中的日期:", dates);
 
-        if (dates.length === 0) {
-          showAlert("请至少选择一个日期", "warning");
-          return;
+          if (dates.length === 0) {
+            showAlert("请至少选择一个日期", "warning");
+            return;
+          }
+
+          // 获取选中的数据类型
+          const selectedDataTypeElement = document.querySelector('input[name="data-type"]:checked');
+          if (!selectedDataTypeElement) {
+            showAlert("请选择数据类型", "warning");
+            return;
+          }
+          
+          const selectedDataType = selectedDataTypeElement.value;
+          console.log("选中的数据类型:", selectedDataType);
+
+          // 构造参数
+          const formData = new FormData();
+          formData.append("dates", JSON.stringify(dates));
+          formData.append("data_type_keyword", selectedDataType);
+
+          // 发送请求
+          fetch("/daily-averages", {
+            method: "POST",
+            body: formData,
+          })
+            .then((response) => {
+              console.log("收到响应:", response);
+              if (!response.ok) {
+                return response.json().then((err) => {
+                  console.error("服务器返回错误:", err);
+                  throw new Error(err.detail || "查询失败");
+                });
+              }
+              return response.json();
+            })
+            .then((data) => {
+              console.log("收到数据:", data);
+              // 无论是否有数据，都更新页面显示
+              queryResult = data.data || [];
+              displayResults();
+              if (data.total > 0) {
+                showAlert(
+                  "查询成功，共返回 " + data.total + " 条记录",
+                  "success"
+                );
+                // 显示导出按钮
+                const exportBtn = document.getElementById("export-btn");
+                if (exportBtn) {
+                  exportBtn.style.display = "inline-block";
+                }
+              } else {
+                showAlert("查询成功，但没有找到匹配的数据", "warning");
+                // 隐藏导出按钮
+                const exportBtn = document.getElementById("export-btn");
+                if (exportBtn) {
+                  exportBtn.style.display = "none";
+                }
+              }
+            })
+            .catch((error) => {
+              console.error("查询错误:", error);
+              showAlert("查询失败: " + error.message, "error");
+              // 隐藏导出按钮
+              const exportBtn = document.getElementById("export-btn");
+              if (exportBtn) {
+                exportBtn.style.display = "none";
+              }
+            });
+        } catch (error) {
+          console.error("查询过程中发生错误:", error);
+          showAlert("查询失败: " + error.message, "error");
+          // 隐藏导出按钮
+          const exportBtn = document.getElementById("export-btn");
+          if (exportBtn) {
+            exportBtn.style.display = "none";
+          }
         }
-
-        const dataTypeKeyword =
-          document.getElementById("data-type-keyword").value || "日前节点电价";
-
-        // 构造参数
-        const formData = new FormData();
-        formData.append("dates", JSON.stringify(dates));
-        formData.append("data_type_keyword", dataTypeKeyword);
-
-        // 发送请求
-        fetch("/daily-averages", {
-          method: "POST",
-          body: formData,
-        })
-          .then((response) => {
-            if (!response.ok) {
-              return response.json().then((err) => {
-                throw new Error(err.detail || "查询失败");
-              });
-            }
-            return response.json();
-          })
-          .then((data) => {
-            // 无论是否有数据，都更新页面显示
-            queryResult = data.data || [];
-            displayResults();
-            if (data.total > 0) {
-              showAlert(
-                "查询成功，共返回 " + data.total + " 条记录",
-                "success"
-              );
-            } else {
-              showAlert("查询成功，但没有找到匹配的数据", "warning");
-            }
-          })
-          .catch((error) => {
-            showAlert("查询失败: " + error.message, "error");
-          });
       }
 
       // 显示查询结果
@@ -740,8 +824,161 @@
         pagination.appendChild(nextButton);
       }
 
+      // 导出多天均值查询结果为Excel
+      function exportDailyAveragesData() {
+        try {
+          console.log("开始导出多天均值数据...");
+
+          // 收集选中的日期
+          const selectedCheckboxes = document.querySelectorAll(
+            'input[name="selected-dates"]:checked'
+          );
+          const dates = Array.from(selectedCheckboxes).map((cb) => cb.value);
+          console.log("选中的日期:", dates);
+
+          if (dates.length === 0) {
+            showAlert("请至少选择一个日期", "warning");
+            return;
+          }
+
+          // 获取选中的数据类型
+          const selectedDataTypeElement = document.querySelector(
+            'input[name="data-type"]:checked'
+          );
+          if (!selectedDataTypeElement) {
+            showAlert("请选择数据类型", "warning");
+            return;
+          }
+
+          const selectedDataType = selectedDataTypeElement.value;
+          console.log("选中的数据类型:", selectedDataType);
+
+          // 构造参数
+          let url = "/daily-averages/export";
+
+          // 添加查询参数
+          const params = new URLSearchParams();
+          params.append("dates", JSON.stringify(dates));
+          params.append("data_type_keyword", selectedDataType);
+          url += "?" + params.toString();
+          console.log("导出URL:", url);
+
+          // 显示导出提示
+          showAlert("正在导出数据，请稍候...", "info");
+
+          // 禁用导出按钮，防止重复点击
+          const exportBtn = document.getElementById("export-btn");
+          if (!exportBtn) {
+            console.error("未找到导出按钮元素");
+            return;
+          }
+
+          const originalText = exportBtn.innerHTML;
+          exportBtn.disabled = true;
+          exportBtn.innerHTML =
+            '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 导出中...';
+
+          // 使用fetch API获取文件数据
+          fetch(url)
+            .then((response) => {
+              console.log("收到响应:", response);
+              if (!response.ok) {
+                return response.json().then((err) => {
+                  console.error("服务器返回错误:", err);
+                  throw new Error(err.detail || "导出失败");
+                });
+              }
+
+              // 获取文件名
+              const contentDisposition = response.headers.get(
+                "Content-Disposition"
+              );
+              console.log("Content-Disposition header:", contentDisposition);
+
+              let filename = "多天均值数据.xlsx";
+              if (contentDisposition) {
+                // 处理UTF-8编码的文件名
+                const utf8FilenameMatch = contentDisposition.match(
+                  /filename\*=UTF-8''(.+)/
+                );
+                if (utf8FilenameMatch && utf8FilenameMatch[1]) {
+                  try {
+                    filename = decodeURIComponent(utf8FilenameMatch[1]);
+                    console.log("解码后的UTF-8文件名:", filename);
+                  } catch (e) {
+                    console.error("解码文件名失败:", e);
+                    // 回退到基本匹配
+                    const basicFilenameMatch =
+                      contentDisposition.match(/filename="?([^"]+)"?/);
+                    if (basicFilenameMatch && basicFilenameMatch[1]) {
+                      filename = basicFilenameMatch[1];
+                      console.log("使用基本文件名匹配:", filename);
+                    }
+                  }
+                } else {
+                  // 基本的filename匹配
+                  const basicFilenameMatch =
+                    contentDisposition.match(/filename="?([^"]+)"?/);
+                  if (basicFilenameMatch && basicFilenameMatch[1]) {
+                    filename = basicFilenameMatch[1];
+                    console.log("使用基本文件名匹配:", filename);
+                  }
+                }
+              }
+              console.log("最终文件名:", filename);
+
+              // 返回blob格式的响应
+              return response.blob().then((blob) => {
+                console.log("收到blob数据");
+                return { blob, filename };
+              });
+            })
+            .then(({ blob, filename }) => {
+              console.log("开始处理下载");
+              // 创建下载链接
+              const url = window.URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = filename;
+
+              // 触发下载
+              document.body.appendChild(link);
+              link.click();
+
+              // 清理
+              document.body.removeChild(link);
+              window.URL.revokeObjectURL(url);
+
+              // 显示成功消息
+              showAlert(`文件导出成功: ${filename}`, "success");
+
+              // 恢复导出按钮
+              exportBtn.disabled = false;
+              exportBtn.innerHTML = originalText;
+            })
+            .catch((error) => {
+              console.error("导出错误:", error);
+              showAlert("导出失败: " + error.message, "danger");
+              // 恢复导出按钮
+              if (exportBtn) {
+                exportBtn.disabled = false;
+                exportBtn.innerHTML = originalText;
+              }
+            });
+        } catch (error) {
+          console.error("导出过程中发生错误:", error);
+          showAlert("导出失败: " + error.message, "danger");
+          // 恢复导出按钮
+          const exportBtn = document.getElementById("export-btn");
+          if (exportBtn) {
+            exportBtn.disabled = false;
+            exportBtn.innerHTML = "导出Excel";
+          }
+        }
+      }
+
       // 显示提示信息
-      function showAlert(message, type) {
+      function showAlert(message, type = "info") {
         // 移除现有的alert
         const existingAlert = document.querySelector(".alert");
         if (existingAlert) {
