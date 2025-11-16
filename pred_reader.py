@@ -1301,8 +1301,18 @@ class PowerDataImporter:
             return False, None, 0, []
 
         # 自动识别日期
+        # 首先尝试匹配括号中的日期格式 "(2025-09-29)"
         match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", first_sheet_name)
-        data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        if match:
+            data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        else:
+            # 如果没有括号，则尝试直接匹配日期格式 "2025-09-29"
+            match = re.search(r"(\d{4}-\d{2}-\d{2})", first_sheet_name)
+            if match:
+                data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+            else:
+                print(f"❌ 无法从 sheet 名称 '{first_sheet_name}' 中提取日期")
+                return False, None, 0, []
 
         # 根据文件名识别类型
         file_name = str(excel_file)
@@ -1327,7 +1337,6 @@ class PowerDataImporter:
         success, table_name, record_count, preview_data = self.save_to_database(records, data_date)
         print(f"✅ 数据保存成功，表名: {table_name}，记录数: {record_count}")
         return success, table_name, record_count, preview_data
-
     def process_mean_by_column(self, df, data_date, sheet_name, data_type):
         """
         针对节点电价等表格：对每一列（从第3列开始）求均值，并生成记录
@@ -1361,6 +1370,146 @@ class PowerDataImporter:
         for _, row in df.iterrows():
             # 检查第一列是否有有效数据，如果没有则跳过（处理标题行）
             channel_name = row.iloc[0]  # 第一列作为通道名称
+            if pd.isna(channel_name) or channel_name == "":
+                continue
+                
+            # 为每行每小时计算均值
+            for hour, times in time_groups.items():
+                # 计算该小时内四个时间点的均值
+                values = []
+                for t in times:
+                    value = row[t]
+                    if not pd.isna(value):
+                        values.append(value)
+                
+                # 如果有有效值，则计算均值
+                if values:
+                    hourly_mean = sum(values) / len(values)
+                    hourly_means[(_, hour)] = hourly_mean
+                    
+                    record = {
+                        "record_date": pd.to_datetime(data_date).date(),
+                        "record_time": f"{hour}:00",  # 按小时存储
+                        "channel_name": channel_name,
+                        "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均値
+                        "type": data_type,
+                        "sheet_name": sheet_name,
+                        "created_at": pd.Timestamp.now(),
+                    }
+                    records.append(record)
+
+        # 再添加每小时的均値データ（所有行在该小时的均値）
+        for hour, times in time_groups.items():
+            # 获取这些时间点的値并計算均値
+            values = []
+            for t in times:
+                # 計算該時間点在所有行中的均値
+                mean_value = df[t].mean()
+                values.append(mean_value)
+            
+            # 計算4つの時間点の総均値
+            if values:
+                overall_mean = sum(values) / len(values)
+                record = {
+                    "record_date": pd.to_datetime(data_date).date(),
+                    "record_time": f"{hour}:00",   # "HH:00" にフォーマット
+                    "channel_name": f"{data_type}_均値",
+                    "value": round(overall_mean, 2),
+                    "type": data_type,
+                    "sheet_name": sheet_name,
+                    "created_at": pd.Timestamp.now(),
+                }
+                records.append(record)
+
+        print(f"✅ {data_type} 均値生成 {len(records)} 条記錄")
+        return records
+
+    def import_point_data_new(self, excel_file):
+        """自动导入Excel第一个Sheet的数据，并按列求均值"""
+        import re
+        import datetime
+        import pandas as pd
+
+        try:
+            xls = pd.ExcelFile(excel_file)
+            first_sheet_name = xls.sheet_names[0]  # ✅ 获取第一个 sheet 名
+            df = pd.read_excel(excel_file, sheet_name=first_sheet_name, header=1)
+            print(f"✅ 成功读取 Excel: {excel_file}, sheet: {first_sheet_name}")
+        except Exception as e:
+            print(f"❌ 读取 Excel 失败: {e}")
+            return False, None, 0, []
+
+        # 自动识别日期
+        # 首先尝试匹配括号中的日期格式 "(2025-09-29)"
+        match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", first_sheet_name)
+        if match:
+            data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        else:
+            # 如果没有括号，则尝试直接匹配日期格式 "2025-09-29"
+            match = re.search(r"(\d{4}-\d{2}-\d{2})", first_sheet_name)
+            if match:
+                data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+            else:
+                print(f"❌ 无法从 sheet 名称 '{first_sheet_name}' 中提取日期")
+                return False, None, 0, []
+
+        # 根据文件名识别类型
+        file_name = str(excel_file)
+        chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
+        if chinese_match:
+            data_type = chinese_match.group(1)
+            print(f"📁 文件类型识别: {data_type}")
+        else:
+            print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
+            return False, None, 0, []
+
+        print(f"\n📘 正在处理 {first_sheet_name} | 日期: {data_date} | 类型: {data_type}")
+
+        # 按列求均值并生成 records
+        records = self.process_point_new(df, data_date, first_sheet_name, data_type)
+
+        if not records:
+            print("❌ 没有任何有效数据被导入")
+            return False, None, 0, []
+
+        # 保存到数据库
+        success, table_name, record_count, preview_data = self.save_to_database(records, data_date)
+        print(f"✅ 数据保存成功，表名: {table_name}，记录数: {record_count}")
+        return success, table_name, record_count, preview_data
+    
+    def process_point_new(self, df, data_date, sheet_name, data_type):
+        """
+        针对节点电价等表格：对每一列（从第3列开始）求均值，并生成记录
+        毎一列の均値データ放在最後，其他データ按順序都存一下
+        """
+        records = []
+
+        # 标准化列名
+        df.columns = [str(c).strip() for c in df.columns]
+        # print(f"COLUMNS: {df.columns.tolist()}")
+
+        # 获取时间列（第3列及之后）
+        time_cols = df.columns[2:]
+        if time_cols.empty or len(time_cols) == 0:
+            print(f"⚠️ Sheet {sheet_name} 没有发现时间列")
+            return records
+
+        # 将时间列按每4个分组（每小时4个15分钟间隔）
+        time_groups = {}
+        for t in time_cols:
+            # 从 "HH:MM" 格式中提取小时
+            hour = t.split(':')[0]
+            if hour not in time_groups:
+                time_groups[hour] = []
+            time_groups[hour].append(t)
+
+        # 先保存原有的数据（按小时分组）
+        # 预先计算每行每小时的均值
+        hourly_means = {}  # {(row_index, hour): mean_value}
+        
+        for _, row in df.iterrows():
+            # 检查第一列是否有有效数据，如果没有则跳过（处理标题行）
+            channel_name = row.iloc[1]  # 第一列作为通道名称
             if pd.isna(channel_name) or channel_name == "":
                 continue
                 
