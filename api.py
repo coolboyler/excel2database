@@ -118,7 +118,7 @@ async def import_file(filename: str = Form(...)):
     elif "实时节点电价查询" in filename or "日前节点电价查询" in filename:
         method = importer.import_point_data
     else:
-        method = importer.import_and_create_new_table
+        raise HTTPException(status_code=400, detail=f"无匹配的导入规则: {filename}")
 
     # 执行同步导入
     result = method(file_path)

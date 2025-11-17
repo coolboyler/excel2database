@@ -164,16 +164,13 @@
 
       /* 日期选择器样式 */
       .year-month-selector {
-        display: flex;
-        gap: 10px;
-        margin-bottom: 10px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 15px;
       }
-
-      .year-month-selector select {
-        flex: 1;
-        padding: 8px;
-        border: 1px solid #ddd;
-        border-radius: 4px;
+      
+      .year-month-selector .form-group {
+        margin-bottom: 0;
       }
 
       .select-all-row {
@@ -197,18 +194,19 @@
 
       .checkboxes-container {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 10px;
       }
 
       .date-option label {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 8px;
         cursor: pointer;
-        padding: 6px;
+        padding: 8px;
         border-radius: 4px;
         transition: background-color 0.2s;
+        font-weight: normal;
       }
 
       .date-option label:hover {
@@ -221,12 +219,22 @@
       }
 
       .select-all-container {
-        margin-top: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid #eee;
+        margin-bottom: 15px;
       }
-
-      .select-all-container .btn {
-        padding: 6px 12px;
-        font-size: 14px;
+      
+      .select-all-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      
+      .select-all-label input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
       }
       
       .radio-group {
@@ -244,6 +252,289 @@
       
       .radio-group input[type="radio"] {
         margin-right: 8px;
+      }
+      
+      /* 新增的灵活筛选样式 */
+      .flexible-filter {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+      
+      .filter-section {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        background-color: #fafafa;
+      }
+      
+      .filter-section h3 {
+        margin-top: 0;
+        color: #333;
+        border-bottom: 2px solid #3498db;
+        padding-bottom: 10px;
+        margin-bottom: 15px;
+      }
+      
+      .filter-options {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+      }
+      
+      .filter-option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      
+      .filter-option input[type="radio"] {
+        margin: 0;
+        width: 18px;
+        height: 18px;
+      }
+      
+      .filter-option label {
+        font-weight: 500;
+        cursor: pointer;
+      }
+      
+      .year-selector,
+      .month-selector {
+        padding: 15px;
+        border: 1px solid #eee;
+        border-radius: 4px;
+        background-color: white;
+      }
+      
+      .year-item,
+      .month-item {
+        display: inline-block;
+        margin: 5px;
+      }
+      
+      .year-item label,
+      .month-item label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: normal;
+        cursor: pointer;
+        padding: 8px 12px;
+        border-radius: 4px;
+        transition: all 0.2s;
+        border: 1px solid #ddd;
+        background-color: white;
+      }
+      
+      .year-item label:hover,
+      .month-item label:hover {
+        background-color: #e3f2fd;
+        border-color: #3498db;
+      }
+      
+      .year-item input[type="checkbox"],
+      .month-item input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+      }
+      
+      .date-range-inputs {
+        padding: 15px;
+        border: 1px solid #eee;
+        border-radius: 4px;
+        background-color: white;
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+      }
+      
+      .date-range-inputs .form-group {
+        margin-bottom: 0;
+      }
+      
+      .date-range-inputs input[type="date"] {
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      
+      .custom-dates-container {
+        max-height: 300px;
+        overflow-y: auto;
+        border: 1px solid #eee;
+        padding: 15px;
+        border-radius: 4px;
+        background-color: white;
+      }
+      
+      .checkboxes-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 10px;
+      }
+      
+      .date-option label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        padding: 8px;
+        border-radius: 4px;
+        transition: background-color 0.2s;
+        font-weight: normal;
+      }
+      
+      .date-option label:hover {
+        background-color: #f5f5f5;
+      }
+      
+      .date-option input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+      }
+      
+      .select-all-container {
+        padding: 10px 0;
+        border-bottom: 1px solid #eee;
+        margin-bottom: 15px;
+      }
+      
+      .select-all-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      
+      .select-all-label input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+      }
+      
+      .year-month-selector {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 15px;
+      }
+      
+      .year-month-selector .form-group {
+        margin-bottom: 0;
+      }
+      
+      .hidden {
+        display: none;
+      }
+      
+      /* 新增的手动选择和结果展示样式 */
+      .manual-selection-and-results {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+      
+      .manual-selection-section {
+        grid-column: 1;
+      }
+      
+      .selected-dates-section {
+        grid-column: 2;
+      }
+      
+      .selected-dates-display {
+        min-height: 200px;
+        padding: 15px;
+        border: 1px solid #eee;
+        border-radius: 4px;
+        background-color: white;
+      }
+      
+      .selected-dates-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+      }
+      
+      .selected-dates-title {
+        font-weight: 500;
+        color: #333;
+      }
+      
+      .clear-all-btn {
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      
+      .clear-all-btn:hover {
+        background-color: #c0392b;
+      }
+      
+      .selected-dates-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      
+      .selected-date-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background-color: #e3f2fd;
+        padding: 8px 12px;
+        border-radius: 20px;
+      }
+      
+      .selected-date-text {
+        font-size: 14px;
+        color: #333;
+      }
+      
+      .remove-date-btn {
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        padding: 0;
+      }
+      
+      .remove-date-btn:hover {
+        background-color: #c0392b;
+      }
+      
+      .no-selected-dates {
+        color: #999;
+        font-style: italic;
+        text-align: center;
+        padding: 20px;
+      }
+      
+      @media (max-width: 768px) {
+        .manual-selection-and-results {
+          grid-template-columns: 1fr;
+        }
+        
+        .manual-selection-section,
+        .selected-dates-section {
+          grid-column: 1;
+        }
       }
     </style>
   </head>
@@ -268,60 +559,145 @@
             <label>数据类型:</label>
             <div class="radio-group">
               <label>
-                <input 
-                  type="radio" 
-                  name="data-type" 
-                  value="日前节点电价" 
-                  checked 
-                />
+                <input type="radio" name="data-type" value="日前节点电价" checked />
                 日前节点电价
               </label>
               <label>
-                <input 
-                  type="radio" 
-                  name="data-type" 
-                  value="实时节点电价" 
-                />
+                <input type="radio" name="data-type" value="实时节点电价" />
                 实时节点电价
               </label>
             </div>
           </div>
 
+          <!-- 灵活的日期筛选选项 -->
           <div class="form-group">
-            <label>选择日期:</label>
-            <div class="year-month-selector">
-              <select id="year-select" onchange="populateYearMonthOptions()">
-                <option value="">选择年份</option>
-              </select>
-              <select id="month-select" onchange="updateDateOptions()">
-                <option value="">选择月份</option>
-              </select>
-            </div>
-            <div
-              id="date-checkboxes"
-              style="
-                max-height: 300px;
-                overflow-y: auto;
-                border: 1px solid #ddd;
-                padding: 10px;
-                margin-top: 10px;
-              "
-            >
-              <!-- 日期复选框将在这里动态生成 -->
-              <div
-                id="no-dates-message"
-                style="
-                  text-align: center;
-                  color: #666;
-                  padding: 20px;
-                  display: none;
-                "
-              >
-                暂无可用日期数据
+            <label>日期筛选方式:</label>
+            <div class="flexible-filter">
+              <!-- 按年份筛选 -->
+              <div class="filter-section">
+                <h3>按年份筛选</h3>
+                <div class="filter-options">
+                  <div class="filter-option">
+                    <input type="radio" name="filter-type" id="filter-by-year" value="year" onchange="toggleFilterSection('year')">
+                    <label for="filter-by-year">选择年份</label>
+                  </div>
+                  <div class="year-selector" id="year-selector" style="display: none;">
+                    <div class="select-all-container">
+                      <label class="select-all-label">
+                        <input type="checkbox" id="select-all-years" onchange="toggleAllYears(this.checked)">
+                        <span>全选</span>
+                      </label>
+                    </div>
+                    <!-- 年份选项将通过JavaScript动态生成 -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- 按月份筛选 -->
+              <div class="filter-section">
+                <h3>按月份筛选</h3>
+                <div class="filter-options">
+                  <div class="filter-option">
+                    <input type="radio" name="filter-type" id="filter-by-month" value="month" onchange="toggleFilterSection('month')">
+                    <label for="filter-by-month">选择年份和月份</label>
+                  </div>
+                  <div class="month-selector" id="month-selector" style="display: none;">
+                    <div class="form-group">
+                      <label for="year-select">选择年份:</label>
+                      <select id="year-select" onchange="updateMonthOptions()">
+                        <option value="">选择年份</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <div id="month-checkboxes">
+                        <div class="select-all-container">
+                          <label class="select-all-label">
+                            <input type="checkbox" id="select-all-months" onchange="toggleAllMonths(this.checked)">
+                            <span>全选月份</span>
+                          </label>
+                        </div>
+                        <!-- 月份选项将通过JavaScript动态生成 -->
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 自定义日期范围 -->
+              <div class="filter-section">
+                <h3>自定义日期范围</h3>
+                <div class="filter-options">
+                  <div class="filter-option">
+                    <input type="radio" name="filter-type" id="filter-by-range" value="range" onchange="toggleFilterSection('range')">
+                    <label for="filter-by-range">选择日期范围</label>
+                  </div>
+                  <div class="date-range-inputs" id="date-range-inputs" style="display: none;">
+                    <div class="form-group">
+                      <label for="start-date">开始日期:</label>
+                      <input type="date" id="start-date">
+                    </div>
+                    <div class="form-group">
+                      <label for="end-date">结束日期:</label>
+                      <input type="date" id="end-date">
+                    </div>
+                    <button type="button" class="btn" onclick="applyDateRange()">应用日期范围</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-
+          
+          <!-- 手动选择日期和查询结果 -->
+          <div class="manual-selection-and-results">
+            <!-- 手动选择日期 -->
+            <div class="filter-section manual-selection-section">
+              <h3>手动选择日期</h3>
+              <div class="filter-options">
+                <div class="filter-option">
+                  <input type="radio" name="filter-type" id="filter-by-custom" value="custom" onchange="toggleFilterSection('custom')" checked>
+                  <label for="filter-by-custom">手动选择日期</label>
+                </div>
+                <div id="custom-date-selector">
+                  <div class="year-month-selector">
+                    <div class="form-group">
+                      <label for="custom-year-select">选择年份:</label>
+                      <select id="custom-year-select" onchange="updateCustomDateOptions()">
+                        <option value="">选择年份</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="custom-month-select">选择月份:</label>
+                      <select id="custom-month-select" onchange="updateCustomDateOptions()">
+                        <option value="">选择月份</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <div id="custom-date-checkboxes" class="custom-dates-container">
+                      <div class="select-all-container">
+                        <label class="select-all-label">
+                          <input type="checkbox" id="select-all-dates" onchange="toggleAllDates(this.checked)">
+                          <span>全选日期</span>
+                        </label>
+                      </div>
+                      <!-- 日期复选框将在这里动态生成 -->
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 已选择的日期显示 -->
+            <div class="filter-section selected-dates-section">
+              <div class="selected-dates-header">
+                <div class="selected-dates-title">已选择的日期</div>
+                <button type="button" class="clear-all-btn" onclick="clearAllSelectedDates()">全部删除</button>
+              </div>
+              <div id="selected-dates-display" class="selected-dates-display">
+                <div class="no-selected-dates">暂无选择的日期</div>
+              </div>
+            </div>
+          </div>
           <button type="submit" class="btn btn-primary">查询</button>
           <button
             type="button"
@@ -371,6 +747,15 @@
         document
           .getElementById("daily-averages-form")
           .addEventListener("submit", executeDailyAveragesQuery);
+          
+        // 初始化手动选择日期存储
+        window.manuallySelectedDates = new Set();
+          
+        // 初始化年份选项
+        setTimeout(() => {
+          populateYearOptions();
+          populateCustomYearMonthOptions();
+        }, 1000);
       });
 
       // 加载表列表
@@ -420,43 +805,33 @@
         const years = [
           ...new Set(window.availableDates.map((d) => d.year)),
         ].sort((a, b) => b - a);
-        const months = [
-          ...new Set(window.availableDates.map((d) => d.month)),
-        ].sort();
 
         const yearSelect = document.getElementById("year-select");
-        const monthSelect = document.getElementById("month-select");
+        const customYearSelect = document.getElementById("custom-year-select");
 
-        // 保存当前选择
-        const currentYear = yearSelect.value;
-        const currentMonth = monthSelect.value;
-
-        // 填充年份选项
+        // 清空现有的选项
         yearSelect.innerHTML = '<option value="">选择年份</option>';
+        customYearSelect.innerHTML = '<option value="">选择年份</option>';
+
+        // 填充年份选择器
         years.forEach((year) => {
-          const option = document.createElement("option");
-          option.value = year;
-          option.textContent = year;
-          yearSelect.appendChild(option);
+          const option1 = document.createElement("option");
+          option1.value = year;
+          option1.textContent = year;
+          yearSelect.appendChild(option1);
+
+          const option2 = document.createElement("option");
+          option2.value = year;
+          option2.textContent = year;
+          customYearSelect.appendChild(option2);
         });
 
-        // 恢复当前选择
-        if (currentYear) {
-          yearSelect.value = currentYear;
-        }
-
-        // 填充月份选项
-        monthSelect.innerHTML = '<option value="">选择月份</option>';
-        months.forEach((month) => {
-          const option = document.createElement("option");
-          option.value = month;
-          option.textContent = month;
-          monthSelect.appendChild(option);
-        });
-
-        // 恢复当前选择
-        if (currentMonth) {
-          monthSelect.value = currentMonth;
+        // 默认选择最新年份
+        if (years.length > 0) {
+          yearSelect.value = years[0];
+          customYearSelect.value = years[0];
+          updateMonthOptions();
+          updateCustomDateOptions();
         }
       }
 
@@ -542,6 +917,401 @@
         });
       }
 
+      // 切换筛选部分显示/隐藏
+      function toggleFilterSection(selectedType) {
+        // 隐藏所有筛选器
+        document.getElementById('year-selector').style.display = 'none';
+        document.getElementById('month-selector').style.display = 'none';
+        document.getElementById('date-range-inputs').style.display = 'none';
+        document.getElementById('custom-date-selector').style.display = 'none';
+        
+        // 显示选中的筛选器
+        switch(selectedType) {
+          case 'year':
+            document.getElementById('year-selector').style.display = 'block';
+            break;
+          case 'month':
+            document.getElementById('month-selector').style.display = 'block';
+            break;
+          case 'range':
+            document.getElementById('date-range-inputs').style.display = 'block';
+            break;
+          case 'custom':
+            document.getElementById('custom-date-selector').style.display = 'block';
+            break;
+        }
+      }
+
+      // 填充年份选项
+      function populateYearOptions() {
+        if (!window.availableDates) return;
+        
+        const years = [...new Set(window.availableDates.map(d => d.year))].sort((a, b) => b - a);
+        const yearSelector = document.getElementById('year-selector');
+        
+        // 保留全选容器，只清空年份选项
+        const selectAllContainer = yearSelector.querySelector('.select-all-container');
+        yearSelector.innerHTML = '';
+        yearSelector.appendChild(selectAllContainer);
+        
+        years.forEach(year => {
+          const div = document.createElement('div');
+          div.className = 'year-item';
+          div.innerHTML = `
+            <label>
+              <input type="checkbox" name="selected-years" value="${year}">
+              ${year}年
+            </label>
+          `;
+          yearSelector.appendChild(div);
+        });
+      }
+
+      // 全选/取消全选年份
+      function toggleAllYears(checked) {
+        const checkboxes = document.querySelectorAll('input[name="selected-years"]');
+        checkboxes.forEach((checkbox) => {
+          checkbox.checked = checked;
+        });
+      }
+
+      // 更新月份选项
+      function updateMonthOptions() {
+        const yearSelect = document.getElementById('year-select');
+        const selectedYear = yearSelect.value;
+        const monthCheckboxes = document.getElementById('month-checkboxes');
+        
+        // 保留全选容器，只清空月份选项
+        const selectAllContainer = monthCheckboxes.querySelector('.select-all-container');
+        monthCheckboxes.innerHTML = '';
+        if (selectAllContainer) {
+          monthCheckboxes.appendChild(selectAllContainer);
+        }
+        
+        if (!selectedYear) {
+          return;
+        }
+        
+        const months = [
+          { name: '一月', value: '01' },
+          { name: '二月', value: '02' },
+          { name: '三月', value: '03' },
+          { name: '四月', value: '04' },
+          { name: '五月', value: '05' },
+          { name: '六月', value: '06' },
+          { name: '七月', value: '07' },
+          { name: '八月', value: '08' },
+          { name: '九月', value: '09' },
+          { name: '十月', value: '10' },
+          { name: '十一月', value: '11' },
+          { name: '十二月', value: '12' }
+        ];
+        
+        months.forEach((month, index) => {
+          // 检查该年月是否有数据
+          const hasData = window.availableDates.some(d => 
+            d.year === selectedYear && d.month === month.value
+          );
+          
+          if (hasData) {
+            const div = document.createElement('div');
+            div.className = 'month-item';
+            div.innerHTML = `
+              <label>
+                <input type="checkbox" name="selected-months" value="${month.value}">
+                ${month.name}
+              </label>
+            `;
+            monthCheckboxes.appendChild(div);
+          }
+        });
+      }
+
+      // 全选/取消全选月份
+      function toggleAllMonths(checked) {
+        const checkboxes = document.querySelectorAll('input[name="selected-months"]');
+        checkboxes.forEach((checkbox) => {
+          checkbox.checked = checked;
+        });
+      }
+
+      // 填充自定义年月选项
+      function populateCustomYearMonthOptions() {
+        if (!window.availableDates) return;
+        
+        const years = [...new Set(window.availableDates.map(d => d.year))].sort((a, b) => b - a);
+        const yearSelect = document.getElementById('custom-year-select');
+        const monthSelect = document.getElementById('custom-month-select');
+        
+        // 保存当前选择
+        const currentYearSelection = yearSelect.value;
+        const currentMonthSelection = monthSelect.value;
+        
+        // 清空并重新填充年份
+        yearSelect.innerHTML = '<option value="">选择年份</option>';
+        years.forEach(year => {
+          const option = document.createElement('option');
+          option.value = year;
+          option.textContent = year;
+          if (year === currentYearSelection) {
+            option.selected = true;
+          }
+          yearSelect.appendChild(option);
+        });
+        
+        // 清空并重新填充月份
+        monthSelect.innerHTML = '<option value="">选择月份</option>';
+        const months = [
+          { name: '一月', value: '01' },
+          { name: '二月', value: '02' },
+          { name: '三月', value: '03' },
+          { name: '四月', value: '04' },
+          { name: '五月', value: '05' },
+          { name: '六月', value: '06' },
+          { name: '七月', value: '07' },
+          { name: '八月', value: '08' },
+          { name: '九月', value: '09' },
+          { name: '十月', value: '10' },
+          { name: '十一月', value: '11' },
+          { name: '十二月', value: '12' }
+        ];
+        
+        months.forEach(month => {
+          const option = document.createElement('option');
+          option.value = month.value;
+          option.textContent = month.name;
+          if (month.value === currentMonthSelection) {
+            option.selected = true;
+          }
+          monthSelect.appendChild(option);
+        });
+        
+        // 触发日期更新
+        updateCustomDateOptions();
+      }
+
+      // 更新自定义日期选项
+      function updateCustomDateOptions() {
+        const yearSelect = document.getElementById('custom-year-select');
+        const monthSelect = document.getElementById('custom-month-select');
+        const selectedYear = yearSelect.value;
+        const selectedMonth = monthSelect.value;
+        
+        const dateCheckboxes = document.getElementById('custom-date-checkboxes');
+        
+        // 获取当前已选中的日期（从全局存储中）
+        if (!window.manuallySelectedDates) {
+          window.manuallySelectedDates = new Set();
+        }
+        
+        // 保留全选容器，只清空日期选项
+        const selectAllContainer = dateCheckboxes.querySelector('.select-all-container');
+        dateCheckboxes.innerHTML = '';
+        if (selectAllContainer) {
+          dateCheckboxes.appendChild(selectAllContainer);
+        }
+        
+        // 根据筛选条件过滤日期
+        let filteredDates = window.availableDates;
+        if (selectedYear) {
+          filteredDates = filteredDates.filter(d => d.year === selectedYear);
+        }
+        
+        if (selectedMonth) {
+          filteredDates = filteredDates.filter(d => d.month === selectedMonth);
+        }
+        
+        if (filteredDates.length === 0) {
+          dateCheckboxes.innerHTML = '<div class="alert alert-warning">该时间段无数据</div>';
+          if (selectAllContainer) {
+            dateCheckboxes.prepend(selectAllContainer);
+          }
+          return;
+        }
+        
+        // 按日期排序
+        filteredDates.sort((a, b) => a.date.localeCompare(b.date));
+        
+        // 创建复选框容器
+        const checkboxesContainer = document.createElement('div');
+        checkboxesContainer.className = 'checkboxes-container';
+        
+        // 创建复选框
+        filteredDates.forEach((dateInfo) => {
+          const div = document.createElement('div');
+          div.className = 'date-option';
+          const isChecked = window.manuallySelectedDates.has(dateInfo.date) ? 'checked' : '';
+          div.innerHTML = `
+            <label>
+              <input type="checkbox" name="selected-dates" value="${dateInfo.date}" ${isChecked} onchange="updateManualSelection(this)">
+              ${dateInfo.date}
+            </label>
+          `;
+          checkboxesContainer.appendChild(div);
+        });
+        
+        dateCheckboxes.appendChild(checkboxesContainer);
+        if (selectAllContainer) {
+          dateCheckboxes.prepend(selectAllContainer);
+        }
+        
+        // 更新全选状态
+        updateSelectAllState();
+      }
+      
+      // 更新手动选择的日期
+      function updateManualSelection(checkbox) {
+        if (!window.manuallySelectedDates) {
+          window.manuallySelectedDates = new Set();
+        }
+        
+        if (checkbox.checked) {
+          window.manuallySelectedDates.add(checkbox.value);
+        } else {
+          window.manuallySelectedDates.delete(checkbox.value);
+        }
+        
+        // 更新全选状态
+        updateSelectAllState();
+        
+        // 更新已选择日期的显示
+        updateSelectedDatesDisplay();
+      }
+      
+      // 全选/取消全选日期
+      function toggleAllDates(checked) {
+        const checkboxes = document.querySelectorAll('input[name="selected-dates"]');
+        checkboxes.forEach((checkbox) => {
+          checkbox.checked = checked;
+          // 更新全局选择状态
+          if (!window.manuallySelectedDates) {
+            window.manuallySelectedDates = new Set();
+          }
+          
+          if (checked) {
+            window.manuallySelectedDates.add(checkbox.value);
+          } else {
+            window.manuallySelectedDates.delete(checkbox.value);
+          }
+        });
+        
+        // 更新已选择日期的显示
+        updateSelectedDatesDisplay();
+      }
+      
+      // 更新已选择日期的显示
+      function updateSelectedDatesDisplay() {
+        const displayArea = document.getElementById('selected-dates-display');
+        if (!displayArea) return;
+        
+        if (!window.manuallySelectedDates || window.manuallySelectedDates.size === 0) {
+          displayArea.innerHTML = '<div class="no-selected-dates">暂无选择的日期</div>';
+          return;
+        }
+        
+        // 转换为数组并排序
+        const selectedDates = Array.from(window.manuallySelectedDates).sort();
+        
+        // 创建显示内容
+        let html = '<div class="selected-dates-list">';
+        selectedDates.forEach(date => {
+          html += `
+            <div class="selected-date-item">
+              <span class="selected-date-text">${date}</span>
+              <button type="button" class="remove-date-btn" onclick="removeSelectedDate('${date}')">×</button>
+            </div>
+          `;
+        });
+        html += '</div>';
+        
+        displayArea.innerHTML = html;
+      }
+      
+      // 删除单个已选择的日期
+      function removeSelectedDate(date) {
+        // 从全局存储中删除
+        if (window.manuallySelectedDates) {
+          window.manuallySelectedDates.delete(date);
+        }
+        
+        // 取消对应的复选框选中状态
+        const checkboxes = document.querySelectorAll(`input[name="selected-dates"][value="${date}"]`);
+        checkboxes.forEach(checkbox => {
+          checkbox.checked = false;
+        });
+        
+        // 更新全选状态
+        updateSelectAllState();
+        
+        // 更新显示
+        updateSelectedDatesDisplay();
+      }
+      
+      // 清除所有已选择的日期
+      function clearAllSelectedDates() {
+        if (!window.manuallySelectedDates || window.manuallySelectedDates.size === 0) {
+          return;
+        }
+        
+        // 清空全局存储
+        window.manuallySelectedDates.clear();
+        
+        // 取消所有复选框的选中状态
+        const checkboxes = document.querySelectorAll('input[name="selected-dates"]');
+        checkboxes.forEach(checkbox => {
+          checkbox.checked = false;
+        });
+        
+        // 更新全选状态
+        updateSelectAllState();
+        
+        // 更新显示
+        updateSelectedDatesDisplay();
+      }
+      
+      // 更新全选状态
+      function updateSelectAllState() {
+        const allCheckboxes = document.querySelectorAll('input[name="selected-dates"]');
+        const checkedCheckboxes = document.querySelectorAll('input[name="selected-dates"]:checked');
+        const selectAllCheckbox = document.getElementById('select-all-dates');
+        
+        if (selectAllCheckbox && allCheckboxes.length > 0) {
+          selectAllCheckbox.checked = allCheckboxes.length === checkedCheckboxes.length;
+          selectAllCheckbox.indeterminate = checkedCheckboxes.length > 0 && checkedCheckboxes.length < allCheckboxes.length;
+        }
+      }
+      
+      // 监听日期选择变化，更新全选状态
+      document.addEventListener('change', function(e) {
+        if (e.target && e.target.name === 'selected-dates') {
+          updateSelectAllState();
+        }
+      });
+
+      // 应用日期范围
+      function applyDateRange() {
+        const startDate = document.getElementById('start-date').value;
+        const endDate = document.getElementById('end-date').value;
+        
+        if (!startDate || !endDate) {
+          showAlert('请选择完整的日期范围', 'warning');
+          return;
+        }
+        
+        if (startDate > endDate) {
+          showAlert('开始日期不能晚于结束日期', 'warning');
+          return;
+        }
+        
+        // 存储选择的日期范围，供查询时使用
+        window.selectedDateRange = {
+          start: startDate,
+          end: endDate
+        };
+        
+        showAlert(`已选择日期范围: ${startDate} 到 ${endDate}`, 'info');
+      }
+
       // 执行多天均值查询
       function executeDailyAveragesQuery(event) {
         event.preventDefault();
@@ -549,27 +1319,93 @@
         try {
           console.log("开始执行多天均值查询...");
 
-          // 收集选中的日期
-          const selectedCheckboxes = document.querySelectorAll(
-            'input[name="selected-dates"]:checked'
-          );
-          const dates = Array.from(selectedCheckboxes).map((cb) => cb.value);
-          console.log("选中的日期:", dates);
-
-          if (dates.length === 0) {
-            showAlert("请至少选择一个日期", "warning");
-            return;
+          // 获取选中的筛选类型
+          const selectedFilterType = document.querySelector('input[name="filter-type"]:checked')?.value || 'custom';
+          
+          let dates = [];
+          
+          // 根据筛选类型获取日期
+          switch(selectedFilterType) {
+            case 'year':
+              // 获取选中的年份
+              const selectedYearCheckboxes = document.querySelectorAll('input[name="selected-years"]:checked');
+              const selectedYears = Array.from(selectedYearCheckboxes).map(cb => cb.value);
+              
+              if (selectedYears.length === 0) {
+                showAlert("请选择至少一个年份", "warning");
+                return;
+              }
+              
+              // 获取这些年份的所有日期
+              dates = window.availableDates
+                .filter(d => selectedYears.includes(d.year))
+                .map(d => d.date);
+              break;
+              
+            case 'month':
+              // 获取选中的年份和月份
+              const selectedYear = document.getElementById('year-select').value;
+              const selectedMonthCheckboxes = document.querySelectorAll('input[name="selected-months"]:checked');
+              const selectedMonths = Array.from(selectedMonthCheckboxes).map(cb => cb.value);
+              
+              if (!selectedYear) {
+                showAlert("请选择年份", "warning");
+                return;
+              }
+              
+              if (selectedMonths.length === 0) {
+                showAlert("请选择至少一个月份", "warning");
+                return;
+              }
+              
+              // 获取这些月份的所有日期
+              dates = window.availableDates
+                .filter(d => d.year === selectedYear && selectedMonths.includes(d.month))
+                .map(d => d.date);
+              break;
+              
+            case 'range':
+              // 检查是否已设置日期范围
+              if (!window.selectedDateRange) {
+                showAlert("请先设置日期范围", "warning");
+                return;
+              }
+              
+              // 根据日期范围筛选数据
+              const startDate = window.selectedDateRange.start;
+              const endDate = window.selectedDateRange.end;
+              
+              dates = window.availableDates
+                .filter(d => d.date >= startDate && d.date <= endDate)
+                .map(d => d.date);
+              
+              if (dates.length === 0) {
+                showAlert("指定日期范围内无数据", "warning");
+                return;
+              }
+              break;
+              
+            case 'custom':
+            default:
+              // 获取手动选择的日期（从全局存储中）
+              if (!window.manuallySelectedDates || window.manuallySelectedDates.size === 0) {
+                showAlert("请至少选择一个日期", "warning");
+                return;
+              }
+              
+              dates = Array.from(window.manuallySelectedDates);
+              break;
           }
 
-          // 获取选中的数据类型
-          const selectedDataTypeElement = document.querySelector('input[name="data-type"]:checked');
-          if (!selectedDataTypeElement) {
+          const dataTypeKeywordElement = document.querySelector('input[name="data-type"]:checked');
+          if (!dataTypeKeywordElement) {
             showAlert("请选择数据类型", "warning");
             return;
           }
           
-          const selectedDataType = selectedDataTypeElement.value;
+          const selectedDataType = dataTypeKeywordElement.value;
           console.log("选中的数据类型:", selectedDataType);
+          console.log("选中的日期:", dates);
 
           // 构造参数
           const formData = new FormData();
