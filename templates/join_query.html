@@ -1665,15 +1665,18 @@
         try {
           console.log("开始导出多天均值数据...");
 
-          // 收集选中的日期
-          const selectedCheckboxes = document.querySelectorAll(
-            'input[name="selected-dates"]:checked'
-          );
-          const dates = Array.from(selectedCheckboxes).map((cb) => cb.value);
-          console.log("选中的日期:", dates);
+          // 检查是否有查询结果
+          if (!queryResult || queryResult.length === 0) {
+            showAlert("没有可导出的数据，请先执行查询", "warning");
+            return;
+          }
+
+          // 从查询结果中提取所有唯一的日期
+          const dates = [...new Set(queryResult.map(item => item.record_date))];
+          console.log("从查询结果中提取的日期:", dates);
 
           if (dates.length === 0) {
-            showAlert("请至少选择一个日期", "warning");
+            showAlert("没有可导出的日期数据", "warning");
             return;
           }
 
