@@ -96,20 +96,20 @@
         align-self: flex-end;
         margin-bottom: 10px;
       }
-      
+
       /* 表格容器样式优化 */
       .table-wrapper {
         overflow-x: auto;
         width: 100%;
         max-width: 100%;
       }
-      
+
       .data-table {
         width: auto;
         min-width: 100%;
         table-layout: auto;
       }
-      
+
       .data-table th,
       .data-table td {
         white-space: nowrap;
@@ -117,7 +117,7 @@
         text-align: left;
         border: 1px solid #ddd;
       }
-      
+
       .data-table th {
         background-color: #f0f0f0;
         font-weight: 600;
@@ -141,7 +141,8 @@
         <h2>表: {{ table_name }}</h2>
 
         <div class="table-info">
-          总记录数: <span id="total-count">加载中...</span>
+          总记录数: <span id="total-count">加载中...</span>，
+          <span id="page-info">共 0 页，当前第 0 页</span>
         </div>
 
         <div id="query-section">
@@ -326,7 +327,7 @@
         }
       }
 
-      // 加载表数据
+      // 加载表格数据
       function loadTableData(offset = 0) {
         const url = `/tables/${tableName}/query?offset=${offset}&limit=${pageSize}`;
 
@@ -334,13 +335,18 @@
           .then((response) => response.json())
           .then((result) => {
             totalRecords = result.total;
+            const totalPages = Math.ceil(totalRecords / pageSize);
+            const newCurrentPage = Math.floor(offset / pageSize) + 1;
             document.getElementById("total-count").textContent = totalRecords;
+            document.getElementById(
+              "page-info"
+            ).textContent = `共 ${totalPages} 页，当前第 ${newCurrentPage} 页`;
             renderTableData(result.data);
             renderPagination(offset);
           })
           .catch((error) => {
             console.error("Error loading table data:", error);
-            showAlert("加载表数据失败", "danger");
+            showAlert("加载表数据失败: " + error.message, "danger");
           });
       }
 
@@ -429,15 +435,15 @@
           return;
         }
 
-        let tableHtml =
-          '<div class="table-wrapper">';
+        let tableHtml = '<div class="table-wrapper">';
         tableHtml += '<table class="data-table"><thead><tr>';
 
         // 表头
         const headers = Object.keys(data[0]);
         headers.forEach((header) => {
           // 在均值模式下，将 avg_value 显示为 "平均值"
-          const displayName = (isAvgMode && header === "avg_value") ? "平均值" : header;
+          const displayName =
+            isAvgMode && header === "avg_value" ? "平均值" : header;
           tableHtml += `<th title="${displayName}">${displayName}</th>`;
         });
         tableHtml += "</tr></thead><tbody>";
@@ -481,15 +487,37 @@
 
         let paginationHtml = "";
 
+        // 首页按钮
+        paginationHtml += `<button ${
+          currentPage === 0 ? "disabled" : ""
+        } onclick="changePage(0)">首页</button>`;
+
         // 上一页按钮
         paginationHtml += `<button ${
           currentPage === 0 ? "disabled" : ""
         } onclick="changePage(${currentPage - 1})">上一页</button>`;
 
-        // 页码按钮
-        const startPage = Math.max(0, currentPage - 2);
-        const endPage = Math.min(totalPages - 1, currentPage + 2);
+        // 页码按钮 (最多显示5个页码)
+        let startPage, endPage;
+        if (totalPages <= 5) {
+          // 如果总页数小于等于5，显示所有页码
+          startPage = 0;
+          endPage = totalPages - 1;
+        } else {
+          // 计算起始和结束页码
+          if (currentPage <= 2) {
+            startPage = 0;
+            endPage = 4;
+          } else if (currentPage + 2 >= totalPages) {
+            startPage = totalPages - 5;
+            endPage = totalPages - 1;
+          } else {
+            startPage = currentPage - 2;
+            endPage = currentPage + 2;
+          }
+        }
 
+        // 显示页码按钮
         for (let i = startPage; i <= endPage; i++) {
           if (i === currentPage) {
             paginationHtml += `<button class="active">${i + 1}</button>`;
@@ -505,7 +533,49 @@
           currentPage === totalPages - 1 ? "disabled" : ""
         } onclick="changePage(${currentPage + 1})">下一页</button>`;
 
+        // 末页按钮
+        paginationHtml += `<button ${
+          currentPage === totalPages - 1 ? "disabled" : ""
+        } onclick="changePage(${totalPages - 1})">末页</button>`;
+
+        // 总页数信息
+        paginationHtml += `<span style="margin-left: 15px; vertical-align: middle;">共 ${totalPages} 页</span>`;
+
+        // 跳转到指定页
+        paginationHtml += `
+          <div style="display: inline-block; margin-left: 10px; vertical-align: middle;">
+            <span>跳转到:</span>
+            <input type="number" id="page-jump-input" min="1" max="${totalPages}" style="width: 60px; padding: 4px; border: 1px solid #ddd; border-radius: 4px; margin: 0 5px;" value="${
+          currentPage + 1
+        }">
+            <button id="page-jump-button" onclick="jumpToPage(${totalPages})">GO</button>
+          </div>
+        `;
+
         pagination.innerHTML = paginationHtml;
+
+        // 绑定回车键事件
+        const jumpInput = document.getElementById("page-jump-input");
+        if (jumpInput) {
+          jumpInput.addEventListener("keyup", function (event) {
+            if (event.key === "Enter") {
+              document.getElementById("page-jump-button").click();
+            }
+          });
+        }
+      }
+
+      // 跳转到指定页
+      function jumpToPage(totalPages) {
+        const input = document.getElementById("page-jump-input");
+        if (input) {
+          const page = parseInt(input.value);
+          if (!isNaN(page) && page >= 1 && page <= totalPages) {
+            changePage(page - 1);
+          } else {
+            showAlert("请输入有效的页码", "warning");
+          }
+        }
       }
 
       // 切换页面
@@ -547,14 +617,19 @@
           .then((response) => response.json())
           .then((result) => {
             totalRecords = result.total;
+            const totalPages = Math.ceil(totalRecords / pageSize);
+            const newCurrentPage = page + 1;
             document.getElementById("total-count").textContent = totalRecords;
+            document.getElementById(
+              "page-info"
+            ).textContent = `共 ${totalPages} 页，当前第 ${newCurrentPage} 页`;
             renderTableData(result.data);
             renderPagination(offset);
-            currentPage = page;
+            // 不再需要更新全局currentPage变量，因为在renderPagination中已经设置了
           })
           .catch((error) => {
             console.error("Error loading table data:", error);
-            showAlert("加载表数据失败", "danger");
+            showAlert("加载表数据失败: " + error.message, "danger");
           });
       }
 

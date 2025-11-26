@@ -463,7 +463,7 @@ function importFile(filename) {
             const recordCount = (data && data.record_count) ? data.record_count : 0;
             
             actionArea.innerHTML = `
-                <span class="status-badge status-success">导入成功</span>
+                <span class="status-badge status-success">已导入</span>
                 <div class="import-info">导入到表: <a href="#" onclick="viewTableData('${tableName}')">${tableName}</a><br>共 ${recordCount} 条记录</div>
                 <div class="btn-group">
                     <button class="btn btn-primary btn-sm" onclick="importFile('${filename}')">重新导入</button>
@@ -601,6 +601,13 @@ function checkImportStatus() {
                         setTimeout(() => {
                             loadFileList();
                             loadTableList(); // 同时刷新表列表
+                                    
+                            // 重置导入所有按钮状态
+                            const importAllBtn = document.getElementById('import-all-btn');
+                            if (importAllBtn) {
+                                importAllBtn.disabled = false;
+                                importAllBtn.innerHTML = '已导入';
+                            }
                         }, 1000);
                     }
                 }, 1000);

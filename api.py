@@ -669,17 +669,17 @@ async def delete_all_tables():
         for table in tables:
             try:
                 # 删除表
-                db_manager.drop_table(table)
+                db_manager.delete_table(table)
                 deleted_tables.append(table)
             except Exception as e:
-                logger.error(f"删除表 {table} 失败: {e}")
+                print(f"删除表 {table} 失败: {e}")
         
         return {
             "message": f"成功删除 {len(deleted_tables)} 个表",
             "deleted_tables": deleted_tables
         }
     except Exception as e:
-        logger.error(f"删除所有表时出错: {e}")
+        print(f"删除所有表时出错: {e}")
         raise HTTPException(status_code=500, detail="删除所有表失败")
 
 @app.post("/daily-averages")

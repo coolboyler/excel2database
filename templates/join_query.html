@@ -1733,9 +1733,10 @@
         }
 
         // 更新结果信息
+        const totalPages = Math.ceil(queryResult.length / itemsPerPage);
         document.getElementById(
           "result-info"
-        ).textContent = `总共 ${queryResult.length} 条记录，当前显示第 ${currentPage} 页`;
+        ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
 
         // 创建表头
         const headerRow = document.getElementById("result-header");
@@ -1857,6 +1858,22 @@
           return;
         }
 
+        // 首页按钮
+        const firstButton = document.createElement("button");
+        firstButton.textContent = "首页";
+        firstButton.disabled = currentPage === 1;
+        firstButton.onclick = () => {
+          if (currentPage > 1) {
+            currentPage = 1;
+            renderPage(currentPage);
+            setupPagination();
+            document.getElementById(
+              "result-info"
+            ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
+          }
+        };
+        pagination.appendChild(firstButton);
+
         // 上一页按钮
         const prevButton = document.createElement("button");
         prevButton.textContent = "上一页";
@@ -1868,13 +1885,33 @@
             setupPagination();
             document.getElementById(
               "result-info"
-            ).textContent = `总共 ${queryResult.length} 条记录，当前显示第 ${currentPage} 页`;
+            ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
           }
         };
         pagination.appendChild(prevButton);
 
-        // 页码按钮
-        for (let i = 1; i <= totalPages; i++) {
+        // 页码按钮 (最多显示5个页码)
+        let startPage, endPage;
+        if (totalPages <= 5) {
+          // 如果总页数小于等于5，显示所有页码
+          startPage = 1;
+          endPage = totalPages;
+        } else {
+          // 计算起始和结束页码
+          if (currentPage <= 3) {
+            startPage = 1;
+            endPage = 5;
+          } else if (currentPage + 1 >= totalPages) {
+            startPage = totalPages - 4;
+            endPage = totalPages;
+          } else {
+            startPage = currentPage - 2;
+            endPage = currentPage + 2;
+          }
+        }
+
+        // 显示页码按钮
+        for (let i = startPage; i <= endPage; i++) {
           const pageButton = document.createElement("button");
           pageButton.textContent = i;
           pageButton.classList.toggle("active", i === currentPage);
@@ -1884,7 +1921,7 @@
             setupPagination();
             document.getElementById(
               "result-info"
-            ).textContent = `总共 ${queryResult.length} 条记录，当前显示第 ${currentPage} 页`;
+            ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
           };
           pagination.appendChild(pageButton);
         }
@@ -1900,10 +1937,73 @@
             setupPagination();
             document.getElementById(
               "result-info"
-            ).textContent = `总共 ${queryResult.length} 条记录，当前显示第 ${currentPage} 页`;
+            ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
           }
         };
         pagination.appendChild(nextButton);
+
+        // 末页按钮
+        const lastButton = document.createElement("button");
+        lastButton.textContent = "末页";
+        lastButton.disabled = currentPage === totalPages;
+        lastButton.onclick = () => {
+          if (currentPage < totalPages) {
+            currentPage = totalPages;
+            renderPage(currentPage);
+            setupPagination();
+            document.getElementById(
+              "result-info"
+            ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
+          }
+        };
+        pagination.appendChild(lastButton);
+
+        // 跳转到指定页
+        const jumpContainer = document.createElement("div");
+        jumpContainer.style.display = "inline-block";
+        jumpContainer.style.marginLeft = "10px";
+        jumpContainer.style.verticalAlign = "middle";
+        
+        const jumpText = document.createElement("span");
+        jumpText.textContent = "跳转到:";
+        jumpText.style.marginRight = "5px";
+        
+        const jumpInput = document.createElement("input");
+        jumpInput.type = "number";
+        jumpInput.min = 1;
+        jumpInput.max = totalPages;
+        jumpInput.style.width = "60px";
+        jumpInput.style.padding = "4px";
+        jumpInput.style.border = "1px solid #ddd";
+        jumpInput.style.borderRadius = "4px";
+        jumpInput.value = currentPage;
+        
+        const jumpButton = document.createElement("button");
+        jumpButton.textContent = "GO";
+        jumpButton.style.marginLeft = "5px";
+        jumpButton.onclick = () => {
+          const page = parseInt(jumpInput.value);
+          if (page >= 1 && page <= totalPages && page !== currentPage) {
+            currentPage = page;
+            renderPage(currentPage);
+            setupPagination();
+            document.getElementById(
+              "result-info"
+            ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
+          }
+        };
+        
+        // 支持回车键跳转
+        jumpInput.onkeyup = (event) => {
+          if (event.key === "Enter") {
+            jumpButton.click();
+          }
+        };
+        
+        jumpContainer.appendChild(jumpText);
+        jumpContainer.appendChild(jumpInput);
+        jumpContainer.appendChild(jumpButton);
+        pagination.appendChild(jumpContainer);
       }
 
       // 导出多天均值查询结果为Excel
@@ -1942,10 +2042,11 @@
             return;
           }
 
-          // 根据地区调整数据类型关键词
+          // 根据地区调整数据类型关键词 - 修正逻辑
           let selectedDataType = selectedDataTypeElement.value;
-          if (!selectedDataType.startsWith(selectedRegion)) {
-            selectedDataType = selectedRegion + selectedDataType;
+          // 只有在数据类型不包含地区前缀时才添加地区前缀
+          if (selectedRegion === "云南" && !selectedDataType.startsWith("云南_")) {
+            selectedDataType = "云南_" + selectedDataType;
           }
 
           console.log("选中的地区:", selectedRegion);
