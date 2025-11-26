@@ -62,28 +62,40 @@
       <div class="card">
         <div class="card-header">
           <h2>文件列表</h2>
-          <button
-            id="import-all-btn"
-            class="btn btn-success"
-            onclick="importAllFiles()"
-          >
-            导入所有文件
-          </button>
-          <button class="btn" onclick="loadFileList()">刷新列表</button>
+          <div class="card-actions">
+            <button class="btn btn-toggle" onclick="toggleList('file-list-container')">折叠/展开</button>
+            <button
+              id="import-all-btn"
+              class="btn btn-success"
+              onclick="importAllFiles()"
+            >
+              导入所有文件
+            </button>
+            <button class="btn btn-danger" onclick="deleteAllFiles()">全部删除</button>
+            <button class="btn" onclick="loadFileList()">刷新列表</button>
+          </div>
         </div>
-        <ul id="file-list" class="file-list">
-          <div class="text-center">加载中...</div>
-        </ul>
+        <div id="file-list-container" style="max-height: 200px; overflow-y: auto;">
+          <ul id="file-list" class="file-list">
+            <div class="text-center">加载中...</div>
+          </ul>
+        </div>
       </div>
 
       <div class="card">
         <div class="card-header">
           <h2>数据库表</h2>
-          <button class="btn" onclick="loadTableList()">刷新列表</button>
+          <div class="card-actions">
+            <button class="btn btn-toggle" onclick="toggleList('table-list-container')">折叠/展开</button>
+            <button class="btn btn-danger" onclick="deleteAllTables()">全部删除</button>
+            <button class="btn" onclick="loadTableList()">刷新列表</button>
+          </div>
         </div>
-        <ul id="table-list" class="file-list">
-          <div class="text-center">加载中...</div>
-        </ul>
+        <div id="table-list-container" style="max-height: 200px; overflow-y: auto;">
+          <ul id="table-list" class="file-list">
+            <div class="text-center">加载中...</div>
+          </ul>
+        </div>
       </div>
 
       <div class="card">
@@ -126,6 +138,70 @@
       document.addEventListener("DOMContentLoaded", function () {
         loadTableList();
       });
+
+      // 折叠/展开列表功能
+      function toggleList(containerId) {
+        const container = document.getElementById(containerId);
+        const button = event.target;
+        if (container.style.display === 'none') {
+          container.style.display = 'block';
+          button.textContent = '折叠';
+        } else {
+          container.style.display = 'none';
+          button.textContent = '展开';
+        }
+      }
+
+      // 删除所有文件功能
+      function deleteAllFiles() {
+        if (!confirm('确定要删除所有文件吗？此操作不可恢复！')) {
+          return;
+        }
+
+        fetch('/files', {
+          method: 'DELETE'
+        })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('删除失败');
+          }
+          return response.json();
+        })
+        .then(data => {
+          showAlert('所有文件删除成功', 'success');
+          loadFileList();
+        })
+        .catch(error => {
+          console.error('Error deleting all files:', error);
+          showAlert('删除所有文件失败', 'danger');
+        });
+      }
+
+      // 删除所有表功能
+      function deleteAllTables() {
+        if (!confirm('确定要删除所有表吗？此操作不可恢复！')) {
+          return;
+        }
+
+        fetch('/tables', {
+          method: 'DELETE'
+        })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('删除失败');
+          }
+          return response.json();
+        })
+        .then(data => {
+          showAlert('所有表删除成功', 'success');
+          loadTableList();
+          loadFileList(); // 同时刷新文件列表
+        })
+        .catch(error => {
+          console.error('Error deleting all tables:', error);
+          showAlert('删除所有表失败', 'danger');
+        });
+      }
     </script>
   </body>
 </html>

@@ -618,6 +618,7 @@ async def import_all_files(background_tasks: BackgroundTasks):
         "files": [os.path.basename(file) for file in excel_files],
         "status": "importing"
     }
+
 @app.delete("/files/{filename}")
 async def delete_file(filename: str):
     """删除指定的Excel文件"""
@@ -634,6 +635,52 @@ async def delete_file(filename: str):
         return {"filename": filename, "status": "deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
+
+@app.delete("/files")
+async def delete_all_files():
+    """删除所有Excel文件"""
+    data_folder = "data"
+    if not os.path.exists(data_folder):
+        raise HTTPException(status_code=404, detail="数据目录不存在")
+    
+    deleted_files = []
+    for filename in os.listdir(data_folder):
+        if filename.endswith(".xlsx"):
+            file_path = os.path.join(data_folder, filename)
+            try:
+                os.remove(file_path)
+                deleted_files.append(filename)
+            except Exception as e:
+                logger.error(f"删除文件 {filename} 失败: {e}")
+    
+    return {
+        "message": f"成功删除 {len(deleted_files)} 个文件",
+        "deleted_files": deleted_files
+    }
+
+@app.delete("/tables")
+async def delete_all_tables():
+    """删除所有数据库表"""
+    try:
+        # 获取所有表名
+        tables = db_manager.get_tables()
+        
+        deleted_tables = []
+        for table in tables:
+            try:
+                # 删除表
+                db_manager.drop_table(table)
+                deleted_tables.append(table)
+            except Exception as e:
+                logger.error(f"删除表 {table} 失败: {e}")
+        
+        return {
+            "message": f"成功删除 {len(deleted_tables)} 个表",
+            "deleted_tables": deleted_tables
+        }
+    except Exception as e:
+        logger.error(f"删除所有表时出错: {e}")
+        raise HTTPException(status_code=500, detail="删除所有表失败")
 
 @app.post("/daily-averages")
 async def query_daily_averages(
@@ -855,4 +902,4 @@ async def export_daily_averages(
     )
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8002, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8003, reload=True)

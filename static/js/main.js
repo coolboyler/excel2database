@@ -11,7 +11,11 @@ document.addEventListener('DOMContentLoaded', function() {
 function loadFileList() {
     const fileListElement = document.getElementById('file-list');
     if (!fileListElement) return;
-    
+
+    // 设置固定高度和滚动条
+    fileListElement.style.maxHeight = '200px';
+    fileListElement.style.overflowY = 'auto';
+
     fileListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
     fetch('/files')
@@ -22,8 +26,12 @@ function loadFileList() {
                 return;
             }
             
+            // 限制最多显示5条数据
+            const filesToShow = data.files.slice(0, 5);
+            const hasMoreFiles = data.files.length > 5;
+            
             let html = '';
-            data.files.forEach(file => {
+            filesToShow.forEach(file => {
                 html += `
                 <li class="file-item">
                     <span class="file-name">${file}</span>
@@ -33,6 +41,10 @@ function loadFileList() {
                     </div>
                 </li>`;
             });
+            
+            if (hasMoreFiles) {
+                html += `<div class="text-center">还有 ${data.files.length - 5} 个文件未显示</div>`;
+            }
             
             fileListElement.innerHTML = html;
         })
@@ -46,7 +58,11 @@ function loadFileList() {
 function loadTableList() {
     const tableListElement = document.getElementById('table-list');
     if (!tableListElement) return;
-    
+
+    // 设置固定高度和滚动条
+    tableListElement.style.maxHeight = '200px';
+    tableListElement.style.overflowY = 'auto';
+
     tableListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
     fetch('/tables')
@@ -57,8 +73,12 @@ function loadTableList() {
                 return;
             }
             
+            // 限制最多显示5条数据
+            const tablesToShow = data.tables.slice(0, 5);
+            const hasMoreTables = data.tables.length > 5;
+            
             let html = '';
-            data.tables.forEach(table => {
+            tablesToShow.forEach(table => {
                 html += `
                 <li class="file-item">
                     <span class="file-name">${table}</span>
@@ -69,6 +89,10 @@ function loadTableList() {
                     </div>
                 </li>`;
             });
+            
+            if (hasMoreTables) {
+                html += `<div class="text-center">还有 ${data.tables.length - 5} 个表未显示</div>`;
+            }
             
             tableListElement.innerHTML = html;
         })
