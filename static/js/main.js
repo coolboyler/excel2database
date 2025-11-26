@@ -11,7 +11,11 @@ document.addEventListener('DOMContentLoaded', function() {
 function loadFileList() {
     const fileListElement = document.getElementById('file-list');
     if (!fileListElement) return;
-    
+
+    // 设置固定高度和滚动条
+    fileListElement.style.maxHeight = '200px';
+    fileListElement.style.overflowY = 'auto';
+
     fileListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
     fetch('/files')
@@ -22,8 +26,12 @@ function loadFileList() {
                 return;
             }
             
+            // 限制最多显示5条数据
+            const filesToShow = data.files.slice(0, 5);
+            const hasMoreFiles = data.files.length > 5;
+            
             let html = '';
-            data.files.forEach(file => {
+            filesToShow.forEach(file => {
                 html += `
                 <li class="file-item">
                     <span class="file-name">${file}</span>
@@ -33,6 +41,10 @@ function loadFileList() {
                     </div>
                 </li>`;
             });
+            
+            if (hasMoreFiles) {
+                html += `<div class="text-center">还有 ${data.files.length - 5} 个文件未显示</div>`;
+            }
             
             fileListElement.innerHTML = html;
         })
@@ -46,7 +58,11 @@ function loadFileList() {
 function loadTableList() {
     const tableListElement = document.getElementById('table-list');
     if (!tableListElement) return;
-    
+
+    // 设置固定高度和滚动条
+    tableListElement.style.maxHeight = '200px';
+    tableListElement.style.overflowY = 'auto';
+
     tableListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
     fetch('/tables')
@@ -57,8 +73,12 @@ function loadTableList() {
                 return;
             }
             
+            // 限制最多显示5条数据
+            const tablesToShow = data.tables.slice(0, 5);
+            const hasMoreTables = data.tables.length > 5;
+            
             let html = '';
-            data.tables.forEach(table => {
+            tablesToShow.forEach(table => {
                 html += `
                 <li class="file-item">
                     <span class="file-name">${table}</span>
@@ -69,6 +89,10 @@ function loadTableList() {
                     </div>
                 </li>`;
             });
+            
+            if (hasMoreTables) {
+                html += `<div class="text-center">还有 ${data.tables.length - 5} 个表未显示</div>`;
+            }
             
             tableListElement.innerHTML = html;
         })
@@ -439,7 +463,7 @@ function importFile(filename) {
             const recordCount = (data && data.record_count) ? data.record_count : 0;
             
             actionArea.innerHTML = `
-                <span class="status-badge status-success">导入成功</span>
+                <span class="status-badge status-success">已导入</span>
                 <div class="import-info">导入到表: <a href="#" onclick="viewTableData('${tableName}')">${tableName}</a><br>共 ${recordCount} 条记录</div>
                 <div class="btn-group">
                     <button class="btn btn-primary btn-sm" onclick="importFile('${filename}')">重新导入</button>
@@ -577,6 +601,13 @@ function checkImportStatus() {
                         setTimeout(() => {
                             loadFileList();
                             loadTableList(); // 同时刷新表列表
+                                    
+                            // 重置导入所有按钮状态
+                            const importAllBtn = document.getElementById('import-all-btn');
+                            if (importAllBtn) {
+                                importAllBtn.disabled = false;
+                                importAllBtn.innerHTML = '已导入';
+                            }
                         }, 1000);
                     }
                 }, 1000);

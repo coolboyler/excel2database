@@ -1438,7 +1438,7 @@ class PowerDataImporter:
         except Exception as e:
             print(f"❌ 读取 Excel 失败: {e}")
             return False, None, 0, []
-
+        
         # 自动识别日期
         # 首先尝试匹配括号中的日期格式 "(2025-09-29)"
         match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", first_sheet_name)
@@ -1479,14 +1479,12 @@ class PowerDataImporter:
     
     def process_point_new(self, df, data_date, sheet_name, data_type):
         """
-        针对节点电价等表格：对每一列（从第3列开始）求均值，并生成记录
-        毎一列の均値データ放在最後，其他データ按順序都存一下
+        针对节点电价等表格：按区域划分计算每小时均值
         """
         records = []
 
         # 标准化列名
         df.columns = [str(c).strip() for c in df.columns]
-        # print(f"COLUMNS: {df.columns.tolist()}")
 
         # 获取时间列（第3列及之后）
         time_cols = df.columns[2:]
@@ -1497,71 +1495,96 @@ class PowerDataImporter:
         # 将时间列按每4个分组（每小时4个15分钟间隔）
         time_groups = {}
         for t in time_cols:
-            # 从 "HH:MM" 格式中提取小时
             hour = t.split(':')[0]
             if hour not in time_groups:
                 time_groups[hour] = []
             time_groups[hour].append(t)
 
         # 先保存原有的数据（按小时分组）
-        # 预先计算每行每小时的均值
-        hourly_means = {}  # {(row_index, hour): mean_value}
-        
         for _, row in df.iterrows():
-            # 检查第一列是否有有效数据，如果没有则跳过（处理标题行）
-            channel_name = row.iloc[1]  # 第一列作为通道名称
+            region_name = row.iloc[0]
+            region_name_clean = str(region_name).strip()
+
+            # 只处理广东和云南，排除其他地区
+            if "广东" not in region_name_clean and "云南" not in region_name_clean:
+                continue
+                
+            # 检查第一列是否有有效数据
+            channel_name = row.iloc[1]
             if pd.isna(channel_name) or channel_name == "":
                 continue
                 
             # 为每行每小时计算均值
             for hour, times in time_groups.items():
-                # 计算该小时内四个时间点的均值
                 values = []
                 for t in times:
                     value = row[t]
                     if not pd.isna(value):
                         values.append(value)
                 
-                # 如果有有效值，则计算均值
                 if values:
                     hourly_mean = sum(values) / len(values)
-                    hourly_means[(_, hour)] = hourly_mean
-                    
                     record = {
                         "record_date": pd.to_datetime(data_date).date(),
-                        "record_time": f"{hour}:00",  # 按小时存储
+                        "record_time": f"{hour}:00",
                         "channel_name": channel_name,
-                        "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均値
-                        "type": data_type,
+                        "value": round(hourly_mean, 2),
+                        "type": region_name + "_" + data_type,
                         "sheet_name": sheet_name,
                         "created_at": pd.Timestamp.now(),
                     }
                     records.append(record)
 
-        # 再添加每小时的均値データ（所有行在该小时的均値）
-        for hour, times in time_groups.items():
-            # 获取这些时间点的値并計算均値
-            values = []
-            for t in times:
-                # 計算該時間点在所有行中的均値
-                mean_value = df[t].mean()
-                values.append(mean_value)
-            
-            # 計算4つの時間点の総均値
-            if values:
-                overall_mean = sum(values) / len(values)
-                record = {
-                    "record_date": pd.to_datetime(data_date).date(),
-                    "record_time": f"{hour}:00",   # "HH:00" にフォーマット
-                    "channel_name": f"{data_type}_均値",
-                    "value": round(overall_mean, 2),
-                    "type": data_type,
-                    "sheet_name": sheet_name,
-                    "created_at": pd.Timestamp.now(),
-                }
-                records.append(record)
+        # 按区域分组计算每小时的均值
+        region_groups = {}
 
-        print(f"✅ {data_type} 均値生成 {len(records)} 条記錄")
+        # 先按区域分组数据
+        for _, row in df.iterrows():
+            region_name = row.iloc[0]
+            region_name_clean = str(region_name).strip()
+
+            # 只处理广东和云南，排除其他地区
+            if "广东" not in region_name_clean and "云南" not in region_name_clean:
+                continue
+                
+            # 检查第一列是否有有效数据
+            channel_name = row.iloc[1]
+            if pd.isna(channel_name) or channel_name == "":
+                continue
+            
+            # 初始化地区分组
+            if region_name not in region_groups:
+                region_groups[region_name] = []
+            
+            region_groups[region_name].append(row)
+
+        # 为每个区域计算每小时的均值
+        for region_name, region_rows in region_groups.items():
+            for hour, times in time_groups.items():
+                # 获取该区域所有行在这些时间点的值并计算均值
+                values = []
+                for t in times:
+                    # 计算该时间点在该区域所有行中的均值
+                    region_values = [row[t] for row in region_rows if not pd.isna(row[t])]
+                    if region_values:
+                        mean_value = sum(region_values) / len(region_values)
+                        values.append(mean_value)
+                
+                # 计算4个时间点的总均值
+                if values:
+                    overall_mean = sum(values) / len(values)
+                    record = {
+                        "record_date": pd.to_datetime(data_date).date(),
+                        "record_time": f"{hour}:00",
+                        "channel_name": f"{data_type}_均值",
+                        "value": round(overall_mean, 2),
+                        "type": region_name + "_" + data_type,  # 按区域区分
+                        "sheet_name": sheet_name,
+                        "created_at": pd.Timestamp.now(),
+                    }
+                    records.append(record)
+
+        print(f"✅ {data_type} 生成 {len(records)} 条记录")
         return records
 
     def query_daily_averages(self, date_list, data_type_keyword="日前节点电价"):
@@ -1596,7 +1619,7 @@ class PowerDataImporter:
             # 构造UNION查询语句：查找包含指定关键字和"均值"的记录
             union_parts = []
             for table in valid_tables:
-                union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均値%' AND channel_name LIKE '%{data_type_keyword}%'""")
+                union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均值%' AND type LIKE '%{data_type_keyword}%'""")
             
             if not union_parts:
                 return {"data": [], "total": 0, "message": "没有找到匹配的数据"}

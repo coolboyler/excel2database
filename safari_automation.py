@@ -6,10 +6,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.safari.options import Options
 
 class CompleteDataDownloader:
     def __init__(self, base_download_dir="~/Downloads/2025_power_data"):
-        self.driver = webdriver.Safari()
+        # 直接连接到已打开的Safari实例
+        self.driver = self.connect_to_existing_browser()
         self.wait = WebDriverWait(self.driver, 15)
         self.base_download_dir = os.path.expanduser(base_download_dir)
         self.safari_download_dir = os.path.expanduser("~/Downloads")
@@ -25,6 +27,124 @@ class CompleteDataDownloader:
         # 记录已处理的文件，避免重复
         self.processed_files = set()
     
+    def connect_to_existing_browser(self):
+        """连接到已经打开的Safari浏览器"""
+        try:
+            # 方法1: 使用Safari远程调试模式
+            safari_options = Options()
+            safari_options.debugger_address = "127.0.0.1:27753"
+            driver = webdriver.Safari(options=safari_options)
+            print("✅ 成功连接到已打开的Safari浏览器")
+            
+            # 显示当前所有标签页信息
+            handles = driver.window_handles
+            print(f"📑 发现 {len(handles)} 个标签页:")
+            for i, handle in enumerate(handles):
+                driver.switch_to.window(handle)
+                print(f"  {i+1}. {driver.title} - {driver.current_url}")
+            
+            # 切换到第一个标签页（通常是您正在查看的页面）
+            driver.switch_to.window(handles[0])
+            print(f"🎯 已切换到标签页: {driver.title}")
+            
+            return driver
+            
+        except Exception as e:
+            print(f"❌ 无法连接到已打开的浏览器: {e}")
+            print("💡 请确保已启用Safari远程调试:")
+            print("   1. 打开Safari → 偏好设置 → 高级")
+            print("   2. 勾选「在菜单栏中显示开发菜单」")
+            print("   3. 在终端运行: /Applications/Safari.app/Contents/MacOS/Safari --remote-debugging-port=27753")
+            raise
+    
+    def ensure_current_page_is_target(self):
+        """确保当前页面是目标页面"""
+        try:
+            current_url = self.driver.current_url
+            target_url = "https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html"
+            
+            if target_url in current_url:
+                print("✅ 当前页面已经是目标页面")
+                return True
+            else:
+                print(f"⚠️ 当前页面不是目标页面: {current_url}")
+                print("🔄 正在检查其他标签页...")
+                
+                # 在所有标签页中寻找目标页面
+                handles = self.driver.window_handles
+                target_handle = None
+                
+                for handle in handles:
+                    self.driver.switch_to.window(handle)
+                    if target_url in self.driver.current_url:
+                        target_handle = handle
+                        print(f"✅ 在标签页中找到目标页面: {self.driver.title}")
+                        break
+                
+                if target_handle:
+                    self.driver.switch_to.window(target_handle)
+                    return True
+                else:
+                    print("❌ 在所有标签页中都未找到目标页面")
+                    print("🔗 正在导航到目标页面...")
+                    self.driver.get("https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html#/")
+                    time.sleep(5)
+                    return True
+                    
+        except Exception as e:
+            print(f"❌ 检查页面失败: {e}")
+            return False
+    
+    def smart_click_export(self):
+        """智能点击导出按钮"""
+        try:
+            print("🔍 寻找导出按钮...")
+            
+            # 尝试多种选择器
+            selectors = [
+                'button.el-button.s1.el-button--primary',
+                'button[class*="el-button--primary"]',
+                '//button[contains(@class, "el-button--primary")]//span[text()="导出"]/..',
+                '//button[.//span[text()="导出"]]',
+                '//span[text()="导出"]/ancestor::button',
+                '//button[contains(@class, "s1")]',
+                '//*[contains(text(), "导出") and (self::button or self::span)]/ancestor-or-self::button'
+            ]
+            
+            for i, selector in enumerate(selectors):
+                try:
+                    if selector.startswith('//'):
+                        element = self.driver.find_element(By.XPATH, selector)
+                    else:
+                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    
+                    print(f"✅ 找到导出按钮 (选择器 {i+1}: {selector})")
+                    
+                    # 检查按钮状态
+                    is_disabled = element.get_attribute('disabled')
+                    has_disabled_class = 'is-disabled' in element.get_attribute('class')
+                    
+                    if is_disabled or has_disabled_class:
+                        print("⚠️ 按钮被禁用，尝试强制点击")
+                        self.driver.execute_script("arguments[0].click();", element)
+                    else:
+                        print("🖱️ 按钮已启用，直接点击")
+                        element.click()
+                    
+                    print("✅ 导出按钮点击成功！")
+                    return True
+                    
+                except Exception as e:
+                    print(f"❌ 选择器 {i+1} 失败: {e}")
+                    continue
+            
+            print("❌ 所有选择器都找不到导出按钮")
+            return False
+            
+        except Exception as e:
+            print(f"❌ 点击导出按钮失败: {e}")
+            return False
+
     def ensure_directories(self):
         """确保所有必要的目录都存在"""
         if not os.path.exists(self.base_download_dir):
@@ -34,36 +154,79 @@ class CompleteDataDownloader:
     def navigate_to_target_page(self):
         """导航到目标页面（只需要运行一次）"""
         try:
-            print("开始导航到目标页面...")
+            # 首先确保在当前目标页面
+            if not self.ensure_current_page_is_target():
+                return False
+            
+            print("开始导航到目标功能页面...")
             
             # 步骤1: 点击"我的交易"
             print("步骤1: 点击'我的交易'")
-            my_trade = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//li[contains(@class, 'active')]//*[contains(text(), '我的交易')]"))
-            )
-            my_trade.click()
-            print("✓ '我的交易'点击成功")
-            time.sleep(2)
+            my_trade_selectors = [
+                "//li[contains(@class, 'active')]//*[contains(text(), '我的交易')]",
+                "//*[contains(text(), '我的交易')]",
+                "//span[contains(text(), '我的交易')]"
+            ]
+            
+            my_trade = None
+            for selector in my_trade_selectors:
+                try:
+                    my_trade = self.wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                    print(f"✅ 找到'我的交易'按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            if my_trade:
+                my_trade.click()
+                print("✓ '我的交易'点击成功")
+                time.sleep(2)
             
             # 步骤2: 点击"实时交易"
             print("步骤2: 点击'实时交易'")
-            realtime_trade = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//li[contains(@class, 'leftmenu-item')]//*[contains(text(), '实时交易')]"))
-            )
-            realtime_trade.click()
-            print("✓ '实时交易'点击成功")
-            time.sleep(2)
+            realtime_selectors = [
+                "//li[contains(@class, 'leftmenu-item')]//*[contains(text(), '实时交易')]",
+                "//*[contains(text(), '实时交易')]",
+                "//span[contains(text(), '实时交易')]"
+            ]
+            
+            realtime_trade = None
+            for selector in realtime_selectors:
+                try:
+                    realtime_trade = self.wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                    print(f"✅ 找到'实时交易'按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            if realtime_trade:
+                realtime_trade.click()
+                print("✓ '实时交易'点击成功")
+                time.sleep(2)
             
             # 步骤3: 点击"实时节点电价查询"
             print("步骤3: 点击'实时节点电价查询'")
-            price_query = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//span[contains(@class, 'title-text') and contains(text(), '实时节点电价查询')]"))
-            )
-            price_query.click()
-            print("✓ '实时节点电价查询'点击成功")
-            time.sleep(1)  # 等待1秒
+            price_query_selectors = [
+                "//span[contains(@class, 'title-text') and contains(text(), '实时节点电价查询')]",
+                "//*[contains(text(), '实时节点电价查询')]",
+                "//span[contains(text(), '实时节点电价查询')]"
+            ]
             
-            print("🎉 导航完成，已进入目标页面")
+            price_query = None
+            for selector in price_query_selectors:
+                try:
+                    price_query = self.wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                    print(f"✅ 找到'实时节点电价查询'按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            if price_query:
+                price_query.click()
+                print("✓ '实时节点电价查询'点击成功")
+                time.sleep(2)
+            
+            print("🎉 导航完成，已进入目标功能页面")
             return True
             
         except Exception as e:
@@ -193,29 +356,28 @@ class CompleteDataDownloader:
         try:
             print(f"步骤: 点击导出 {date_info}")
             
-            # 点击导出按钮
-            export_button = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'el-button')]//span[text()='导出']"))
-            )
-            export_button.click()
-            print("✓ 导出按钮点击成功")
-            
-            # 等待xlsx文件下载完成
-            downloaded_file = self.wait_for_xlsx_download()
-            
-            if downloaded_file:
-                # 移动并重命名文件
-                saved_filepath = self.move_xlsx_file(downloaded_file, date_info)
+            # 使用智能导出功能
+            if self.smart_click_export():
+                # 等待xlsx文件下载完成
+                downloaded_file = self.wait_for_xlsx_download()
                 
-                if saved_filepath:
-                    self.success_count += 1
-                    return saved_filepath
+                if downloaded_file:
+                    # 移动并重命名文件
+                    saved_filepath = self.move_xlsx_file(downloaded_file, date_info)
+                    
+                    if saved_filepath:
+                        self.success_count += 1
+                        return saved_filepath
+                    else:
+                        print("❌ 文件保存失败")
+                        self.failed_count += 1
+                        return None
                 else:
-                    print("❌ 文件保存失败")
+                    print("❌ xlsx文件下载失败")
                     self.failed_count += 1
                     return None
             else:
-                print("❌ xlsx文件下载失败")
+                print("❌ 导出按钮点击失败")
                 self.failed_count += 1
                 return None
                 
@@ -229,23 +391,50 @@ class CompleteDataDownloader:
         try:
             print(f"步骤: 选择年份 {target_year}")
             
-            date_input = self.wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input.el-input__inner[placeholder*='日期']"))
-            )
-            date_input.click()
-            print("✓ 日期输入框点击成功")
-            time.sleep(2)
+            # 尝试多种日期输入框选择器
+            date_selectors = [
+                "input.el-input__inner[placeholder*='日期']",
+                "input[placeholder*='日期']",
+                ".el-date-editor input"
+            ]
             
-            year_header = self.wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, ".el-date-picker__header-label"))
-            )
-            year_header.click()
-            print("✓ 年份选择按钮点击成功")
-            time.sleep(2)
+            date_input = None
+            for selector in date_selectors:
+                try:
+                    date_input = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+                    print(f"✅ 找到日期输入框: {selector}")
+                    break
+                except:
+                    continue
             
-            year_cell = self.wait.until(
-                EC.element_to_be_clickable((By.XPATH, f"//a[contains(@class, 'cell') and text()='{target_year}']"))
-            )
+            if date_input:
+                date_input.click()
+                print("✓ 日期输入框点击成功")
+                time.sleep(2)
+            
+            # 点击年份选择
+            year_header_selectors = [
+                ".el-date-picker__header-label",
+                ".el-date-picker__header button"
+            ]
+            
+            year_header = None
+            for selector in year_header_selectors:
+                try:
+                    year_header = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+                    print(f"✅ 找到年份选择按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            if year_header:
+                year_header.click()
+                print("✓ 年份选择按钮点击成功")
+                time.sleep(2)
+            
+            # 选择具体年份
+            year_xpath = f"//a[contains(@class, 'cell') and text()='{target_year}']"
+            year_cell = self.wait.until(EC.element_to_be_clickable((By.XPATH, year_xpath)))
             year_cell.click()
             print(f"✓ 年份 {target_year} 选择成功")
             time.sleep(2)
@@ -378,78 +567,17 @@ class CompleteDataDownloader:
             self.failed_count += 1
             return False
     
-    def download_entire_year(self, year="2025", regions=["广东"]):
-        """下载整年数据"""
-        try:
-            print(f"开始下载 {year} 年全年数据")
-            
-            # 打开网站
-            self.driver.get("https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html#/")
-            time.sleep(5)
-            
-            # 首先导航到目标页面（只需要运行一次）
-            if not self.navigate_to_target_page():
-                print("❌ 导航失败，退出")
-                return
-            
-            # 然后选择年份
-            if not self.select_year(year):
-                print("❌ 年份选择失败，退出")
-                return
-            
-            # 定义所有月份和天数
-            months = ["一月", "二月", "三月", "四月", "五月", "六月", 
-                     "七月", "八月", "九月", "十月", "十一月", "十二月"]
-            
-            month_days = {
-                "一月": 31, "二月": 28, "三月": 31, "四月": 30, "五月": 31, "六月": 30,
-                "七月": 31, "八月": 31, "九月": 30, "十月": 31, "十一月": 30, "十二月": 31
-            }
-            
-            total_days = sum(month_days.values()) * len(regions)
-            processed_count = 0
-            
-            # 遍历所有地区和月份
-            for region in regions:
-                print(f"\n开始处理地区: {region}")
-                
-                for month in months:
-                    days_in_month = month_days[month]
-                    print(f"\n开始处理 {month} ({days_in_month}天)")
-                    
-                    # 遍历该月的每一天
-                    for day in range(1, days_in_month + 1):
-                        try:
-                            success = self.process_single_date(month, str(day), region)
-                            
-                            if success:
-                                processed_count += 1
-                                progress = (processed_count / total_days) * 100
-                                print(f"总体进度: {processed_count}/{total_days} ({progress:.1f}%)")
-                            else:
-                                print(f"❌ 跳过 {month} {day}日 - {region}")
-                            
-                            # 防止请求过快
-                            time.sleep(2)
-                            
-                        except Exception as e:
-                            print(f"❌ 处理 {month} {day}日时出错: {e}")
-                            continue
-            
-            print(f"\n🎉 下载完成! 成功: {self.success_count}, 失败: {self.failed_count}")
-            
-        except Exception as e:
-            print(f"❌ 下载过程出错: {e}")
-    
     def download_specific_range(self, start_month=1, end_month=3, year="2025", regions=["广东"]):
-        """下载指定月份范围的数据（用于测试）"""
+        """下载指定月份范围的数据"""
         try:
             print(f"开始下载 {year} 年 {start_month}-{end_month} 月数据")
             
-            self.driver.get("https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html#/")
-            time.sleep(5)
+            # 确保在当前目标页面
+            if not self.ensure_current_page_is_target():
+                print("❌ 无法确保在目标页面")
+                return
             
-            # 首先导航到目标页面（只需要运行一次）
+            # 首先导航到目标功能页面
             if not self.navigate_to_target_page():
                 print("❌ 导航失败，退出")
                 return
@@ -498,7 +626,7 @@ class CompleteDataDownloader:
         return 0
     
     def close(self):
-        """关闭浏览器并显示统计信息"""
+        """显示统计信息，但不关闭浏览器"""
         total_files = self.get_download_stats()
         print(f"\n{'='*50}")
         print("下载统计:")
@@ -507,19 +635,18 @@ class CompleteDataDownloader:
         print(f"失败次数: {self.failed_count}")
         print(f"实际保存xlsx文件数: {total_files}")
         print(f"文件保存位置: {self.base_download_dir}")
+        print("💡 浏览器保持打开状态，您可以继续使用")
         print(f"{'='*50}")
-        
-        self.driver.quit()
 
 # 使用示例
 if __name__ == "__main__":
+    # 首先启用Safari远程调试（在终端中运行）
+    # /Applications/Safari.app/Contents/MacOS/Safari --remote-debugging-port=27753
+    
     downloader = CompleteDataDownloader("~/Downloads/2025_power_market_data")
     
     try:
-        # 方法1: 完整下载全年数据（需要很长时间）
-        # downloader.download_entire_year("2025", ["广东"])
-        
-        # 方法2: 测试下载前3个月的前3天
+        # 测试下载前3个月的前3天
         downloader.download_specific_range(start_month=1, end_month=3, year="2025", regions=["广东"])
         
     except KeyboardInterrupt:

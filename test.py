@@ -1,68 +1,36 @@
-import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import time
 
-def quick_test():
-    """快速测试单个日期流程"""
-    driver = webdriver.Safari()
-    wait = WebDriverWait(driver, 15)
+def smart_export():
+    current_url = None
     
     try:
-        # 打开网站
+        # 尝试获取当前页面的URL
+        current_url = driver.current_url
+        print(f"当前页面: {current_url}")
+    except:
+        # 如果driver不存在，创建新的
+        driver = webdriver.Safari()
         driver.get("https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html#/")
-        time.sleep(5)
-        
-        print("1. 选择年份")
-        date_input = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input.el-input__inner")))
-        date_input.click()
-        time.sleep(2)
-        
-        year_header = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".el-date-picker__header-label")))
-        year_header.click()
-        time.sleep(2)
-        
-        year_2025 = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'cell') and text()='2025']")))
-        year_2025.click()
-        time.sleep(2)
-        
-        print("2. 选择一月")
-        january = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'cell') and text()='一月']")))
-        january.click()
-        time.sleep(2)
-        
-        print("3. 选择1日")
-        day_1 = wait.until(EC.element_to_be_clickable((By.XPATH, "//td[contains(@class, 'available')]//span[text()='1']")))
-        day_1.click()
-        time.sleep(2)
-        
-        print("4. 选择地区")
-        region_arrow = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".el-select__caret.el-icon-arrow-up")))
-        region_arrow.click()
-        time.sleep(2)
-        
-        guangdong = wait.until(EC.element_to_be_clickable((By.XPATH, "//li[contains(@class, 'el-select-dropdown__item')]//span[text()='广东']")))
-        guangdong.click()
-        time.sleep(2)
-        
-        print("5. 点击导出")
-        export_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='导出']]")))
-        export_btn.click()
-        time.sleep(10)
-        
-        print("6. 刷新页面")
-        refresh_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".el-icon-refresh-right")))
-        refresh_btn.click()
-        time.sleep(5)
-        
-        print("🎉 测试完成!")
-        
+        print("启动了新的浏览器会话")
+    else:
+        # 如果driver存在，检查是否在目标页面
+        target_url = "https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html"
+        if target_url not in current_url:
+            print("不在目标页面，正在跳转...")
+            driver.get("https://spot.poweremarket.com/uptspot/sr/mp/portaladmin/index.html#/")
+            time.sleep(3)
+    
+    # 执行导出操作
+    try:
+        export_button = driver.find_element(By.CSS_SELECTOR, 'button.el-button.s1.el-button--primary')
+        driver.execute_script("arguments[0].click();", export_button)
+        print("✅ 导出按钮点击成功！")
+        return True
     except Exception as e:
-        print(f"测试失败: {e}")
-        driver.save_screenshot("test_error.png")
-    finally:
-        driver.quit()
+        print(f"❌ 点击失败: {e}")
+        return False
 
-# 运行测试
-quick_test()
+# 执行函数
+smart_export()
