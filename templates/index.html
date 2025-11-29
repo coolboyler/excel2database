@@ -63,7 +63,12 @@
         <div class="card-header">
           <h2>文件列表</h2>
           <div class="card-actions">
-            <button class="btn btn-toggle" onclick="toggleList('file-list-container')">折叠/展开</button>
+            <button
+              class="btn btn-toggle"
+              onclick="toggleList('file-list-container')"
+            >
+              折叠/展开
+            </button>
             <button
               id="import-all-btn"
               class="btn btn-success"
@@ -71,11 +76,15 @@
             >
               导入所有文件
             </button>
-            <button class="btn btn-danger" onclick="deleteAllFiles()">全部删除</button>
-            <button class="btn" onclick="loadFileList()">刷新列表</button>
+            <button class="btn btn-danger" onclick="deleteAllFiles()">
+              全部删除
+            </button>
+            <button class="btn btn-secondary" onclick="loadFileList()">
+              <span class="refresh-icon">↻</span> 刷新
+            </button>
           </div>
         </div>
-        <div id="file-list-container" style="max-height: 200px; overflow-y: auto;">
+        <div id="file-list-container" class="scrollable-list">
           <ul id="file-list" class="file-list">
             <div class="text-center">加载中...</div>
           </ul>
@@ -86,12 +95,33 @@
         <div class="card-header">
           <h2>数据库表</h2>
           <div class="card-actions">
-            <button class="btn btn-toggle" onclick="toggleList('table-list-container')">折叠/展开</button>
-            <button class="btn btn-danger" onclick="deleteAllTables()">全部删除</button>
-            <button class="btn" onclick="loadTableList()">刷新列表</button>
+            <div class="table-filter-container">
+              <label for="table-year-month-filter" class="filter-label"
+                >按年月筛选:</label
+              >
+              <select
+                id="table-year-month-filter"
+                onchange="filterTablesByYearMonth()"
+                class="filter-select"
+              >
+                <option value="">所有日期</option>
+              </select>
+            </div>
+            <button
+              class="btn btn-toggle"
+              onclick="toggleList('table-list-container')"
+            >
+              折叠/展开
+            </button>
+            <button class="btn btn-danger" onclick="deleteAllTables()">
+              全部删除
+            </button>
+            <button class="btn btn-secondary" onclick="loadTableList()">
+              <span class="refresh-icon">↻</span> 刷新
+            </button>
           </div>
         </div>
-        <div id="table-list-container" style="max-height: 200px; overflow-y: auto;">
+        <div id="table-list-container" class="scrollable-list">
           <ul id="table-list" class="file-list">
             <div class="text-center">加载中...</div>
           </ul>
@@ -143,64 +173,149 @@
       function toggleList(containerId) {
         const container = document.getElementById(containerId);
         const button = event.target;
-        if (container.style.display === 'none') {
-          container.style.display = 'block';
-          button.textContent = '折叠';
+        if (container.style.display === "none") {
+          container.style.display = "block";
+          button.textContent = "折叠";
         } else {
-          container.style.display = 'none';
-          button.textContent = '展开';
+          container.style.display = "none";
+          button.textContent = "展开";
         }
       }
 
       // 删除所有文件功能
       function deleteAllFiles() {
-        if (!confirm('确定要删除所有文件吗？此操作不可恢复！')) {
+        if (!confirm("确定要删除所有文件吗？此操作不可恢复！")) {
           return;
         }
 
-        fetch('/files', {
-          method: 'DELETE'
+        fetch("/files", {
+          method: "DELETE",
         })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error('删除失败');
-          }
-          return response.json();
-        })
-        .then(data => {
-          showAlert('所有文件删除成功', 'success');
-          loadFileList();
-        })
-        .catch(error => {
-          console.error('Error deleting all files:', error);
-          showAlert('删除所有文件失败', 'danger');
-        });
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error("删除失败");
+            }
+            return response.json();
+          })
+          .then((data) => {
+            showAlert("所有文件删除成功", "success");
+            loadFileList();
+          })
+          .catch((error) => {
+            console.error("Error deleting all files:", error);
+            showAlert("删除所有文件失败", "danger");
+          });
       }
 
       // 删除所有表功能
       function deleteAllTables() {
-        if (!confirm('确定要删除所有表吗？此操作不可恢复！')) {
+        if (!confirm("确定要删除所有表吗？此操作不可恢复！")) {
           return;
         }
 
-        fetch('/tables', {
-          method: 'DELETE'
+        fetch("/tables", {
+          method: "DELETE",
         })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error('删除失败');
-          }
-          return response.json();
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error("删除失败");
+            }
+            return response.json();
+          })
+          .then((data) => {
+            showAlert("所有表删除成功", "success");
+            loadTableList();
+            loadFileList(); // 同时刷新文件列表
+          })
+          .catch((error) => {
+            console.error("Error deleting all tables:", error);
+            showAlert("删除所有表失败", "danger");
+          });
+      }
+
+      // 导入所有文件功能
+      function importAllFiles() {
+        if (!confirm("确定要导入所有文件吗？此操作可能需要一些时间。")) {
+          return;
+        }
+
+        const importAllBtn = document.getElementById("import-all-btn");
+        importAllBtn.disabled = true;
+        importAllBtn.innerHTML = '<div class="spinner"></div> 导入中...';
+
+        fetch("/import-all", {
+          method: "POST",
         })
-        .then(data => {
-          showAlert('所有表删除成功', 'success');
-          loadTableList();
-          loadFileList(); // 同时刷新文件列表
-        })
-        .catch(error => {
-          console.error('Error deleting all tables:', error);
-          showAlert('删除所有表失败', 'danger');
-        });
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error("批量导入失败");
+            }
+            return response.json();
+          })
+          .then((data) => {
+            showAlert(`开始导入 ${data.total} 个文件`, "success");
+
+            // 更新所有文件状态
+            const fileItems = document.querySelectorAll(".file-item");
+            fileItems.forEach((item) => {
+              const actionArea = item.querySelector(".file-actions");
+              const filename = item.querySelector(".file-name").textContent;
+              actionArea.innerHTML = `
+              <span class="status-badge status-processing">导入中</span>
+              <button class="btn btn-danger btn-sm" onclick="deleteFile('${filename}')">删除</button>
+            `;
+            });
+
+            // 启动状态检查定时器
+            checkImportStatus();
+          })
+          .catch((error) => {
+            console.error("Error importing all files:", error);
+            showAlert("批量导入文件失败: " + error.message, "danger");
+
+            importAllBtn.disabled = false;
+            importAllBtn.innerHTML = "导入所有文件";
+          });
+      }
+
+      // 检查导入状态
+      function checkImportStatus() {
+        // 每隔5秒检查一次文件列表状态
+        const interval = setInterval(() => {
+          fetch("/files")
+            .then((response) => response.json())
+            .then((data) => {
+              // 检查是否还有文件处于"导入中"状态
+              const processingItems =
+                document.querySelectorAll(".status-processing");
+              if (processingItems.length === 0) {
+                // 如果没有处理中的项目，停止检查
+                clearInterval(interval);
+                return;
+              }
+
+              // 重新加载文件列表以更新状态
+              loadFileList();
+
+              // 检查是否所有文件都已处理完成
+              setTimeout(() => {
+                const processingItems =
+                  document.querySelectorAll(".status-processing");
+                if (processingItems.length === 0) {
+                  clearInterval(interval);
+                  showAlert("所有文件导入完成", "success");
+                  // 刷新列表以显示导入成功状态
+                  setTimeout(() => {
+                    loadFileList();
+                    loadTableList(); // 同时刷新表列表
+                  }, 1000);
+                }
+              }, 1000);
+            })
+            .catch((error) => {
+              console.error("Error checking import status:", error);
+            });
+        }, 5000); // 每5秒检查一次
       }
     </script>
   </body>

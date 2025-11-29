@@ -100,16 +100,51 @@ h1, h2, h3 {
     background-color: #8e44ad;
 }
 
+.btn-secondary {
+    background-color: #7f8c8d;
+}
+
+.btn-secondary:hover {
+    background-color: #6c757d;
+}
+
 .btn-sm {
     padding: 5px 10px;
     font-size: 12px;
 }
 
-.file-list {
-    list-style: none;
-    padding: 0;
-    max-height: 250px; /* 固定最大高度，大约5行的高度 */
-    overflow-y: auto;
+/* 数据库表筛选器样式优化 */
+.table-filter-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-right: 15px;
+}
+
+.filter-label {
+    font-weight: 500;
+    color: #333;
+    white-space: nowrap;
+}
+
+.filter-select {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: white;
+    font-size: 14px;
+    min-width: 120px;
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+.refresh-icon {
+    display: inline-block;
+    margin-right: 5px;
 }
 
 .file-item {
@@ -459,4 +494,11 @@ footer {
 /* 文本居中 */
 .text-center {
     text-align: center;
+}
+
+.file-list {
+    list-style: none;
+    padding: 0;
+    max-height: 250px;
+    overflow-y: auto;
 }

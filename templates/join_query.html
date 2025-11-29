@@ -61,6 +61,14 @@
         background-color: #2980b9;
       }
 
+      .btn-success {
+        background-color: #2ecc71;
+      }
+
+      .btn-success:hover {
+        background-color: #27ae60;
+      }
+
       .result-table {
         width: 100%;
         border-collapse: collapse;
@@ -268,6 +276,71 @@
         margin-right: 8px;
       }
 
+      /* 美化后的地区和数据类型选择样式 */
+      .selection-row {
+        display: flex;
+        gap: 30px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+        padding: 20px;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+      }
+
+      .selection-group {
+        flex: 1;
+        min-width: 250px;
+      }
+
+      .selection-group h3 {
+        margin-top: 0;
+        margin-bottom: 15px;
+        color: #333;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .options-container {
+        display: flex;
+        gap: 15px;
+        flex-wrap: wrap;
+      }
+
+      .option-card {
+        flex: 1;
+        min-width: 120px;
+        padding: 12px 15px;
+        background-color: white;
+        border: 2px solid #e9ecef;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: center;
+      }
+
+      .option-card:hover {
+        border-color: #3498db;
+        background-color: #f1f8ff;
+      }
+
+      .option-card.selected {
+        border-color: #3498db;
+        background-color: #e3f2fd;
+        box-shadow: 0 2px 6px rgba(52, 152, 219, 0.2);
+      }
+
+      .option-card input[type="radio"] {
+        display: none;
+      }
+
+      .option-card label {
+        display: block;
+        margin: 0;
+        font-weight: 500;
+        cursor: pointer;
+      }
+
       /* 新增的灵活筛选样式 */
       .flexible-filter {
         display: grid;
@@ -456,14 +529,9 @@
 
       .selected-dates-section {
         grid-column: 2;
-      }
-
-      .selected-dates-display {
-        min-height: 200px;
-        padding: 15px;
-        border: 1px solid #eee;
-        border-radius: 4px;
-        background-color: white;
+        max-height: 500px;
+        display: flex;
+        flex-direction: column;
       }
 
       .selected-dates-header {
@@ -473,6 +541,18 @@
         margin-bottom: 15px;
         padding-bottom: 10px;
         border-bottom: 1px solid #eee;
+        flex-shrink: 0;
+      }
+
+      .selected-dates-display {
+        flex: 1;
+        min-height: 200px;
+        max-height: 300px;
+        padding: 15px;
+        border: 1px solid #eee;
+        border-radius: 4px;
+        background-color: white;
+        overflow-y: auto;
       }
 
       .selected-dates-title {
@@ -540,6 +620,37 @@
         padding: 20px;
       }
 
+      .selection-row {
+        display: flex;
+        gap: 30px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+      }
+
+      .region-selector div {
+        display: flex;
+        gap: 10px;
+      }
+
+      .region-selector label,
+      .form-group .radio-group label {
+        font-weight: normal;
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+      }
+
+      .region-selector input[type="radio"],
+      .form-group .radio-group input[type="radio"] {
+        margin-right: 5px;
+      }
+
+      .radio-group {
+        display: flex;
+        gap: 15px;
+        margin-top: 0;
+      }
+
       @media (max-width: 768px) {
         .manual-selection-and-results {
           grid-template-columns: 1fr;
@@ -566,105 +677,51 @@
       <div class="card">
         <h2>多天均值查询</h2>
         <!-- 地区和数据类型选择在同一行 -->
-        <div
-          class="selection-row"
-          style="display: flex; gap: 30px; flex-wrap: wrap; margin-bottom: 20px"
-        >
+        <div class="selection-row">
           <!-- 地区选择 -->
-          <div
-            class="form-group region-selector"
-            style="
-              display: flex;
-              align-items: center;
-              gap: 15px;
-              margin-bottom: 0;
-            "
-          >
-            <label style="margin-bottom: 0; font-weight: 500">选择地区:</label>
-            <div style="display: flex; gap: 10px">
-              <label
-                style="
-                  font-weight: normal;
-                  display: flex;
-                  align-items: center;
-                  cursor: pointer;
-                "
-              >
+          <div class="selection-group">
+            <h3>选择地区</h3>
+            <div class="options-container">
+              <div class="option-card" onclick="selectOption('region-gd')">
                 <input
                   type="radio"
                   id="region-gd"
                   name="region"
                   value="广东"
                   checked
-                  style="margin-right: 5px"
                 />
-                广东
-              </label>
-              <label
-                style="
-                  font-weight: normal;
-                  display: flex;
-                  align-items: center;
-                  cursor: pointer;
-                "
-              >
-                <input
-                  type="radio"
-                  id="region-yn"
-                  name="region"
-                  value="云南"
-                  style="margin-right: 5px"
-                />
-                云南
-              </label>
+                <label for="region-gd">广东</label>
+              </div>
+              <div class="option-card" onclick="selectOption('region-yn')">
+                <input type="radio" id="region-yn" name="region" value="云南" />
+                <label for="region-yn">云南</label>
+              </div>
             </div>
           </div>
 
           <!-- 数据类型选择 -->
-          <div
-            class="form-group"
-            style="
-              display: flex;
-              align-items: center;
-              gap: 15px;
-              margin-bottom: 0;
-            "
-          >
-            <label style="margin-bottom: 0; font-weight: 500">数据类型:</label>
-            <div class="radio-group" style="gap: 15px; margin-top: 0">
-              <label
-                style="
-                  font-weight: normal;
-                  display: flex;
-                  align-items: center;
-                  cursor: pointer;
-                "
-              >
+          <div class="selection-group">
+            <h3>数据类型</h3>
+            <div class="options-container">
+              <div class="option-card" onclick="selectOption('data-type-1')">
                 <input
                   type="radio"
+                  id="data-type-1"
                   name="data-type"
                   value="日前节点电价"
                   checked
-                  style="margin-right: 5px"
                 />
-                日前节点电价
-              </label>
-              <label
-                style="
-                  font-weight: normal;
-                  display: flex;
-                  align-items: center;
-                  cursor: pointer;
-                "
-              >
+                <label for="data-type-1">日前节点电价</label>
+              </div>
+              <div class="option-card" onclick="selectOption('data-type-2')">
                 <input
                   type="radio"
+                  id="data-type-2"
                   name="data-type"
                   value="实时节点电价"
-                  style="margin-right: 5px"
                 />
-                实时节点电价
-              </label>
+                <label for="data-type-2">实时节点电价</label>
+              </div>
             </div>
           </div>
         </div>
@@ -691,11 +748,7 @@
                     />
                     <label for="filter-by-year">选择年份</label>
                   </div>
-                  <div
-                    class="year-selector"
-                    id="year-selector"
-                    style="display: none"
-                  >
+                  <div class="year-selector hidden" id="year-selector">
                     <div class="select-all-container">
                       <label class="select-all-label">
                         <input
@@ -725,11 +778,7 @@
                     />
                     <label for="filter-by-month">选择年份和月份</label>
                   </div>
-                  <div
-                    class="month-selector"
-                    id="month-selector"
-                    style="display: none"
-                  >
+                  <div class="month-selector hidden" id="month-selector">
                     <div class="form-group">
                       <label for="year-select">选择年份:</label>
                       <select id="year-select" onchange="updateMonthOptions()">
@@ -769,11 +818,7 @@
                     />
                     <label for="filter-by-range">选择日期范围</label>
                   </div>
-                  <div
-                    class="date-range-inputs"
-                    id="date-range-inputs"
-                    style="display: none"
-                  >
+                  <div class="date-range-inputs hidden" id="date-range-inputs">
                     <div class="form-group">
                       <label for="start-date">开始日期:</label>
                       <input type="date" id="start-date" />
@@ -812,7 +857,7 @@
                   />
                   <label for="filter-by-custom">手动选择日期</label>
                 </div>
-                <div id="custom-date-selector">
+                <div id="custom-date-selector" class="hidden">
                   <div class="year-month-selector">
                     <div class="form-group">
                       <label for="custom-year-select">选择年份:</label>
@@ -875,10 +920,9 @@
           <button type="submit" class="btn btn-primary">查询</button>
           <button
             type="button"
-            class="btn btn-success"
+            class="btn btn-success hidden"
             id="export-btn"
             onclick="exportDailyAveragesData()"
-            style="display: none"
           >
             导出Excel
           </button>
@@ -929,7 +973,25 @@
         setTimeout(() => {
           populateYearOptions();
           populateCustomYearMonthOptions();
+          // 确保初始加载时显示可选日期
+          updateCustomDateOptions();
+
+          // 确保手动选择区域可见
+          document
+            .getElementById("custom-date-selector")
+            .classList.remove("hidden");
         }, 1000);
+
+        // 初始化选项卡选中状态
+        setTimeout(() => {
+          const cards = document.querySelectorAll(".option-card");
+          cards.forEach((card) => {
+            const input = card.querySelector("input");
+            if (input.checked) {
+              card.classList.add("selected");
+            }
+          });
+        }, 100);
       });
 
       // 加载表列表
@@ -1094,26 +1156,30 @@
       // 切换筛选部分显示/隐藏
       function toggleFilterSection(selectedType) {
         // 隐藏所有筛选器
-        document.getElementById("year-selector").style.display = "none";
-        document.getElementById("month-selector").style.display = "none";
-        document.getElementById("date-range-inputs").style.display = "none";
-        document.getElementById("custom-date-selector").style.display = "none";
+        document.getElementById("year-selector").classList.add("hidden");
+        document.getElementById("month-selector").classList.add("hidden");
+        document.getElementById("date-range-inputs").classList.add("hidden");
+        document.getElementById("custom-date-selector").classList.add("hidden");
 
         // 显示选中的筛选器
         switch (selectedType) {
           case "year":
-            document.getElementById("year-selector").style.display = "block";
+            document.getElementById("year-selector").classList.remove("hidden");
             break;
           case "month":
-            document.getElementById("month-selector").style.display = "block";
+            document
+              .getElementById("month-selector")
+              .classList.remove("hidden");
             break;
           case "range":
-            document.getElementById("date-range-inputs").style.display =
-              "block";
+            document
+              .getElementById("date-range-inputs")
+              .classList.remove("hidden");
             break;
           case "custom":
-            document.getElementById("custom-date-selector").style.display =
-              "block";
+            document
+              .getElementById("custom-date-selector")
+              .classList.remove("hidden");
             break;
         }
       }
@@ -1304,7 +1370,7 @@
         }
 
         // 根据筛选条件过滤日期
-        let filteredDates = window.availableDates;
+        let filteredDates = window.availableDates || [];
         if (selectedYear) {
           filteredDates = filteredDates.filter((d) => d.year === selectedYear);
         }
@@ -1415,9 +1481,14 @@
         // 转换为数组并排序
         const selectedDates = Array.from(window.manuallySelectedDates).sort();
 
+        // 限制显示的日期数量，最多显示100个
+        const maxDisplayCount = 100;
+        const displayDates = selectedDates.slice(0, maxDisplayCount);
+        const remainingCount = selectedDates.length - maxDisplayCount;
+
         // 创建显示内容
         let html = '<div class="selected-dates-list">';
-        selectedDates.forEach((date) => {
+        displayDates.forEach((date) => {
           html += `
             <div class="selected-date-item">
               <span class="selected-date-text">${date}</span>
@@ -1425,6 +1496,16 @@
             </div>
           `;
         });
+
+        // 如果有超出限制的日期，显示提示信息
+        if (remainingCount > 0) {
+          html += `
+            <div class="selected-date-item" style="background-color: #fff3cd; justify-content: center;">
+              <span class="selected-date-text">还有 ${remainingCount} 个日期未显示</span>
+            </div>
+          `;
+        }
+
         html += "</div>";
 
         displayArea.innerHTML = html;
@@ -1504,6 +1585,25 @@
           updateSelectAllState();
         }
       });
+
+      // 新增：选项卡选择功能
+      function selectOption(optionId) {
+        const optionElement = document.getElementById(optionId);
+        if (optionElement) {
+          optionElement.checked = true;
+
+          // 更新卡片选中状态
+          const cards = document.querySelectorAll(".option-card");
+          cards.forEach((card) => {
+            const input = card.querySelector("input");
+            if (input.checked) {
+              card.classList.add("selected");
+            } else {
+              card.classList.remove("selected");
+            }
+          });
+        }
+      }
 
       // 应用日期范围
       function applyDateRange() {
@@ -1684,36 +1784,24 @@
                   "success"
                 );
                 // 显示导出按钮
-                const exportBtn = document.getElementById("export-btn");
-                if (exportBtn) {
-                  exportBtn.style.display = "inline-block";
-                }
+                showExportButton();
               } else {
                 showAlert("查询成功，但没有找到匹配的数据", "warning");
                 // 隐藏导出按钮
-                const exportBtn = document.getElementById("export-btn");
-                if (exportBtn) {
-                  exportBtn.style.display = "none";
-                }
+                hideExportButton();
               }
             })
             .catch((error) => {
               console.error("查询错误:", error);
               showAlert("查询失败: " + error.message, "error");
               // 隐藏导出按钮
-              const exportBtn = document.getElementById("export-btn");
-              if (exportBtn) {
-                exportBtn.style.display = "none";
-              }
+              hideExportButton();
             });
         } catch (error) {
           console.error("查询过程中发生错误:", error);
           showAlert("查询失败: " + error.message, "error");
           // 隐藏导出按钮
-          const exportBtn = document.getElementById("export-btn");
-          if (exportBtn) {
-            exportBtn.style.display = "none";
-          }
+          hideExportButton();
         }
       }
 
@@ -1963,11 +2051,11 @@
         jumpContainer.style.display = "inline-block";
         jumpContainer.style.marginLeft = "10px";
         jumpContainer.style.verticalAlign = "middle";
-        
+
         const jumpText = document.createElement("span");
         jumpText.textContent = "跳转到:";
         jumpText.style.marginRight = "5px";
-        
+
         const jumpInput = document.createElement("input");
         jumpInput.type = "number";
         jumpInput.min = 1;
@@ -1977,7 +2065,7 @@
         jumpInput.style.border = "1px solid #ddd";
         jumpInput.style.borderRadius = "4px";
         jumpInput.value = currentPage;
-        
+
         const jumpButton = document.createElement("button");
         jumpButton.textContent = "GO";
         jumpButton.style.marginLeft = "5px";
@@ -1992,14 +2080,14 @@
             ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
           }
         };
-        
+
         // 支持回车键跳转
         jumpInput.onkeyup = (event) => {
           if (event.key === "Enter") {
             jumpButton.click();
           }
         };
-        
+
         jumpContainer.appendChild(jumpText);
         jumpContainer.appendChild(jumpInput);
         jumpContainer.appendChild(jumpButton);
@@ -2045,7 +2133,10 @@
           // 根据地区调整数据类型关键词 - 修正逻辑
           let selectedDataType = selectedDataTypeElement.value;
           // 只有在数据类型不包含地区前缀时才添加地区前缀
-          if (selectedRegion === "云南" && !selectedDataType.startsWith("云南_")) {
+          if (
+            selectedRegion === "云南" &&
+            !selectedDataType.startsWith("云南_")
+          ) {
             selectedDataType = "云南_" + selectedDataType;
           }
 
@@ -2197,6 +2288,22 @@
             alert.remove();
           }
         }, 3000);
+      }
+
+      // 显示导出按钮
+      function showExportButton() {
+        const exportBtn = document.getElementById("export-btn");
+        if (exportBtn) {
+          exportBtn.classList.remove("hidden");
+        }
+      }
+
+      // 隐藏导出按钮
+      function hideExportButton() {
+        const exportBtn = document.getElementById("export-btn");
+        if (exportBtn) {
+          exportBtn.classList.add("hidden");
+        }
       }
     </script>
   </body>

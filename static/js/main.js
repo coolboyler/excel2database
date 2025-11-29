@@ -12,10 +12,6 @@ function loadFileList() {
     const fileListElement = document.getElementById('file-list');
     if (!fileListElement) return;
 
-    // 设置固定高度和滚动条
-    fileListElement.style.maxHeight = '200px';
-    fileListElement.style.overflowY = 'auto';
-
     fileListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
     fetch('/files')
@@ -26,12 +22,8 @@ function loadFileList() {
                 return;
             }
             
-            // 限制最多显示5条数据
-            const filesToShow = data.files.slice(0, 5);
-            const hasMoreFiles = data.files.length > 5;
-            
             let html = '';
-            filesToShow.forEach(file => {
+            data.files.forEach(file => {
                 html += `
                 <li class="file-item">
                     <span class="file-name">${file}</span>
@@ -41,10 +33,6 @@ function loadFileList() {
                     </div>
                 </li>`;
             });
-            
-            if (hasMoreFiles) {
-                html += `<div class="text-center">还有 ${data.files.length - 5} 个文件未显示</div>`;
-            }
             
             fileListElement.innerHTML = html;
         })
@@ -59,10 +47,6 @@ function loadTableList() {
     const tableListElement = document.getElementById('table-list');
     if (!tableListElement) return;
 
-    // 设置固定高度和滚动条
-    tableListElement.style.maxHeight = '200px';
-    tableListElement.style.overflowY = 'auto';
-
     tableListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
     fetch('/tables')
@@ -73,33 +57,108 @@ function loadTableList() {
                 return;
             }
             
-            // 限制最多显示5条数据
-            const tablesToShow = data.tables.slice(0, 5);
-            const hasMoreTables = data.tables.length > 5;
+            // 保存所有表数据，用于筛选
+            window.allTables = data.tables;
             
-            let html = '';
-            tablesToShow.forEach(table => {
-                html += `
-                <li class="file-item">
-                    <span class="file-name">${table}</span>
-                    <div class="file-actions">
-                        <button class="btn btn-primary btn-sm" onclick="viewTableData('${table}')">查看数据</button>
-                        <button class="btn btn-warning btn-sm" onclick="viewTableQuery('${table}')">查询</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteTable('${table}')">删除表</button>
-                    </div>
-                </li>`;
-            });
+            // 提取年月信息
+            extractYearMonthData(data.tables);
             
-            if (hasMoreTables) {
-                html += `<div class="text-center">还有 ${data.tables.length - 5} 个表未显示</div>`;
-            }
-            
-            tableListElement.innerHTML = html;
+            // 显示所有表
+            displayTables(data.tables);
         })
         .catch(error => {
             console.error('Error loading table list:', error);
             tableListElement.innerHTML = '<div class="alert alert-danger">加载表列表失败</div>';
         });
+}
+
+// 提取年月数据
+function extractYearMonthData(tables) {
+    const yearMonthData = [];
+    
+    tables.forEach(table => {
+        // 表名格式为 power_data_YYYYMMDD
+        const match = table.match(/^power_data_(\d{8})$/);
+        if (match) {
+            // 提取日期部分
+            const dateStr = match[1];
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+            const yearMonth = `${year}-${month}`;
+            
+            if (!yearMonthData.includes(yearMonth)) {
+                yearMonthData.push(yearMonth);
+            }
+        }
+    });
+    
+    // 保存年月数据并更新筛选器
+    window.yearMonthData = yearMonthData.sort((a, b) => b.localeCompare(a)); // 降序排列
+    updateYearMonthFilter();
+}
+
+// 更新年月筛选器
+function updateYearMonthFilter() {
+    const filterContainer = document.getElementById('table-year-month-filter');
+    if (!filterContainer || !window.yearMonthData) return;
+    
+    let html = '<option value="">所有日期</option>';
+    window.yearMonthData.forEach(ym => {
+        html += `<option value="${ym}">${ym}</option>`;
+    });
+    
+    filterContainer.innerHTML = html;
+}
+
+// 显示表列表
+function displayTables(tables) {
+    const tableListElement = document.getElementById('table-list');
+    if (!tableListElement) return;
+    
+    let html = '';
+    tables.forEach(table => {
+        html += `
+        <li class="file-item">
+            <span class="file-name">${table}</span>
+            <div class="file-actions">
+                <button class="btn btn-primary btn-sm" onclick="viewTableData('${table}')">查看数据</button>
+                <button class="btn btn-warning btn-sm" onclick="viewTableQuery('${table}')">查询</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteTable('${table}')">删除表</button>
+            </div>
+        </li>`;
+    });
+    
+    tableListElement.innerHTML = html;
+}
+
+// 根据年月筛选表
+function filterTablesByYearMonth() {
+    const selectedYearMonth = document.getElementById('table-year-month-filter').value;
+    if (!window.allTables) return;
+    
+    if (!selectedYearMonth) {
+        // 如果没有筛选条件，显示所有表
+        displayTables(window.allTables);
+        return;
+    }
+    
+    // 根据年月筛选表
+    const filteredTables = window.allTables.filter(table => {
+        // 表名格式为 power_data_YYYYMMDD
+        const match = table.match(/^power_data_(\d{8})$/);
+        if (!match) return false;
+        
+        // 提取日期部分
+        const dateStr = match[1];
+        const year = dateStr.substring(0, 4);
+        const month = dateStr.substring(4, 6);
+        const tableYearMonth = `${year}-${month}`;
+        
+        // 检查是否匹配选择的年月
+        return tableYearMonth === selectedYearMonth;
+    });
+    
+    displayTables(filteredTables);
 }
 
 // 设置上传表单 - 支持批量上传
@@ -531,7 +590,12 @@ function deleteFile(filename) {
 
 // 导入所有文件
 function importAllFiles() {
+    if (!confirm("确定要导入所有文件吗？此操作可能需要一些时间。")) {
+        return;
+    }
+    
     const importAllBtn = document.getElementById('import-all-btn');
+    const originalText = importAllBtn.innerHTML;
     importAllBtn.disabled = true;
     importAllBtn.innerHTML = '<div class="spinner"></div> 导入中...';
     
@@ -559,22 +623,20 @@ function importAllFiles() {
         });
         
         // 启动状态检查定时器
-        checkImportStatus();
-        
-        importAllBtn.disabled = false;
-        importAllBtn.innerHTML = '导入所有文件';
+        checkImportStatus(importAllBtn, originalText);
     })
     .catch(error => {
         console.error('Error importing all files:', error);
-        showAlert('批量导入文件失败', 'danger');
+        showAlert('批量导入文件失败: ' + error.message, 'danger');
         
+        // 恢复按钮状态
         importAllBtn.disabled = false;
-        importAllBtn.innerHTML = '导入所有文件';
+        importAllBtn.innerHTML = originalText;
     });
 }
 
 // 检查导入状态
-function checkImportStatus() {
+function checkImportStatus(button, originalText) {
     // 每隔5秒检查一次文件列表状态
     const interval = setInterval(() => {
         fetch('/files')
@@ -602,11 +664,10 @@ function checkImportStatus() {
                             loadFileList();
                             loadTableList(); // 同时刷新表列表
                                     
-                            // 重置导入所有按钮状态
-                            const importAllBtn = document.getElementById('import-all-btn');
-                            if (importAllBtn) {
-                                importAllBtn.disabled = false;
-                                importAllBtn.innerHTML = '已导入';
+                            // 恢复导入所有按钮状态
+                            if (button && originalText) {
+                                button.disabled = false;
+                                button.innerHTML = originalText;
                             }
                         }, 1000);
                     }
@@ -614,6 +675,12 @@ function checkImportStatus() {
             })
             .catch(error => {
                 console.error('Error checking import status:', error);
+                // 出错时也恢复按钮状态
+                if (button && originalText) {
+                    button.disabled = false;
+                    button.innerHTML = originalText;
+                }
+                clearInterval(interval);
             });
     }, 5000); // 每5秒检查一次
 }
