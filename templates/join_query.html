@@ -2105,16 +2105,8 @@
             return;
           }
 
-          // 从查询结果中提取所有唯一的日期
-          const dates = [
-            ...new Set(queryResult.map((item) => item.record_date)),
-          ];
-          console.log("从查询结果中提取的日期:", dates);
-
-          if (dates.length === 0) {
-            showAlert("没有可导出的日期数据", "warning");
-            return;
-          }
+          // 直接使用当前查询结果来构造导出数据，而不是重新查询
+          console.log("使用当前查询结果导出");
 
           // 获取选中的地区
           const selectedRegion = document.querySelector(
@@ -2144,11 +2136,11 @@
           console.log("选中的数据类型:", selectedDataType);
 
           // 构造参数
-          let url = "/daily-averages/export";
+          let url = "/daily-averages/export-from-result";
 
           // 添加查询参数
           const params = new URLSearchParams();
-          params.append("dates", JSON.stringify(dates));
+          params.append("query_result", JSON.stringify(queryResult));
           params.append("data_type_keyword", selectedDataType);
           url += "?" + params.toString();
           console.log("导出URL:", url);

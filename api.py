@@ -901,5 +901,193 @@ async def export_daily_averages(
         }
     )
 
+@app.get("/daily-averages/export-from-result")
+async def export_daily_averages_from_result(
+    query_result: str = Query(..., description="查询结果数据"),
+    data_type_keyword: str = Query("日前节点电价", description="数据类型关键字")
+):
+    """
+    根据当前查询结果导出多天的均值数据为Excel文件
+    
+    参数:
+    - query_result: 当前查询结果，JSON格式
+    - data_type_keyword: 数据类型关键字
+    
+    返回:
+    - Excel文件下载
+    """
+    try:
+        query_result_data = json.loads(query_result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"查询结果格式错误: {str(e)}")
+    
+    # 生成文件名：多天均值查询_时间戳.xlsx
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"多天均值查询_{timestamp}.xlsx"
+    
+    if not query_result_data:
+        # 如果没有数据，返回空Excel
+        df = pd.DataFrame()
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
+        
+        from fastapi.responses import StreamingResponse
+        import urllib.parse
+        encoded_filename = urllib.parse.quote(filename)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    
+    # 转换为DataFrame
+    df = pd.DataFrame(query_result_data)
+    
+    # 检查是否包含必要的列
+    required_columns = ['channel_name', 'record_date', 'record_time', 'value', 'sheet_name']
+    if all(col in df.columns for col in required_columns):
+        # 类似preHandle.py的处理方式，生成透视表格式
+        try:
+            # 提取唯一的sheet_name（假设数据中sheet_name唯一）
+            sheet_name = df['sheet_name'].unique()[0] if len(df['sheet_name'].unique()) > 0 else 'Sheet1'
+            # 提取唯一的日期（假设数据中日期唯一）
+            record_date = df['record_date'].unique()[0] if len(df['record_date'].unique()) > 0 else pd.Timestamp.now().date()
+            
+            # 格式化日期为YYYY-MM-DD
+            if hasattr(record_date, 'strftime'):
+                record_date_str = record_date.strftime('%Y-%m-%d')
+            else:
+                record_date_str = str(record_date)
+            
+            # 处理文件名特殊字符（避免斜杠、空格等导致保存失败）
+            sheet_name_clean = str(sheet_name).replace('/', '_').replace('\\', '_').replace(' ', '')
+            
+            # 转换record_time为小时（处理各种可能的格式）
+            def extract_hour(time_value):
+                if pd.isna(time_value):
+                    return None
+                if isinstance(time_value, str):
+                    if ':' in time_value:
+                        # 格式如 "01:00", "1:00"
+                        return int(time_value.split(':')[0])
+                    else:
+                        # 可能是数字字符串如 "100" 表示 01:00
+                        try:
+                            time_int = int(time_value)
+                            return time_int // 100
+                        except:
+                            return None
+                elif isinstance(time_value, (int, float)):
+                    # 数字格式如 100 表示 01:00
+                    return int(time_value) // 100
+                else:
+                    # timedelta或其他格式
+                    try:
+                        # 如果是timedelta对象
+                        hours = time_value.seconds // 3600
+                        return hours
+                    except:
+                        return None
+            
+            # 应用小时提取函数
+            df['hour'] = df['record_time'].apply(extract_hour)
+            
+            # 删除hour为NaN的行
+            df = df.dropna(subset=['hour'])
+            
+            # 生成电站级透视表
+            if len(df) > 0:
+                pivot_df = pd.pivot_table(
+                    df,
+                    index=['channel_name', 'record_date'],
+                    columns='hour',
+                    values='value',
+                    aggfunc='mean'
+                )
+                
+                # 重新索引确保有24小时列，并正确格式化列名
+                pivot_df = pivot_df.reindex(columns=range(24), fill_value=np.nan)
+                # 确保列名格式为 HH:00
+                pivot_df.columns = [f'{int(h):02d}:00' for h in pivot_df.columns]
+                pivot_df = pivot_df.reset_index()
+                
+                # 修改前两列名称
+                pivot_df = pivot_df.rename(columns={
+                    'channel_name': '节点名称',
+                    'record_date': '日期'
+                })
+                
+                # 插入单位列
+                pivot_df.insert(
+                    loc=2,
+                    column='单位',
+                    value='电价(元/MWh)'
+                )
+                
+                # 添加发电侧全省统一均价行
+                hour_columns = [f'{h:02d}:00' for h in range(24)]
+                # 确保所有小时列都存在
+                for col in hour_columns:
+                    if col not in pivot_df.columns:
+                        pivot_df[col] = np.nan
+                
+                # 在计算平均值前，确保所有列为数值类型
+                for col in hour_columns:
+                    pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce')
+                
+                # 计算全省统一均价行
+                province_avg = {}
+                for col in hour_columns:
+                    if col in pivot_df.columns:
+                        province_avg[col] = pivot_df[col].mean(skipna=True)
+                              
+                final_df = pivot_df
+            else:
+                # 如果处理后没有数据，创建空的DataFrame
+                columns = ['节点名称', '日期', '单位'] + [f'{h:02d}:00' for h in range(24)]
+                final_df = pd.DataFrame(columns=columns)
+            
+            # 直接返回Excel文件流
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                final_df.to_excel(writer, index=False, sheet_name=sheet_name_clean[:31])
+            output.seek(0)
+            
+            import urllib.parse
+            encoded_filename = urllib.parse.quote(filename)
+            from fastapi.responses import StreamingResponse
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+                }
+            )
+        except Exception as e:
+            print(f"处理透视表格式时出错: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # 如果不包含必要列或处理透视表失败，使用原始导出方式
+    # 直接返回Excel文件流
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='多天均值数据')
+    output.seek(0)
+    
+    import urllib.parse
+    encoded_filename = urllib.parse.quote(filename)
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+    )
+
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8003, reload=True)
