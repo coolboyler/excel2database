@@ -1,6 +1,6 @@
 // static/js/main.js
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     // 初始化页面
     loadFileList();
     setupUploadForm();
@@ -13,7 +13,7 @@ function loadFileList() {
     if (!fileListElement) return;
 
     fileListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
-    
+
     fetch('/files')
         .then(response => response.json())
         .then(data => {
@@ -21,9 +21,13 @@ function loadFileList() {
                 fileListElement.innerHTML = '<div class="text-center">没有找到Excel文件，请上传文件。</div>';
                 return;
             }
-            
+
+            // 默认只显示前10个文件，符合项目规范
+            const filesToShow = data.files.slice(0, 10);
+            const hasMoreFiles = data.files.length > 10;
+
             let html = '';
-            data.files.forEach(file => {
+            filesToShow.forEach(file => {
                 html += `
                 <li class="file-item">
                     <span class="file-name">${file}</span>
@@ -33,7 +37,12 @@ function loadFileList() {
                     </div>
                 </li>`;
             });
-            
+
+            // 如果还有更多文件，显示提示按钮
+            if (hasMoreFiles) {
+                html += `<div class="show-more-container"><button class="show-more-btn" onclick="showAllFiles()">还有 ${data.files.length - 10} 个文件未显示，点击查看其余文件</button></div>`;
+            }
+
             fileListElement.innerHTML = html;
         })
         .catch(error => {
@@ -42,8 +51,169 @@ function loadFileList() {
         });
 }
 
+// 显示所有文件
+function showAllFiles() {
+    const fileListElement = document.getElementById('file-list');
+    if (!fileListElement) return;
+
+    fileListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
+
+    fetch('/files')
+        .then(response => response.json())
+        .then(data => {
+            if (data.total === 0) {
+                fileListElement.innerHTML = '<div class="text-center">没有找到Excel文件，请上传文件。</div>';
+                return;
+            }
+
+            // 显示所有文件
+            const filesToShow = data.files;
+
+            let html = '';
+            filesToShow.forEach(file => {
+                html += `
+                <li class="file-item">
+                    <span class="file-name">${file}</span>
+                    <div class="file-actions">
+                        <button class="btn btn-primary btn-sm" onclick="importFile('${file}')">导入</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteFile('${file}')">删除</button>
+                    </div>
+                </li>`;
+            });
+
+            fileListElement.innerHTML = html;
+
+            // 移除"显示更多"按钮容器，因为我们已经显示了所有文件
+            const showMoreContainer = document.querySelector('.show-more-container');
+            if (showMoreContainer) {
+                showMoreContainer.remove();
+            }
+        })
+        .catch(error => {
+            console.error('Error loading all files:', error);
+            fileListElement.innerHTML = '<div class="alert alert-danger">加载文件列表失败</div>';
+        });
+}
+
+// 虚拟滚动相关变量
+let fileListData = []; // 存储所有文件数据
+let fileItemHeight = 46; // 每个文件项的高度（像素）(增加一些padding以确保正确计算)
+
+// 渲染可见的文件列表
+function renderVisibleFiles() {
+    const fileListElement = document.getElementById('file-list');
+    if (!fileListElement) return;
+
+    const container = document.getElementById('file-list-container');
+    if (!container) return;
+
+    // 计算应该显示哪些文件
+    const scrollTop = container.scrollTop;
+    const containerHeight = container.clientHeight;
+
+    // 计算起始和结束索引
+    const startIndex = Math.max(0, Math.floor(scrollTop / fileItemHeight) - 5);
+    const visibleItemCount = Math.ceil(containerHeight / fileItemHeight) + 10;
+    const endIndex = Math.min(fileListData.length, startIndex + visibleItemCount);
+
+    // 生成HTML
+    let html = '';
+
+    // 添加顶部填充以保持滚动位置正确
+    if (startIndex > 0) {
+        html += `<div style="height: ${startIndex * fileItemHeight}px;"></div>`;
+    }
+
+    // 渲染可见的文件项
+    for (let i = startIndex; i < endIndex; i++) {
+        const file = fileListData[i];
+        html += `
+        <li class="file-item" style="height: ${fileItemHeight}px;">
+            <span class="file-name">${file}</span>
+            <div class="file-actions">
+                <button class="btn btn-primary btn-sm" onclick="importFile('${file}')">导入</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteFile('${file}')">删除</button>
+            </div>
+        </li>`;
+    }
+
+    // 添加底部填充
+    const remainingItems = fileListData.length - endIndex;
+    if (remainingItems > 0) {
+        html += `<div style="height: ${remainingItems * fileItemHeight}px;"></div>`;
+    }
+
+    fileListElement.innerHTML = html;
+}
+
+// 处理文件列表滚动事件
+function handleFileListScroll() {
+    // 使用防抖动优化性能
+    if (window.fileListScrollTimer) {
+        clearTimeout(window.fileListScrollTimer);
+    }
+
+    window.fileListScrollTimer = setTimeout(() => {
+        renderVisibleFiles();
+        delete window.fileListScrollTimer;
+    }, 50);
+}
+
+
+
 // 加载表列表
 function loadTableList() {
+    const tableListElement = document.getElementById('table-list');
+    if (!tableListElement) return;
+
+    tableListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
+
+    fetch('/tables')
+        .then(response => response.json())
+        .then(data => {
+            if (data.tables.length === 0) {
+                tableListElement.innerHTML = '<div class="text-center">数据库中没有表。</div>';
+                return;
+            }
+
+            // 保存所有表数据，用于筛选
+            window.allTables = data.tables;
+
+            // 提取年月信息
+            extractYearMonthData(data.tables);
+
+            // 默认只显示前10个表，符合项目规范
+            const tablesToShow = data.tables.slice(0, 10);
+            const hasMoreTables = data.tables.length > 10;
+            
+            let html = '';
+            tablesToShow.forEach(table => {
+                html += `
+                <li class="file-item">
+                    <span class="file-name">${table}</span>
+                    <div class="file-actions">
+                        <button class="btn btn-primary btn-sm" onclick="viewTableData('${table}')">查看数据</button>
+                        <button class="btn btn-warning btn-sm" onclick="viewTableQuery('${table}')">查询</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteTable('${table}')">删除表</button>
+                    </div>
+                </li>`;
+            });
+            
+            // 如果还有更多表，显示提示按钮
+            if (hasMoreTables) {
+                html += `<div class="show-more-container"><button class="show-more-btn" onclick="showAllTables()">还有 ${data.tables.length - 10} 个表未显示，点击查看其余表</button></div>`;
+            }
+            
+            tableListElement.innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading table list:', error);
+            tableListElement.innerHTML = '<div class="alert alert-danger">加载表列表失败</div>';
+        });
+}
+
+// 显示所有表
+function showAllTables() {
     const tableListElement = document.getElementById('table-list');
     if (!tableListElement) return;
 
@@ -57,64 +227,44 @@ function loadTableList() {
                 return;
             }
             
-            // 保存所有表数据，用于筛选
-            window.allTables = data.tables;
-            
-            // 提取年月信息
-            extractYearMonthData(data.tables);
-            
             // 显示所有表
-            displayTables(data.tables);
+            const tablesToShow = data.tables;
+            
+            let html = '';
+            tablesToShow.forEach(table => {
+                html += `
+                <li class="file-item">
+                    <span class="file-name">${table}</span>
+                    <div class="file-actions">
+                        <button class="btn btn-primary btn-sm" onclick="viewTableData('${table}')">查看数据</button>
+                        <button class="btn btn-warning btn-sm" onclick="viewTableQuery('${table}')">查询</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteTable('${table}')">删除表</button>
+                    </div>
+                </li>`;
+            });
+            
+            tableListElement.innerHTML = html;
+            
+            // 移除"显示更多"按钮容器，因为我们已经显示了所有表
+            const showMoreContainer = document.querySelector('.show-more-container');
+            if (showMoreContainer) {
+                showMoreContainer.remove();
+            }
         })
         .catch(error => {
-            console.error('Error loading table list:', error);
+            console.error('Error loading all tables:', error);
             tableListElement.innerHTML = '<div class="alert alert-danger">加载表列表失败</div>';
         });
 }
 
-// 提取年月数据
-function extractYearMonthData(tables) {
-    const yearMonthData = [];
-    
-    tables.forEach(table => {
-        // 表名格式为 power_data_YYYYMMDD
-        const match = table.match(/^power_data_(\d{8})$/);
-        if (match) {
-            // 提取日期部分
-            const dateStr = match[1];
-            const year = dateStr.substring(0, 4);
-            const month = dateStr.substring(4, 6);
-            const yearMonth = `${year}-${month}`;
-            
-            if (!yearMonthData.includes(yearMonth)) {
-                yearMonthData.push(yearMonth);
-            }
-        }
-    });
-    
-    // 保存年月数据并更新筛选器
-    window.yearMonthData = yearMonthData.sort((a, b) => b.localeCompare(a)); // 降序排列
-    updateYearMonthFilter();
-}
-
-// 更新年月筛选器
-function updateYearMonthFilter() {
-    const filterContainer = document.getElementById('table-year-month-filter');
-    if (!filterContainer || !window.yearMonthData) return;
-    
-    let html = '<option value="">所有日期</option>';
-    window.yearMonthData.forEach(ym => {
-        html += `<option value="${ym}">${ym}</option>`;
-    });
-    
-    filterContainer.innerHTML = html;
-}
-
-// 显示表列表
-function displayTables(tables) {
+// 显示所有筛选后的表
+function showAllFilteredTables(tables) {
     const tableListElement = document.getElementById('table-list');
     if (!tableListElement) return;
+
+    tableListElement.innerHTML = '<div class="text-center"><div class="spinner"></div> 加载中...</div>';
     
+    // 显示所有表
     let html = '';
     tables.forEach(table => {
         html += `
@@ -129,70 +279,140 @@ function displayTables(tables) {
     });
     
     tableListElement.innerHTML = html;
+    
+    // 移除"显示更多"按钮容器，因为我们已经显示了所有表
+    const showMoreContainer = document.querySelector('.show-more-container');
+    if (showMoreContainer) {
+        showMoreContainer.remove();
+    }
 }
+
+
 
 // 根据年月筛选表
 function filterTablesByYearMonth() {
     const selectedYearMonth = document.getElementById('table-year-month-filter').value;
     if (!window.allTables) return;
-    
+
+    let filteredTables = [];
     if (!selectedYearMonth) {
         // 如果没有筛选条件，显示所有表
-        displayTables(window.allTables);
-        return;
+        filteredTables = window.allTables;
+    } else {
+        // 根据年月筛选表
+        filteredTables = window.allTables.filter(table => {
+            // 表名格式为 power_data_YYYYMMDD
+            const match = table.match(/^power_data_(\d{8})$/);
+            if (!match) return false;
+
+            // 提取日期部分
+            const dateStr = match[1];
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+            const tableYearMonth = `${year}-${month}`;
+
+            // 检查是否匹配选择的年月
+            return tableYearMonth === selectedYearMonth;
+        });
     }
+
+    // 更新显示（模仿文件列表显示逻辑）
+    // 默认只显示前10个表，符合项目规范
+    const tablesToShow = filteredTables.slice(0, 10);
+    const hasMoreTables = filteredTables.length > 10;
     
-    // 根据年月筛选表
-    const filteredTables = window.allTables.filter(table => {
-        // 表名格式为 power_data_YYYYMMDD
-        const match = table.match(/^power_data_(\d{8})$/);
-        if (!match) return false;
-        
-        // 提取日期部分
-        const dateStr = match[1];
-        const year = dateStr.substring(0, 4);
-        const month = dateStr.substring(4, 6);
-        const tableYearMonth = `${year}-${month}`;
-        
-        // 检查是否匹配选择的年月
-        return tableYearMonth === selectedYearMonth;
+    const tableListElement = document.getElementById('table-list');
+    let html = '';
+    tablesToShow.forEach(table => {
+        html += `
+        <li class="file-item">
+            <span class="file-name">${table}</span>
+            <div class="file-actions">
+                <button class="btn btn-primary btn-sm" onclick="viewTableData('${table}')">查看数据</button>
+                <button class="btn btn-warning btn-sm" onclick="viewTableQuery('${table}')">查询</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteTable('${table}')">删除表</button>
+            </div>
+        </li>`;
     });
     
-    displayTables(filteredTables);
+    // 如果还有更多表，显示提示按钮
+    if (hasMoreTables) {
+        html += `<div class="show-more-container"><button class="show-more-btn" onclick="showAllFilteredTables([${filteredTables.map(t => `'${t}'`).join(',')}])">还有 ${filteredTables.length - 10} 个表未显示，点击查看其余表</button></div>`;
+    }
+    
+    tableListElement.innerHTML = html;
+}
+
+// 提取年月数据
+function extractYearMonthData(tables) {
+    const yearMonthData = [];
+
+    tables.forEach(table => {
+        // 表名格式为 power_data_YYYYMMDD
+        const match = table.match(/^power_data_(\d{8})$/);
+        if (match) {
+            // 提取日期部分
+            const dateStr = match[1];
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+            const yearMonth = `${year}-${month}`;
+
+            if (!yearMonthData.includes(yearMonth)) {
+                yearMonthData.push(yearMonth);
+            }
+        }
+    });
+
+    // 保存年月数据并更新筛选器
+    window.yearMonthData = yearMonthData.sort((a, b) => b.localeCompare(a)); // 降序排列
+    updateYearMonthFilter();
+}
+
+// 更新年月筛选器
+function updateYearMonthFilter() {
+    const filterContainer = document.getElementById('table-year-month-filter');
+    if (!filterContainer || !window.yearMonthData) return;
+
+    let html = '<option value="">所有日期</option>';
+    window.yearMonthData.forEach(ym => {
+        html += `<option value="${ym}">${ym}</option>`;
+    });
+
+    filterContainer.innerHTML = html;
 }
 
 // 设置上传表单 - 支持批量上传
 function setupUploadForm() {
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('file-input');
-    
+
     if (!uploadForm || !fileInput) {
         console.error('上传表单元素未找到');
         return;
     }
-    
+
     const selectedFileDiv = document.getElementById('selected-file');
     const selectedFileNameSpan = document.getElementById('selected-file-name');
     const uploadButton = document.getElementById('upload-button');
-    
+
     // 修改文件输入框为多选
     fileInput.multiple = true;
-    
+
     // 监听文件选择事件
-    fileInput.addEventListener('change', function(e) {
+    fileInput.addEventListener('change', function (e) {
         console.log('文件选择事件触发', e.target.files);
         const files = Array.from(e.target.files);
-        
+
         if (files.length > 0) {
             // 检查文件类型
             const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
             const invalidFiles = files.filter(file => !file.name.endsWith('.xlsx'));
-            
+
             if (invalidFiles.length > 0) {
                 const invalidFileNames = invalidFiles.map(f => f.name).join(', ');
                 showAlert(`以下文件不是.xlsx格式，将被忽略: ${invalidFileNames}`, 'warning');
             }
-            
+
             if (validFiles.length > 0) {
                 console.log('选择的有效文件:', validFiles.map(f => f.name));
                 if (selectedFileDiv && selectedFileNameSpan) {
@@ -215,16 +435,16 @@ function setupUploadForm() {
             }
         }
     });
-    
+
     // 监听上传按钮点击事件
     if (uploadButton) {
-        uploadButton.addEventListener('click', function(e) {
+        uploadButton.addEventListener('click', function (e) {
             e.preventDefault(); // 防止表单提交
             console.log('上传按钮被点击');
-            
+
             const files = Array.from(fileInput.files);
             const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
-            
+
             if (validFiles.length > 0) {
                 console.log('开始上传文件:', validFiles.map(f => f.name));
                 uploadFiles(validFiles);
@@ -233,15 +453,15 @@ function setupUploadForm() {
             }
         });
     }
-    
+
     // 表单提交事件处理
-    uploadForm.addEventListener('submit', function(e) {
+    uploadForm.addEventListener('submit', function (e) {
         e.preventDefault();
         console.log('表单提交事件');
-        
+
         const files = Array.from(fileInput.files);
         const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
-        
+
         if (validFiles.length > 0) {
             uploadFiles(validFiles);
         } else {
@@ -254,41 +474,41 @@ function setupUploadForm() {
 function setupDragAndDrop() {
     const dropArea = document.getElementById('drop-area');
     if (!dropArea) return;
-    
+
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         dropArea.addEventListener(eventName, preventDefaults, false);
     });
-    
+
     function preventDefaults(e) {
         e.preventDefault();
         e.stopPropagation();
     }
-    
+
     ['dragenter', 'dragover'].forEach(eventName => {
         dropArea.addEventListener(eventName, () => {
             dropArea.classList.add('dragover');
         }, false);
     });
-    
+
     ['dragleave', 'drop'].forEach(eventName => {
         dropArea.addEventListener(eventName, () => {
             dropArea.classList.remove('dragover');
         }, false);
     });
-    
+
     dropArea.addEventListener('drop', handleDrop, false);
-    
+
     function handleDrop(e) {
         const dt = e.dataTransfer;
         const files = Array.from(dt.files);
         const validFiles = files.filter(file => file.name.endsWith('.xlsx'));
         const invalidFiles = files.filter(file => !file.name.endsWith('.xlsx'));
-        
+
         if (invalidFiles.length > 0) {
             const invalidFileNames = invalidFiles.map(f => f.name).join(', ');
             showAlert(`以下文件不是.xlsx格式，将被忽略: ${invalidFileNames}`, 'warning');
         }
-        
+
         if (validFiles.length > 0) {
             uploadFiles(validFiles);
         } else {
@@ -300,7 +520,7 @@ function setupDragAndDrop() {
 // 上传多个文件 - 支持重复文件检测
 async function uploadFiles(files) {
     console.log('开始上传文件:', files.map(f => f.name));
-    
+
     // 获取当前文件列表
     let currentFiles = [];
     try {
@@ -310,17 +530,17 @@ async function uploadFiles(files) {
     } catch (error) {
         console.error('获取当前文件列表失败:', error);
     }
-    
+
     // 检查是否有重复文件
     const duplicateFiles = files.filter(file => currentFiles.includes(file.name));
     const newFiles = files.filter(file => !currentFiles.includes(file.name));
-    
+
     let filesToUpload = [...files]; // 默认上传所有文件
-    
+
     if (duplicateFiles.length > 0) {
         const duplicateFileNames = duplicateFiles.map(f => f.name).join(', ');
         const message = `以下文件已存在: ${duplicateFileNames}\n是否要覆盖这些文件?`;
-        
+
         if (!confirm(message)) {
             // 用户选择不覆盖，只上传新文件
             filesToUpload = newFiles;
@@ -330,27 +550,27 @@ async function uploadFiles(files) {
             }
         }
     }
-    
+
     // 逐个上传文件
     const progressBar = document.getElementById('progress-bar');
     const progressContainer = document.getElementById('progress-container');
-    
+
     // 显示进度条
     if (progressContainer) {
         progressContainer.classList.remove('hidden');
     }
-    
+
     let successCount = 0;
     let failCount = 0;
-    
+
     for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i];
         const progress = Math.round(((i + 1) / filesToUpload.length) * 100);
-        
+
         if (progressBar) {
             progressBar.style.width = `${progress}%`;
         }
-        
+
         try {
             await uploadSingleFile(file);
             successCount++;
@@ -359,7 +579,7 @@ async function uploadFiles(files) {
             failCount++;
         }
     }
-    
+
     // 完成后隐藏进度条
     setTimeout(() => {
         if (progressContainer) {
@@ -369,25 +589,25 @@ async function uploadFiles(files) {
             progressBar.style.width = '0%';
         }
     }, 1000);
-    
+
     // 显示结果
     if (failCount === 0) {
         showAlert(`成功上传 ${successCount} 个文件`, 'success');
     } else {
         showAlert(`上传完成: ${successCount} 个成功, ${failCount} 个失败`, failCount > 0 ? 'warning' : 'success');
     }
-    
+
     // 重置文件输入框
     const fileInput = document.getElementById('file-input');
     const selectedFileDiv = document.getElementById('selected-file');
-    
+
     if (fileInput) {
         fileInput.value = '';
     }
     if (selectedFileDiv) {
         selectedFileDiv.style.display = 'none';
     }
-    
+
     // 刷新文件列表
     loadFileList();
 }
@@ -396,28 +616,28 @@ async function uploadFiles(files) {
 function uploadSingleFile(file) {
     return new Promise((resolve, reject) => {
         console.log('开始上传单个文件:', file.name);
-        
+
         const formData = new FormData();
         formData.append('file', file);
-        
+
         fetch('/upload', {
             method: 'POST',
             body: formData
         })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('上传失败，服务器返回错误状态: ' + response.status);
-            }
-            return response.json();
-        })
-        .then(data => {
-            console.log('上传成功:', data);
-            resolve(data);
-        })
-        .catch(error => {
-            console.error('上传文件失败:', error);
-            reject(error);
-        });
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('上传失败，服务器返回错误状态: ' + response.status);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('上传成功:', data);
+                resolve(data);
+            })
+            .catch(error => {
+                console.error('上传文件失败:', error);
+                reject(error);
+            });
     });
 }
 
@@ -425,7 +645,7 @@ function uploadSingleFile(file) {
 function importFile(filename) {
     const formData = new FormData();
     formData.append('filename', filename);
-    
+
     // 修复选择器：使用标准DOM方法查找包含特定文件名的元素
     const fileItems = document.querySelectorAll('.file-item');
     let fileItem = null;
@@ -435,93 +655,93 @@ function importFile(filename) {
             fileItem = item;
         }
     });
-    
+
     if (fileItem) {
         const actionArea = fileItem.querySelector('.file-actions');
         actionArea.innerHTML = '<div class="spinner"></div> 导入中...';
     }
-    
+
     fetch('/import', {
         method: 'POST',
         body: formData
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('导入失败');
-        }
-        return response.json();
-    })
-    .then(data => {
-        // 添加调试信息
-        console.log('Import response data:', data);
-        
-        if (data && data.status === 'imported') {
-            showAlert(`文件 ${filename} 导入成功`, 'success');
-        } else {
-            showAlert(`文件 ${filename} 导入处理中`, 'success');
-        }
-        
-        // 使用相同的方法查找文件项
-        const fileItems = document.querySelectorAll('.file-item');
-        let fileItem = null;
-        fileItems.forEach(item => {
-            const spanElement = item.querySelector('.file-name');
-            if (spanElement && spanElement.textContent === filename) {
-                fileItem = item;
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('导入失败');
             }
-        });
-        
-        if (fileItem) {
-            const actionArea = fileItem.querySelector('.file-actions');
-            
-            // 创建预览数据表格
-            let previewHtml = '';
-            if (data && data.preview_data && data.preview_data.length > 0) {
-                previewHtml = '<div class="data-preview"><h4>数据预览</h4><div class="table-container"><table class="preview-table"><thead><tr>';
-                
-                // 表头 - 添加标题提示
-                const headers = Object.keys(data.preview_data[0]);
-                headers.forEach(header => {
-                    previewHtml += `<th title="${header}">${header}</th>`;
-                });
-                previewHtml += '</tr></thead><tbody>';
-                
-                // 表格数据 - 添加标题提示
-                data.preview_data.forEach(row => {
-                    previewHtml += '<tr>';
-                    headers.forEach(header => {
-                        let value = row[header] !== null ? row[header] : '';
-                        // 在这里加上时间转换
-                        if (header === "record_time" && value !== "") {
-                            console.log("record_time 原始值:", value, "类型:", typeof value);
-                            
-                            // 处理字符串类型
-                            const numValue = parseInt(value);
-                            console.log("转换为数字:", numValue);
-                            
-                            // 将秒数转换为分钟，再格式化为时间
-                            const totalSeconds = numValue;
-                            const totalMinutes = totalSeconds / 60; // 秒转分钟
-                            const hours = Math.floor(totalMinutes / 60) % 24;
-                            const minutes = Math.floor(totalMinutes % 60);
-                            value = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
-                            
-                            console.log("转换后:", value);
-                        }
-                        // 为单元格添加title属性以便查看完整内容
-                        previewHtml += `<td title="${value}">${value}</td>`;
-                    });
-                    previewHtml += '</tr>';
-                });
+            return response.json();
+        })
+        .then(data => {
+            // 添加调试信息
+            console.log('Import response data:', data);
 
-                previewHtml += '</tbody></table></div></div>';
+            if (data && data.status === 'imported') {
+                showAlert(`文件 ${filename} 导入成功`, 'success');
+            } else {
+                showAlert(`文件 ${filename} 导入处理中`, 'success');
             }
-            
-            // 确保使用正确的数据字段（修复关键问题）
-            const tableName = (data && data.table_name) ? data.table_name : 'unknown';
-            const recordCount = (data && data.record_count) ? data.record_count : 0;
-            
-            actionArea.innerHTML = `
+
+            // 使用相同的方法查找文件项
+            const fileItems = document.querySelectorAll('.file-item');
+            let fileItem = null;
+            fileItems.forEach(item => {
+                const spanElement = item.querySelector('.file-name');
+                if (spanElement && spanElement.textContent === filename) {
+                    fileItem = item;
+                }
+            });
+
+            if (fileItem) {
+                const actionArea = fileItem.querySelector('.file-actions');
+
+                // 创建预览数据表格
+                let previewHtml = '';
+                if (data && data.preview_data && data.preview_data.length > 0) {
+                    previewHtml = '<div class="data-preview"><h4>数据预览</h4><div class="table-container"><table class="preview-table"><thead><tr>';
+
+                    // 表头 - 添加标题提示
+                    const headers = Object.keys(data.preview_data[0]);
+                    headers.forEach(header => {
+                        previewHtml += `<th title="${header}">${header}</th>`;
+                    });
+                    previewHtml += '</tr></thead><tbody>';
+
+                    // 表格数据 - 添加标题提示
+                    data.preview_data.forEach(row => {
+                        previewHtml += '<tr>';
+                        headers.forEach(header => {
+                            let value = row[header] !== null ? row[header] : '';
+                            // 在这里加上时间转换
+                            if (header === "record_time" && value !== "") {
+                                console.log("record_time 原始值:", value, "类型:", typeof value);
+
+                                // 处理字符串类型
+                                const numValue = parseInt(value);
+                                console.log("转换为数字:", numValue);
+
+                                // 将秒数转换为分钟，再格式化为时间
+                                const totalSeconds = numValue;
+                                const totalMinutes = totalSeconds / 60; // 秒转分钟
+                                const hours = Math.floor(totalMinutes / 60) % 24;
+                                const minutes = Math.floor(totalMinutes % 60);
+                                value = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+
+                                console.log("转换后:", value);
+                            }
+                            // 为单元格添加title属性以便查看完整内容
+                            previewHtml += `<td title="${value}">${value}</td>`;
+                        });
+                        previewHtml += '</tr>';
+                    });
+
+                    previewHtml += '</tbody></table></div></div>';
+                }
+
+                // 确保使用正确的数据字段（修复关键问题）
+                const tableName = (data && data.table_name) ? data.table_name : 'unknown';
+                const recordCount = (data && data.record_count) ? data.record_count : 0;
+
+                actionArea.innerHTML = `
                 <span class="status-badge status-success">已导入</span>
                 <div class="import-info">导入到表: <a href="#" onclick="viewTableData('${tableName}')">${tableName}</a><br>共 ${recordCount} 条记录</div>
                 <div class="btn-group">
@@ -531,36 +751,36 @@ function importFile(filename) {
                 </div>
                 ${previewHtml}
             `;
-        }
-        
-        // 刷新表列表
-        loadTableList();
-    })
-    .catch(error => {
-        console.error('Error importing file:', error);
-        showAlert('导入文件失败: ' + error.message, 'danger');
-        
-        // 使用相同的方法查找文件项
-        const fileItems = document.querySelectorAll('.file-item');
-        let fileItem = null;
-        fileItems.forEach(item => {
-            const spanElement = item.querySelector('.file-name');
-            if (spanElement && spanElement.textContent === filename) {
-                fileItem = item;
             }
-        });
-        
-        if (fileItem) {
-            const actionArea = fileItem.querySelector('.file-actions');
-            actionArea.innerHTML = `
+
+            // 刷新表列表
+            loadTableList();
+        })
+        .catch(error => {
+            console.error('Error importing file:', error);
+            showAlert('导入文件失败: ' + error.message, 'danger');
+
+            // 使用相同的方法查找文件项
+            const fileItems = document.querySelectorAll('.file-item');
+            let fileItem = null;
+            fileItems.forEach(item => {
+                const spanElement = item.querySelector('.file-name');
+                if (spanElement && spanElement.textContent === filename) {
+                    fileItem = item;
+                }
+            });
+
+            if (fileItem) {
+                const actionArea = fileItem.querySelector('.file-actions');
+                actionArea.innerHTML = `
                 <span class="status-badge status-error">导入失败</span>
                 <div class="btn-group">
                     <button class="btn btn-primary btn-sm" onclick="importFile('${filename}')">重试</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteFile('${filename}')">删除</button>
                 </div>
             `;
-        }
-    });
+            }
+        });
 }
 
 // 删除文件
@@ -568,24 +788,24 @@ function deleteFile(filename) {
     if (!confirm(`确定要删除文件 ${filename} 吗？`)) {
         return;
     }
-    
+
     fetch(`/files/${filename}`, {
         method: 'DELETE'
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('删除失败');
-        }
-        return response.json();
-    })
-    .then(data => {
-        showAlert(`文件 ${data.filename} 删除成功`, 'success');
-        loadFileList();
-    })
-    .catch(error => {
-        console.error('Error deleting file:', error);
-        showAlert('删除文件失败', 'danger');
-    });
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('删除失败');
+            }
+            return response.json();
+        })
+        .then(data => {
+            showAlert(`文件 ${data.filename} 删除成功`, 'success');
+            loadFileList();
+        })
+        .catch(error => {
+            console.error('Error deleting file:', error);
+            showAlert('删除文件失败', 'danger');
+        });
 }
 
 // 导入所有文件
@@ -593,46 +813,46 @@ function importAllFiles() {
     if (!confirm("确定要导入所有文件吗？此操作可能需要一些时间。")) {
         return;
     }
-    
+
     const importAllBtn = document.getElementById('import-all-btn');
     const originalText = importAllBtn.innerHTML;
     importAllBtn.disabled = true;
     importAllBtn.innerHTML = '<div class="spinner"></div> 导入中...';
-    
+
     fetch('/import-all', {
         method: 'POST'
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('批量导入失败');
-        }
-        return response.json();
-    })
-    .then(data => {
-        showAlert(`开始导入 ${data.total} 个文件`, 'success');
-        
-        // 更新所有文件状态
-        const fileItems = document.querySelectorAll('.file-item');
-        fileItems.forEach(item => {
-            const actionArea = item.querySelector('.file-actions');
-            const filename = item.querySelector('.file-name').textContent;
-            actionArea.innerHTML = `
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('批量导入失败');
+            }
+            return response.json();
+        })
+        .then(data => {
+            showAlert(`开始导入 ${data.total} 个文件`, 'success');
+
+            // 更新所有文件状态
+            const fileItems = document.querySelectorAll('.file-item');
+            fileItems.forEach(item => {
+                const actionArea = item.querySelector('.file-actions');
+                const filename = item.querySelector('.file-name').textContent;
+                actionArea.innerHTML = `
                 <span class="status-badge status-processing">导入中</span>
                 <button class="btn btn-danger btn-sm" onclick="deleteFile('${filename}')">删除</button>
             `;
+            });
+
+            // 启动状态检查定时器
+            checkImportStatus(importAllBtn, originalText);
+        })
+        .catch(error => {
+            console.error('Error importing all files:', error);
+            showAlert('批量导入文件失败: ' + error.message, 'danger');
+
+            // 恢复按钮状态
+            importAllBtn.disabled = false;
+            importAllBtn.innerHTML = originalText;
         });
-        
-        // 启动状态检查定时器
-        checkImportStatus(importAllBtn, originalText);
-    })
-    .catch(error => {
-        console.error('Error importing all files:', error);
-        showAlert('批量导入文件失败: ' + error.message, 'danger');
-        
-        // 恢复按钮状态
-        importAllBtn.disabled = false;
-        importAllBtn.innerHTML = originalText;
-    });
 }
 
 // 检查导入状态
@@ -649,10 +869,10 @@ function checkImportStatus(button, originalText) {
                     clearInterval(interval);
                     return;
                 }
-                
+
                 // 重新加载文件列表以更新状态
                 loadFileList();
-                
+
                 // 检查是否所有文件都已处理完成
                 setTimeout(() => {
                     const processingItems = document.querySelectorAll('.status-processing');
@@ -663,7 +883,7 @@ function checkImportStatus(button, originalText) {
                         setTimeout(() => {
                             loadFileList();
                             loadTableList(); // 同时刷新表列表
-                                    
+
                             // 恢复导入所有按钮状态
                             if (button && originalText) {
                                 button.disabled = false;
@@ -692,7 +912,7 @@ function viewTableData(tableName) {
         showAlert('无效的表名', 'danger');
         return;
     }
-    
+
     // 创建模态框
     const modal = document.createElement('div');
     modal.className = 'modal';
@@ -712,26 +932,26 @@ function viewTableData(tableName) {
         </div>
     `;
     document.body.appendChild(modal);
-    
+
     // 确保模态框在视口中可见
     modal.style.display = 'block';
-    
+
     // 关闭模态框事件
     modal.querySelector('.close-modal').addEventListener('click', () => {
         document.body.removeChild(modal);
     });
-    
+
     modal.querySelector('.close-btn').addEventListener('click', () => {
         document.body.removeChild(modal);
     });
-    
+
     // 点击模态框背景关闭
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
             document.body.removeChild(modal);
         }
     });
-    
+
     // 按ESC键关闭模态框
     document.addEventListener('keydown', function escapeHandler(e) {
         if (e.key === 'Escape') {
@@ -741,25 +961,25 @@ function viewTableData(tableName) {
             document.removeEventListener('keydown', escapeHandler);
         }
     });
-    
+
     // 加载表数据
     fetch(`/tables/${tableName}`)
         .then(response => response.json())
         .then(result => {
             const modalBody = modal.querySelector('.modal-body');
-            
+
             if (result.data && result.data.length > 0) {
                 let tableHtml = `<div class="table-info">总记录数: ${result.total}</div>`;
                 tableHtml += '<div class="table-container" style="max-height: 500px; overflow-y: auto;">';
                 tableHtml += '<table class="data-table"><thead><tr>';
-                
+
                 // 表头
                 const headers = Object.keys(result.data[0]);
                 headers.forEach(header => {
                     tableHtml += `<th>${header}</th>`;
                 });
                 tableHtml += '</tr></thead><tbody>';
-                
+
                 // 表格数据
                 result.data.forEach(row => {
                     tableHtml += '<tr>';
@@ -773,14 +993,14 @@ function viewTableData(tableName) {
                             const hours = Math.floor(totalMinutes / 60) % 24;
                             const minutes = Math.floor(totalMinutes % 60);
                             value = `${hours.toString().padStart(2, "0")}:${minutes
-                              .toString()
-                              .padStart(2, "0")}`;
-                          }
+                                .toString()
+                                .padStart(2, "0")}`;
+                        }
                         tableHtml += `<td>${value}</td>`;
                     });
                     tableHtml += '</tr>';
                 });
-                
+
                 tableHtml += '</tbody></table>';
                 tableHtml += '</div>';
                 modalBody.innerHTML = tableHtml;
@@ -806,43 +1026,43 @@ function deleteTable(tableName) {
     if (!confirm(`确定要删除表 ${tableName} 吗？此操作不可恢复！`)) {
         return;
     }
-    
+
     fetch(`/tables/${tableName}`, {
         method: 'DELETE'
     })
-    .then(response => response.json())
-    .then(data => {
-        showAlert(`表 ${tableName} 已成功删除`, 'success');
-        
-        // 关闭可能打开的模态框
-        const modal = document.querySelector('.modal');
-        if (modal) {
-            document.body.removeChild(modal);
-        }
-        
-        // 更新文件列表，以便更新状态
-        loadFileList();
-        
-        // 更新表列表
-        loadTableList();
-    })
-    .catch(error => {
-        console.error('Error deleting table:', error);
-        showAlert(`删除表 ${tableName} 失败`, 'danger');
-    });
+        .then(response => response.json())
+        .then(data => {
+            showAlert(`表 ${tableName} 已成功删除`, 'success');
+
+            // 关闭可能打开的模态框
+            const modal = document.querySelector('.modal');
+            if (modal) {
+                document.body.removeChild(modal);
+            }
+
+            // 更新文件列表，以便更新状态
+            loadFileList();
+
+            // 更新表列表
+            loadTableList();
+        })
+        .catch(error => {
+            console.error('Error deleting table:', error);
+            showAlert(`删除表 ${tableName} 失败`, 'danger');
+        });
 }
 
 // 显示提示信息
 function showAlert(message, type) {
     const alertsContainer = document.getElementById('alerts');
     if (!alertsContainer) return;
-    
+
     const alert = document.createElement('div');
     alert.className = `alert alert-${type}`;
     alert.textContent = message;
-    
+
     alertsContainer.appendChild(alert);
-    
+
     // 3秒后自动消失
     setTimeout(() => {
         alert.style.opacity = '0';

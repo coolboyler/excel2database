@@ -4,3 +4,4 @@ monitor_and_import.py
 monitor.log
 post_login_automation.py
 safari_automation.py
+config.py

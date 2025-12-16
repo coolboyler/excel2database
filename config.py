@@ -1,12 +1,13 @@
 # 数据库配置
 DB_CONFIG = {
-    'host': 'localhost',
-    'port': 33069,
-    'user': 'root',
-    'password': 'root',
-    'database': 'power_management',
+    'host': '42.194.150.230',
+    'port': 3306,
+    'user': 'huihuahaisheng',
+    'password': 'hhhs123',
+    'database': 'huihuahaisheng',
     'charset': 'utf8mb4'
 }
+
 
 # Excel配置
 EXCEL_CONFIG = {

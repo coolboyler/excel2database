@@ -1649,6 +1649,258 @@ class PowerDataImporter:
             traceback.print_exc()
             return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
 
+    def query_price_difference(self, date_list, region=""):
+        """
+        查询价差数据（日前节点电价 - 实时节点电价）
+        
+        Args:
+            date_list (list): 日期列表，格式为 "YYYY-MM-DD"
+            region (str): 地区前缀，如"云南_"，默认为空
+            
+        Returns:
+            dict: 包含价差查询结果的字典
+        """
+        try:
+            import pandas as pd
+            
+            # 构造数据类型关键词
+            dayahead_keyword = f"{region}日前节点电价" if region else "日前节点电价"
+            realtime_keyword = f"{region}实时节点电价" if region else "实时节点电价"
+            
+            print(f"🔍 查询价差数据:")
+            print(f"  - 日前节点电价关键词: {dayahead_keyword}")
+            print(f"  - 实时节点电价关键词: {realtime_keyword}")
+            print(f"  - 日期列表: {date_list}")
+            
+            # 查询日前节点电价数据
+            dayahead_result = self.query_daily_averages(date_list, dayahead_keyword)
+            dayahead_data = dayahead_result.get("data", [])
+            
+            # 查询实时节点电价数据
+            realtime_result = self.query_daily_averages(date_list, realtime_keyword)
+            realtime_data = realtime_result.get("data", [])
+            
+            # 检查是否有两个数据
+            if not dayahead_data:
+                return {
+                    "data": [],
+                    "total": 0,
+                    "message": f"未找到日前节点电价数据（关键词: {dayahead_keyword}）",
+                    "has_dayahead": False,
+                    "has_realtime": len(realtime_data) > 0
+                }
+            
+            if not realtime_data:
+                return {
+                    "data": [],
+                    "total": 0,
+                    "message": f"未找到实时节点电价数据（关键词: {realtime_keyword}）",
+                    "has_dayahead": True,
+                    "has_realtime": False
+                }
+            
+            print(f"✅ 找到日前数据: {len(dayahead_data)} 条")
+            print(f"✅ 找到实时数据: {len(realtime_data)} 条")
+            
+            # 转换为DataFrame以便处理
+            dayahead_df = pd.DataFrame(dayahead_data)
+            realtime_df = pd.DataFrame(realtime_data)
+            
+            # 确保必要的列存在
+            required_columns = ['channel_name', 'record_date', 'record_time', 'value']
+            if not all(col in dayahead_df.columns for col in required_columns):
+                return {
+                    "data": [],
+                    "total": 0,
+                    "message": "日前数据缺少必要列",
+                    "has_dayahead": True,
+                    "has_realtime": True
+                }
+            
+            if not all(col in realtime_df.columns for col in required_columns):
+                return {
+                    "data": [],
+                    "total": 0,
+                    "message": "实时数据缺少必要列",
+                    "has_dayahead": True,
+                    "has_realtime": True
+                }
+            
+            # 统一格式化字段以便匹配
+            # 1. 格式化channel_name：去除空格，统一大小写
+            dayahead_df['channel_name_clean'] = dayahead_df['channel_name'].astype(str).str.strip()
+            realtime_df['channel_name_clean'] = realtime_df['channel_name'].astype(str).str.strip()
+            
+            # 2. 格式化record_date：统一为字符串格式 YYYY-MM-DD
+            def format_date(date_val):
+                if pd.isna(date_val):
+                    return ""
+                if isinstance(date_val, str):
+                    return date_val.strip()
+                if hasattr(date_val, 'strftime'):
+                    return date_val.strftime('%Y-%m-%d')
+                return str(date_val).strip()
+            
+            dayahead_df['record_date_clean'] = dayahead_df['record_date'].apply(format_date)
+            realtime_df['record_date_clean'] = realtime_df['record_date'].apply(format_date)
+            
+            # 3. 格式化record_time：统一时间格式
+            def format_time(time_val):
+                if pd.isna(time_val):
+                    return ""
+                
+                # 处理timedelta对象（如 '0 days 00:00:00'）
+                if hasattr(time_val, 'total_seconds'):
+                    total_seconds = int(time_val.total_seconds())
+                    hour = total_seconds // 3600
+                    return f"{hour:02d}:00"
+                
+                # 如果是字符串
+                if isinstance(time_val, str):
+                    time_str = time_val.strip()
+                    # 如果包含"days"，说明是timedelta字符串格式
+                    if 'days' in time_str.lower():
+                        # 解析timedelta字符串，如 "0 days 01:00:00"
+                        import re
+                        match = re.search(r'(\d+):(\d+):(\d+)', time_str)
+                        if match:
+                            hours = int(match.group(1))
+                            return f"{hours:02d}:00"
+                    # 如果包含冒号，直接返回
+                    if ':' in time_str:
+                        return time_str
+                
+                # 如果是数字，转换为HH:MM格式
+                try:
+                    if isinstance(time_val, (int, float)):
+                        val = int(time_val)
+                        # 如果是秒数（>=3600），转换为小时
+                        if val >= 3600:
+                            hour = val // 3600
+                            return f"{hour:02d}:00"
+                        # 如果是小时（0-23），直接使用
+                        if 0 <= val < 24:
+                            return f"{val:02d}:00"
+                        # 如果是HHMM格式（100-2400），转换为HH:MM
+                        if 100 <= val <= 2400:
+                            hour = val // 100
+                            return f"{hour:02d}:00"
+                        # 如果是0，返回00:00
+                        if val == 0:
+                            return "00:00"
+                except:
+                    pass
+                return str(time_val).strip()
+            
+            dayahead_df['record_time_clean'] = dayahead_df['record_time'].apply(format_time)
+            realtime_df['record_time_clean'] = realtime_df['record_time'].apply(format_time)
+            
+            # 打印前几条数据用于调试
+            print(f"📊 日前数据示例:")
+            print(f"  channel_name: {dayahead_df['channel_name_clean'].head(3).tolist()}")
+            print(f"  record_date: {dayahead_df['record_date_clean'].head(3).tolist()}")
+            print(f"  record_time: {dayahead_df['record_time_clean'].head(3).tolist()}")
+            print(f"📊 实时数据示例:")
+            print(f"  channel_name: {realtime_df['channel_name_clean'].head(3).tolist()}")
+            print(f"  record_date: {realtime_df['record_date_clean'].head(3).tolist()}")
+            print(f"  record_time: {realtime_df['record_time_clean'].head(3).tolist()}")
+            
+            # 创建合并键：价差查询只使用record_date和record_time匹配
+            # 因为日前和实时的channel_name可能不同（如"日前节点电价查询_均值" vs "实时节点电价查询_均值"）
+            # 但如果是相同时间点的均值数据，应该匹配
+            # 如果channel_name相同，也包含在合并键中；如果不同，只使用日期和时间
+            dayahead_df['merge_key'] = (
+                dayahead_df['record_date_clean'] + '_' +
+                dayahead_df['record_time_clean']
+            )
+            realtime_df['merge_key'] = (
+                realtime_df['record_date_clean'] + '_' +
+                realtime_df['record_time_clean']
+            )
+            
+            # 打印合并键示例
+            print(f"📊 合并键示例（日前）: {dayahead_df['merge_key'].head(3).tolist()}")
+            print(f"📊 合并键示例（实时）: {realtime_df['merge_key'].head(3).tolist()}")
+            print(f"📊 合并键唯一值数量（日前）: {dayahead_df['merge_key'].nunique()}")
+            print(f"📊 合并键唯一值数量（实时）: {realtime_df['merge_key'].nunique()}")
+            
+            # 合并数据
+            merged_df = pd.merge(
+                dayahead_df[['merge_key', 'channel_name', 'record_date', 'record_time', 'value', 'sheet_name']],
+                realtime_df[['merge_key', 'value']],
+                on='merge_key',
+                how='inner',
+                suffixes=('_dayahead', '_realtime')
+            )
+            
+            print(f"📊 合并结果: {len(merged_df)} 条匹配记录")
+            print(f"📊 日前数据唯一合并键数: {dayahead_df['merge_key'].nunique()}")
+            print(f"📊 实时数据唯一合并键数: {realtime_df['merge_key'].nunique()}")
+            
+            if len(merged_df) == 0:
+                # 提供更详细的错误信息
+                dayahead_keys = set(dayahead_df['merge_key'].unique())
+                realtime_keys = set(realtime_df['merge_key'].unique())
+                missing_in_realtime = dayahead_keys - realtime_keys
+                missing_in_dayahead = realtime_keys - dayahead_keys
+                
+                error_msg = "日前和实时数据无法匹配。"
+                if len(missing_in_realtime) > 0:
+                    error_msg += f" 日前数据中有 {len(missing_in_realtime)} 个键在实时数据中找不到（示例: {list(missing_in_realtime)[:3]}）。"
+                if len(missing_in_dayahead) > 0:
+                    error_msg += f" 实时数据中有 {len(missing_in_dayahead)} 个键在日前数据中找不到（示例: {list(missing_in_dayahead)[:3]}）。"
+                
+                return {
+                    "data": [],
+                    "total": 0,
+                    "message": error_msg,
+                    "has_dayahead": True,
+                    "has_realtime": True
+                }
+            
+            # 计算价差：两个表对应的value相减（日前节点电价 - 实时节点电价）
+            # 确保value列是数值类型
+            dayahead_values = pd.to_numeric(merged_df['value_dayahead'], errors='coerce')
+            realtime_values = pd.to_numeric(merged_df['value_realtime'], errors='coerce')
+            # 计算价差：日前 - 实时，并保留两位小数
+            merged_df['value'] = (dayahead_values - realtime_values).round(2)
+            
+            # 将channel_name改为"价差"
+            merged_df['channel_name'] = '价差'
+            
+            print(f"📊 价差计算示例:")
+            print(f"  日前值: {dayahead_values.head(3).tolist()}")
+            print(f"  实时值: {realtime_values.head(3).tolist()}")
+            print(f"  价差值（保留两位小数）: {merged_df['value'].head(3).tolist()}")
+            
+            # 删除临时列
+            merged_df = merged_df.drop(columns=['merge_key', 'value_dayahead', 'value_realtime'])
+            
+            # 转换为字典列表
+            difference_data = merged_df.to_dict('records')
+            
+            print(f"✅ 价差计算完成，共 {len(difference_data)} 条记录")
+            
+            return {
+                "data": difference_data,
+                "total": len(difference_data),
+                "message": "价差查询成功",
+                "has_dayahead": True,
+                "has_realtime": True
+            }
+            
+        except Exception as e:
+            print(f"❌ 查询价差数据失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "data": [],
+                "total": 0,
+                "message": f"查询失败: {str(e)}",
+                "has_dayahead": False,
+                "has_realtime": False
+            }
+
     def _process_outage_as_table(self, df, data_date, sheet_name):
         """将表格数据映射为停电记录，适配文件格式"""
         records = []
