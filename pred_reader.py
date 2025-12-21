@@ -1620,7 +1620,6 @@ class PowerDataImporter:
             union_parts = []
             for table in valid_tables:
                 union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均值%' AND type LIKE '%{data_type_keyword}%'""")
-            
             if not union_parts:
                 return {"data": [], "total": 0, "message": "没有找到匹配的数据"}
                 

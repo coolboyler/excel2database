@@ -1101,7 +1101,6 @@ async def export_daily_averages_from_result(
             traceback.print_exc()
     
     # 如果不包含必要列或处理透视表失败，使用原始导出方式
-    # 直接返回Excel文件流
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='多天均值数据')
@@ -1358,7 +1357,7 @@ async def export_price_difference_from_result(
                                         cell.fill = fill
                                 except (ValueError, TypeError):
                                     pass
-            
+
             output.seek(0)
             
             import urllib.parse
