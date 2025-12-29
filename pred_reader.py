@@ -1398,22 +1398,17 @@ class PowerDataImporter:
                     }
                     records.append(record)
 
-        # 再添加每小时的均値データ（所有行在该小时的均値）
         for hour, times in time_groups.items():
-            # 获取这些时间点的値并計算均値
             values = []
             for t in times:
-                # 計算該時間点在所有行中的均値
                 mean_value = df[t].mean()
                 values.append(mean_value)
-            
-            # 計算4つの時間点の総均値
             if values:
                 overall_mean = sum(values) / len(values)
                 record = {
                     "record_date": pd.to_datetime(data_date).date(),
                     "record_time": f"{hour}:00",   # "HH:00" にフォーマット
-                    "channel_name": f"{data_type}_均値",
+                    "channel_name": f"{data_type}_均值",
                     "value": round(overall_mean, 2),
                     "type": "广东_"+data_type,
                     "sheet_name": sheet_name,
@@ -1421,7 +1416,7 @@ class PowerDataImporter:
                 }
                 records.append(record)
 
-        print(f"✅ {data_type} 均値生成 {len(records)} 条記錄")
+        print(f"✅ {data_type} 均值生成 {len(records)} 条记录")
         return records
 
     def import_point_data_new(self, excel_file):
