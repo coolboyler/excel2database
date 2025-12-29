@@ -1392,7 +1392,7 @@ class PowerDataImporter:
                         "record_time": f"{hour}:00",  # 按小时存储
                         "channel_name": channel_name,
                         "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均値
-                        "type": "广东_"+data_type,
+                        "type": data_type,
                         "sheet_name": sheet_name,
                         "created_at": pd.Timestamp.now(),
                     }
@@ -1410,7 +1410,7 @@ class PowerDataImporter:
                     "record_time": f"{hour}:00",   # "HH:00" にフォーマット
                     "channel_name": f"{data_type}_均值",
                     "value": round(overall_mean, 2),
-                    "type": "广东_"+data_type,
+                    "type": data_type,
                     "sheet_name": sheet_name,
                     "created_at": pd.Timestamp.now(),
                 }
