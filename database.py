@@ -111,6 +111,8 @@ class DatabaseManager:
             with self.engine.connect() as conn:
                 result = conn.execute(text("SHOW TABLES"))
                 tables = [row[0] for row in result]
+                # 按表名倒序排列（通常表名包含日期，如 power_data_20230918，倒序即最新日期在前）
+                tables.sort(reverse=True)
                 return tables
         except Exception as e:
             print(f"❌ 获取数据表失败: {str(e)}")
@@ -120,7 +122,15 @@ class DatabaseManager:
         """获取指定表的数据"""
         try:
             with self.engine.connect() as conn:
-                result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT {limit}"))
+                # 尝试检查表中是否有 record_date 字段，如果有则按日期倒序，否则按id倒序
+                try:
+                    # 简单判断：默认按id倒序显示最新插入的数据
+                    query = f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT {limit}"
+                    result = conn.execute(text(query))
+                except Exception:
+                    # 如果没有id列或其他错误，回退到无排序
+                    result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT {limit}"))
+                
                 data = []
                 for row in result:
                     # 修复：正确处理SQLAlchemy行对象

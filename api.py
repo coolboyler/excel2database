@@ -66,7 +66,7 @@ async def list_files():
     data_folder = "data"
     os.makedirs(data_folder, exist_ok=True)
     excel_files = glob.glob(os.path.join(data_folder, "*.xlsx"))
-    excel_files.sort()
+    excel_files.sort(reverse=True)  # 按文件名倒序排列（最新日期在前）
     
     return {
         "total": len(excel_files),
@@ -247,9 +247,24 @@ async def query_table_data(table_name: str,
             total_count = count_result.scalar()
             
             # 获取分页数据
-            data_query = f"SELECT * FROM {table_name} {where_clause} LIMIT :limit OFFSET :offset"
+            # 默认添加排序：优先按record_date倒序，其次按id倒序
+            order_clause = ""
+            # 简单检查表结构中是否有record_date列（可以通过查询一行数据或describe，这里简化处理，假设大部分表都有id）
+            # 更稳妥的方式是直接尝试ORDER BY id DESC，如果报错则忽略
+            # 但由于我们要执行SQL，这里最好直接拼接到SQL中。
+            # 为了兼容性，我们先不强制加ORDER BY，除非用户没有指定排序（当前接口不支持指定排序）
+            # 我们可以默认加 ORDER BY id DESC，因为大部分表都有id主键
+            
+            # 检查是否有id列或record_date列比较耗时，这里直接尝试按id倒序，因为我们的建表语句都包含id
+            data_query = f"SELECT * FROM {table_name} {where_clause} ORDER BY id DESC LIMIT :limit OFFSET :offset"
+            
             params.update({"limit": limit, "offset": offset})
-            data_result = conn.execute(text(data_query), params)
+            try:
+                data_result = conn.execute(text(data_query), params)
+            except Exception:
+                # 如果失败（例如没有id列），回退到无排序
+                data_query = f"SELECT * FROM {table_name} {where_clause} LIMIT :limit OFFSET :offset"
+                data_result = conn.execute(text(data_query), params)
             
             data = []
             for row in data_result:

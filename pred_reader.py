@@ -1622,7 +1622,7 @@ class PowerDataImporter:
             print(f"🚀 执行UNION查询: {union_query}")
             final_query = f"""
                 SELECT * FROM ({union_query}) as combined_data
-                ORDER BY record_date, record_time
+                ORDER BY record_date DESC, record_time
             """
             
             # 执行查询

@@ -524,6 +524,24 @@
       margin-bottom: 20px;
     }
 
+    /* 排序表头样式 */
+    .sortable-header {
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      transition: background-color 0.2s;
+    }
+
+    .sortable-header:hover {
+      background-color: #e9ecef;
+    }
+
+    .sort-icon {
+      margin-left: 5px;
+      font-size: 0.8em;
+      color: #666;
+    }
+
     .manual-selection-section {
       grid-column: 1;
     }
@@ -911,6 +929,53 @@
     let queryResult = [];
     let currentPage = 1;
     const itemsPerPage = 20;
+    
+    // 排序状态
+    let currentSort = {
+      field: 'record_date',
+      direction: 'desc'
+    };
+
+    // 切换排序
+    function toggleSort(field) {
+        if (currentSort.field === field) {
+            currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+        } else {
+            currentSort.field = field;
+            currentSort.direction = 'desc'; // 默认倒序
+        }
+
+        // 执行排序
+        queryResult.sort((a, b) => {
+            let valA = a[field];
+            let valB = b[field];
+
+            // 处理空值
+            if (valA === null || valA === undefined) valA = '';
+            if (valB === null || valB === undefined) valB = '';
+
+            // 尝试转换为数字进行比较（如果是数值列）
+            const numA = parseFloat(valA);
+            const numB = parseFloat(valB);
+            const isNumA = !isNaN(numA) && isFinite(valA); // 确保是有效数字且不是空字符串
+            const isNumB = !isNaN(numB) && isFinite(valB);
+
+            if (isNumA && isNumB) {
+                return currentSort.direction === 'asc' ? numA - numB : numB - numA;
+            }
+
+            // 字符串比较
+            const strA = String(valA).toLowerCase();
+            const strB = String(valB).toLowerCase();
+            if (strA < strB) return currentSort.direction === 'asc' ? -1 : 1;
+            if (strA > strB) return currentSort.direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        // 重新渲染（重置到第一页）
+        currentPage = 1;
+        displayResults(false); // 传入false表示不重置排序状态，避免死循环
+    }
 
     // 页面加载完成后初始化
     document.addEventListener("DOMContentLoaded", function () {
@@ -1070,8 +1135,8 @@
         `;
       dateCheckboxes.appendChild(selectAllDiv);
 
-      // 按日期排序
-      filteredDates.sort((a, b) => a.date.localeCompare(b.date));
+      // 按日期排序 (倒序：最新日期在前)
+      filteredDates.sort((a, b) => b.date.localeCompare(a.date));
 
       // 创建复选框容器
       const checkboxesContainer = document.createElement("div");
@@ -1196,18 +1261,18 @@
       }
 
       const months = [
-        { name: "一月", value: "01" },
-        { name: "二月", value: "02" },
-        { name: "三月", value: "03" },
-        { name: "四月", value: "04" },
-        { name: "五月", value: "05" },
-        { name: "六月", value: "06" },
-        { name: "七月", value: "07" },
-        { name: "八月", value: "08" },
-        { name: "九月", value: "09" },
-        { name: "十月", value: "10" },
-        { name: "十一月", value: "11" },
         { name: "十二月", value: "12" },
+        { name: "十一月", value: "11" },
+        { name: "十月", value: "10" },
+        { name: "九月", value: "09" },
+        { name: "八月", value: "08" },
+        { name: "七月", value: "07" },
+        { name: "六月", value: "06" },
+        { name: "五月", value: "05" },
+        { name: "四月", value: "04" },
+        { name: "三月", value: "03" },
+        { name: "二月", value: "02" },
+        { name: "一月", value: "01" },
       ];
 
       months.forEach((month, index) => {
@@ -1269,18 +1334,18 @@
       // 清空并重新填充月份
       monthSelect.innerHTML = '<option value="">选择月份</option>';
       const months = [
-        { name: "一月", value: "01" },
-        { name: "二月", value: "02" },
-        { name: "三月", value: "03" },
-        { name: "四月", value: "04" },
-        { name: "五月", value: "05" },
-        { name: "六月", value: "06" },
-        { name: "七月", value: "07" },
-        { name: "八月", value: "08" },
-        { name: "九月", value: "09" },
-        { name: "十月", value: "10" },
-        { name: "十一月", value: "11" },
         { name: "十二月", value: "12" },
+        { name: "十一月", value: "11" },
+        { name: "十月", value: "10" },
+        { name: "九月", value: "09" },
+        { name: "八月", value: "08" },
+        { name: "七月", value: "07" },
+        { name: "六月", value: "06" },
+        { name: "五月", value: "05" },
+        { name: "四月", value: "04" },
+        { name: "三月", value: "03" },
+        { name: "二月", value: "02" },
+        { name: "一月", value: "01" },
       ];
 
       months.forEach((month) => {
@@ -1343,8 +1408,8 @@
         return;
       }
 
-      // 按日期排序
-      filteredDates.sort((a, b) => a.date.localeCompare(b.date));
+      // 按日期排序 (倒序：最新日期在前)
+      filteredDates.sort((a, b) => b.date.localeCompare(a.date));
 
       // 创建复选框容器
       const checkboxesContainer = document.createElement("div");
@@ -1809,6 +1874,13 @@
 
             // 无论是否有数据，都更新页面显示
             queryResult = data.data || [];
+            
+            // 重置排序状态为默认倒序，与后端返回一致
+            currentSort = {
+                field: 'record_date',
+                direction: 'desc'
+            };
+            
             displayResults();
             if (data.total > 0) {
               const successMsg = isPriceDifference
@@ -1893,9 +1965,10 @@
 
       // 更新结果信息
       const totalPages = Math.ceil(queryResult.length / itemsPerPage);
+      const sortText = currentSort.direction === 'asc' ? '日期正序' : '日期倒序';
       document.getElementById(
         "result-info"
-      ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页`;
+      ).textContent = `总共 ${queryResult.length} 条记录，共 ${totalPages} 页，当前显示第 ${currentPage} 页 (${sortText}排列)`;
 
       // 渲染图表
       renderChart();
