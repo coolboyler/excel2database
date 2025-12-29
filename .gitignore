@@ -5,3 +5,6 @@ monitor.log
 post_login_automation.py
 safari_automation.py
 config.py
+download.py
+import_dayahead_realtime.py
+import_via_api.py

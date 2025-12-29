@@ -1323,9 +1323,9 @@ class PowerDataImporter:
         else:
             print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
             return False, None, 0, []
-
+        data_type = "广东_" + data_type
         print(f"\n📘 正在处理 {first_sheet_name} | 日期: {data_date} | 类型: {data_type}")
-
+    
         # 按列求均值并生成 records
         records = self.process_mean_by_column(df, data_date, first_sheet_name, data_type)
 
@@ -1392,7 +1392,7 @@ class PowerDataImporter:
                         "record_time": f"{hour}:00",  # 按小时存储
                         "channel_name": channel_name,
                         "value": round(hourly_mean, 2),  # 使用该小时内四个时间点的均値
-                        "type": data_type,
+                        "type": "广东_"+data_type,
                         "sheet_name": sheet_name,
                         "created_at": pd.Timestamp.now(),
                     }
@@ -1415,7 +1415,7 @@ class PowerDataImporter:
                     "record_time": f"{hour}:00",   # "HH:00" にフォーマット
                     "channel_name": f"{data_type}_均値",
                     "value": round(overall_mean, 2),
-                    "type": data_type,
+                    "type": "广东_"+data_type,
                     "sheet_name": sheet_name,
                     "created_at": pd.Timestamp.now(),
                 }

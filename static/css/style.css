@@ -616,3 +616,15 @@ footer {
     border-radius: 4px;
     border-left: 3px solid #3498db;
 }
+/* 轮廓按钮样式 */
+.btn-outline-primary {
+    background-color: transparent;
+    border: 1px solid #3498db;
+    color: #3498db;
+}
+
+.btn-outline-primary:hover, 
+.btn-outline-primary.active {
+    background-color: #3498db;
+    color: white;
+}

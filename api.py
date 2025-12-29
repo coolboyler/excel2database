@@ -3,7 +3,7 @@
 from io import BytesIO
 import json
 import time
-from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, logger
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1291,7 +1291,7 @@ async def export_price_difference_from_result(
             # 返回Excel文件流
             output = BytesIO()
             from openpyxl.styles import PatternFill
-            from openpyxl.chart import LineChart, Reference
+            # from openpyxl.chart import BarChart, Reference, Series
             
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name=sheet_name_clean[:31])
