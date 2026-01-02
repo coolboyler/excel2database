@@ -98,13 +98,45 @@
             color: #0277bd;
         }
 
+        /* 自定义 7 列布局 Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(1, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        /* 平板端 3 列 (最后一行可能不满，但这很正常) */
+        @media (min-width: 768px) {
+            .kpi-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        /* 桌面端 4 列 */
+        @media (min-width: 992px) {
+            .kpi-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+
+        /* 大屏幕 7 列，强制一行 */
+        @media (min-width: 1400px) {
+            .kpi-grid {
+                grid-template-columns: repeat(7, 1fr);
+            }
+        }
+
         .dashboard-card {
             background: var(--card-bg);
             border-radius: 12px;
-            padding: 20px;
+            padding: 15px; /* 稍微减小内边距以适应更窄的卡片 */
             box-shadow: 0 1px 3px rgba(0,0,0,0.05);
             height: 100%;
             transition: transform 0.2s;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }
 
         .dashboard-card:hover {
@@ -232,41 +264,54 @@
         <!-- Dashboard Content -->
         <div id="dashboard" style="display: none;">
             <!-- 1. KPI Cards -->
-            <div class="row g-3 mb-4">
-                <div class="col-md-3">
-                    <div class="dashboard-card">
-                        <div class="stat-label">最高负荷 (实际)</div>
-                        <div class="stat-value" id="kpi-max-load">-</div>
-                        <div class="stat-sub text-success" id="kpi-load-diff"></div>
-                    </div>
+            <div class="kpi-grid">
+                <!-- 1. 日前节点均价 (New) -->
+                <div class="dashboard-card">
+                    <div class="stat-label">日前节点均价</div>
+                    <div class="stat-value" id="kpi-avg-price-da">-</div>
+                    <div class="stat-sub">元/MWh</div>
                 </div>
-                <div class="col-md-3">
-                    <div class="dashboard-card">
-                        <div class="stat-label">日均价差 (日前-实时)</div>
-                        <div class="stat-value" id="kpi-avg-spread">-</div>
-                        <div class="stat-sub" id="kpi-spread-range"></div>
-                    </div>
+
+                <!-- 2. 实时节点均价 (New) -->
+                <div class="dashboard-card">
+                    <div class="stat-label">实时节点均价</div>
+                    <div class="stat-value" id="kpi-avg-price-rt">-</div>
+                    <div class="stat-sub">元/MWh</div>
                 </div>
-                <div class="col-md-2">
-                    <div class="dashboard-card">
-                        <div class="stat-label">新能源总出力 (预测)</div>
-                        <div class="stat-value" id="kpi-total-ne" style="font-size: 1.2rem;">-</div>
-                        <div class="stat-sub">MWh</div>
-                    </div>
+
+                <!-- 3. 日均价差 -->
+                <div class="dashboard-card">
+                    <div class="stat-label">日均价差 (日前-实时)</div>
+                    <div class="stat-value" id="kpi-avg-spread">-</div>
+                    <div class="stat-sub" id="kpi-spread-range"></div>
                 </div>
-                <div class="col-md-2">
-                    <div class="dashboard-card">
-                        <div class="stat-label">B类平均占比 (预测)</div>
-                        <div class="stat-value" id="kpi-avg-b-ratio" style="font-size: 1.2rem;">-</div>
-                        <div class="stat-sub">占统调负荷</div>
-                    </div>
+
+                <!-- 4. 最高负荷 -->
+                <div class="dashboard-card">
+                    <div class="stat-label">最高负荷 (实际)</div>
+                    <div class="stat-value" id="kpi-max-load">-</div>
+                    <div class="stat-sub text-success" id="kpi-load-diff"></div>
                 </div>
-                <div class="col-md-2">
-                    <div class="dashboard-card">
-                        <div class="stat-label">最高温 / 日期类型</div>
-                        <div class="stat-value" id="kpi-max-temp" style="font-size: 1.2rem;">-</div>
-                        <div class="stat-sub" id="kpi-weather-date"></div>
-                    </div>
+
+                <!-- 5. 新能源总出力 -->
+                <div class="dashboard-card">
+                    <div class="stat-label">新能源总出力 (预测)</div>
+                    <div class="stat-value" id="kpi-total-ne" style="font-size: 1.2rem;">-</div>
+                    <div class="stat-sub">MWh</div>
+                </div>
+
+                <!-- 6. B类平均占比 -->
+                <div class="dashboard-card">
+                    <div class="stat-label">B类平均占比 (预测)</div>
+                    <div class="stat-value" id="kpi-avg-b-ratio" style="font-size: 1.2rem;">-</div>
+                    <div class="stat-sub">占统调负荷</div>
+                </div>
+
+                <!-- 7. 最高温 -->
+                <div class="dashboard-card">
+                    <div class="stat-label">最高温 / 日期类型</div>
+                    <div class="stat-value" id="kpi-max-temp" style="font-size: 1.2rem;">-</div>
+                    <div class="stat-sub" id="kpi-weather-date"></div>
                 </div>
             </div>
 
@@ -400,6 +445,13 @@
             const loadForecasts = data.map(d => d.load_forecast).filter(v => v);
             const maxLoadF = loadForecasts.length ? Math.max(...loadForecasts) : 0;
             
+            // Calculate Average Prices
+            const priceDAs = data.map(d => d.price_da).filter(v => v !== null && v !== undefined);
+            const avgPriceDA = priceDAs.length ? (priceDAs.reduce((a,b)=>a+b,0) / priceDAs.length) : 0;
+            
+            const priceRTs = data.map(d => d.price_rt).filter(v => v !== null && v !== undefined);
+            const avgPriceRT = priceRTs.length ? (priceRTs.reduce((a,b)=>a+b,0) / priceRTs.length) : 0;
+
             const priceDiffs = data.map(d => (d.price_da || 0) - (d.price_rt || 0));
             const avgDiff = priceDiffs.reduce((a,b) => a+b, 0) / (priceDiffs.length || 1);
             
@@ -420,6 +472,9 @@
             const maxTemp = temps.length ? Math.max(...temps) : '-';
 
             // Update DOM
+            document.getElementById('kpi-avg-price-da').innerText = fmt(avgPriceDA);
+            document.getElementById('kpi-avg-price-rt').innerText = fmt(avgPriceRT);
+
             document.getElementById('kpi-max-load').innerText = fmt(maxLoad, 0);
             document.getElementById('kpi-load-diff').innerText = `预测最高: ${fmt(maxLoadF, 0)}`;
             
