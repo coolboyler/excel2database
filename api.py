@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 import uvicorn
+import datetime
 from pred_reader import PowerDataImporter
 from database import DatabaseManager
 
@@ -91,8 +92,313 @@ async def upload_file(file: UploadFile = File(...)):
     return {"filename": file.filename, "status": "uploaded"}
 
 import re
+from pydantic import BaseModel
+
+class SimilarDayRequest(BaseModel):
+    target_date: str
+    date_type: Optional[str] = None
+    weights: Optional[dict] = None
+
+@app.post("/api/similar-day")
+async def find_similar_days(request: SimilarDayRequest):
+    """
+    查找相似日
+    匹配维度：负荷预测、天气、温度、B类占比、新能源D日预测、日前电价
+    """
+    try:
+        target_date_str = request.target_date
+        weights = request.weights or {}
+        
+        # 默认权重
+        w_load = float(weights.get('load', 0.4))
+        w_weather = float(weights.get('weather', 0.1))
+        w_temp = float(weights.get('temp', 0.1))
+        w_b_ratio = float(weights.get('b_ratio', 0.15))
+        w_ne = float(weights.get('ne', 0.1))
+        w_price = float(weights.get('price', 0.1))
+        w_date = float(weights.get('date', 0.05)) # 日期衰减系数
+        
+        # 新增权重
+        w_month = float(weights.get('month', 0.15)) # 默认考虑月份相似性（二进制：同月=0，不同月=1）
+        w_weekday = float(weights.get('weekday', 0.15)) # 默认考虑星期几相似性（二进制：同星期几=0，不同=1）
+
+        # 1. 获取所有缓存数据
+        table_name = "cache_daily_hourly"
+        with db_manager.engine.connect() as conn:
+            # 检查表是否存在
+            tables = db_manager.get_tables()
+            if table_name not in tables:
+                return {"error": "缓存表不存在，请先生成缓存"}
+
+            # 获取全量数据
+            # 我们需要以下字段: 
+            # record_date, hour, load_forecast, weather, temperature, 
+            # class_b_forecast, spot_ne_d_forecast, price_da
+            
+            # 构建查询字段
+            fields = [
+                "record_date", "hour", 
+                "load_forecast", "weather", "temperature",
+                "class_b_forecast", "spot_ne_d_forecast", "price_da"
+            ]
+            
+            # 检查字段是否存在 (防止报错)
+            # 简单起见，使用 SELECT *，然后在 Pandas 里处理
+            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+        if df.empty:
+            return {"error": "缓存表中无数据"}
+
+        # 转换日期格式
+        df['record_date'] = pd.to_datetime(df['record_date']).dt.strftime('%Y-%m-%d')
+        
+        # 2. 提取目标日数据
+        target_df = df[df['record_date'] == target_date_str].sort_values('hour')
+        
+        if target_df.empty:
+            return {"error": f"目标日期 {target_date_str} 无数据，请先导入预测数据"}
+
+        # 获取目标日期类型
+        target_day_type = target_df['day_type'].iloc[0] if 'day_type' in target_df.columns else ''
+
+        # 3. 数据预处理
+        # 需要将长表(long)转为宽表(wide)，或者直接按日期分组计算
+        
+        # 辅助函数：计算两个向量的距离 (MAPE 或 归一化欧氏距离)
+        # 这里使用 MAPE (平均绝对百分比误差) 的变体作为差异度量
+        
+        # 准备历史数据 (必须是目标日之前的日期)
+        history_df = df[df['record_date'] < target_date_str].copy()
+        
+        # 调试：显示目标日期类型（不再强制过滤）
+        print(f"[DEBUG] 目标日类型: {target_day_type or '无类型'}")
+        # 不再强制过滤日期类型，允许匹配所有历史数据
+        # 用户可通过设置月份/星期几权重为0来禁用相关过滤
+        
+        # 必须有24小时数据的日期才参与计算
+        print(f"[DEBUG] 历史数据天数（24小时过滤前）: {len(history_df['record_date'].unique())}")
+        valid_dates = history_df.groupby('record_date').count()['hour']
+        valid_dates = valid_dates[valid_dates == 24].index.tolist()
+        history_df = history_df[history_df['record_date'].isin(valid_dates)]
+        print(f"[DEBUG] 历史数据天数（24小时过滤后）: {len(history_df['record_date'].unique())}")
+        
+        if history_df.empty:
+            return {"error": "没有足够的历史数据进行匹配"}
+
+        # ---------------------------
+        # 计算各项差异
+        # ---------------------------
+        
+        results = []
+        print(f"[DEBUG] 权重配置 - load:{w_load}, temp:{w_temp}, weather:{w_weather}, "
+              f"b_ratio:{w_b_ratio}, ne:{w_ne}, price:{w_price}, "
+              f"date:{w_date}, month:{w_month}, weekday:{w_weekday}")
+        target_date_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        print(f"[DEBUG] 目标日期: {target_date_str}, 月份: {target_date_obj.month}, 星期几: {target_date_obj.weekday()}(0=周一)")
+
+        # 预计算目标向量
+        t_load = target_df['load_forecast'].fillna(0).values
+        t_temp = target_df['temperature'].fillna(0).values
+        t_price = target_df['price_da'].fillna(0).values
+        
+        # B类占比
+        t_b = target_df['class_b_forecast'].fillna(0).values
+        # 避免除以0
+        t_load_safe = np.where(t_load == 0, 1, t_load)
+        t_b_ratio = t_b / t_load_safe
+        
+        # 新能源D日
+        # 优先使用 spot_ne_d_forecast，如果没有则尝试用 new_energy_forecast
+        if 'spot_ne_d_forecast' in target_df.columns and target_df['spot_ne_d_forecast'].sum() > 0:
+            t_ne = target_df['spot_ne_d_forecast'].fillna(0).values
+        elif 'new_energy_forecast' in target_df.columns:
+            t_ne = target_df['new_energy_forecast'].fillna(0).values
+        else:
+            t_ne = np.zeros(24)
+
+        # 天气 (字符串数组)
+        t_weather = target_df['weather'].fillna("").values
+        
+        # 计算目标日期的统计信息
+        target_weather_type = ""
+        if len(t_weather) > 12:
+            target_weather_type = t_weather[12]  # 取中午时段的天气作为代表
+        elif len(t_weather) > 0:
+            target_weather_type = t_weather[0]   # 如果没有12点数据，取第一个
+        
+        target_avg_temp = float(np.mean(t_temp)) if len(t_temp) > 0 else 0.0
+        target_avg_load = float(np.mean(t_load)) if len(t_load) > 0 else 0.0
+        target_avg_price = float(np.mean(t_price)) if len(t_price) > 0 else 0.0
+        target_avg_b_ratio = float(np.mean(t_b_ratio)) if len(t_b_ratio) > 0 else 0.0
+        target_avg_ne = float(np.mean(t_ne)) if len(t_ne) > 0 else 0.0
+
+        # 遍历历史日期
+        # 为了加速，可以使用 groupby Apply，但循环简单直观
+        for date_val, group in history_df.groupby('record_date'):
+            group = group.sort_values('hour')
+            
+            # 1. 负荷差异 (MAPE)
+            h_load = group['load_forecast'].fillna(0).values
+            # 如果负荷为空，跳过
+            if np.sum(h_load) == 0:
+                diff_load = 1.0 # 最大差异
+            else:
+                # MAPE: mean(abs(t - h) / t) -> 但 t 可能为0，且我们要的是相似度
+                # 使用 归一化欧氏距离: dist / (norm(t) + norm(h)) 或 simple MAPE
+                # 简单处理：mean(abs(diff)) / mean(target)
+                mean_target = np.mean(t_load) if np.mean(t_load) > 0 else 1
+                diff_load = np.mean(np.abs(t_load - h_load)) / mean_target
+            
+            # 2. 温度差异 (RMSE + 最高最低对比)
+            h_temp = group['temperature'].fillna(0).values
+            diff_temp = np.sqrt(np.mean((t_temp - h_temp)**2))
+            # 最高温度差异
+            max_diff = np.max(t_temp) - np.max(h_temp)
+            diff_temp_max = abs(max_diff)
+            # 最低温度差异
+            min_diff = np.min(t_temp) - np.min(h_temp)
+            diff_temp_min = abs(min_diff)
+            # 综合温度差异归一化 (假设温差10度算大)
+            diff_temp_norm = min((diff_temp / 10.0 + diff_temp_max / 10.0 + diff_temp_min / 10.0) / 3.0, 1.0)
+            
+            # 3. B类占比差异
+            h_b = group['class_b_forecast'].fillna(0).values
+            h_load_safe = np.where(h_load == 0, 1, h_load)
+            h_b_ratio = h_b / h_load_safe
+            diff_b_ratio = np.mean(np.abs(t_b_ratio - h_b_ratio)) # 本身就是比例，直接差值
+            
+            # 4. 新能源差异
+            # 同样处理列名
+            if 'spot_ne_d_forecast' in group.columns and group['spot_ne_d_forecast'].sum() > 0:
+                h_ne = group['spot_ne_d_forecast'].fillna(0).values
+            elif 'new_energy_forecast' in group.columns:
+                h_ne = group['new_energy_forecast'].fillna(0).values
+            else:
+                h_ne = np.zeros(24)
+            
+            mean_ne_target = np.mean(t_ne) if np.mean(t_ne) > 0 else 1
+            diff_ne = np.mean(np.abs(t_ne - h_ne)) / mean_ne_target
+            
+            # 5. 价格差异
+            h_price = group['price_da'].fillna(0).values
+            mean_price_target = np.mean(t_price) if np.mean(t_price) > 0 else 1
+            diff_price = np.mean(np.abs(t_price - h_price)) / mean_price_target
+            
+            # 6. 天气差异 (不匹配的小时数比例)
+            h_weather = group['weather'].fillna("").values
+            # 简单比较字符串是否相等
+            diff_weather = np.mean(t_weather != h_weather)
+            
+            # 7. 日期权重 (越近越好)
+            # 计算天数差
+            hist_date_obj = datetime.datetime.strptime(date_val, "%Y-%m-%d").date()
+            days_diff = abs((target_date_obj - hist_date_obj).days)
+            # 衰减因子: 1 - exp(-k * days) -> 距离
+            # 或者 距离增加: days_diff / 365
+            date_penalty = min(days_diff / 365.0, 1.0)
+            
+            # 8. 月份差异 (二进制: 同月=0, 不同月=1)
+            target_month = target_date_obj.month
+            hist_month = hist_date_obj.month
+            diff_month = 0.0 if target_month == hist_month else 1.0
+            
+            # 9. 星期几差异 (二进制: 同为星期几=0, 不同=1)
+            target_weekday = target_date_obj.weekday()  # Monday=0, Sunday=6
+            hist_weekday = hist_date_obj.weekday()
+            diff_weekday = 0.0 if target_weekday == hist_weekday else 1.0
+            
+            # 总差异得分 (越小越好)
+            # 各项 diff 都在 [0, 1] 左右 (MAPE可能大于1，但通常在0-0.5)
+            total_score = (
+                w_load * diff_load +
+                w_temp * diff_temp_norm +
+                w_b_ratio * diff_b_ratio +
+                w_ne * diff_ne +
+                w_price * diff_price +
+                w_weather * diff_weather +
+                w_date * date_penalty +
+                w_month * diff_month +
+                w_weekday * diff_weekday
+            )
+            
+            results.append({
+                "date": date_val,
+                "score": total_score,
+                "details": {
+                    "diff_load": float(diff_load),
+                    "diff_temp": float(diff_temp),
+                    "diff_temp_max": float(diff_temp_max),
+                    "diff_temp_min": float(diff_temp_min),
+                    "diff_weather": float(diff_weather),
+                    "diff_price": float(diff_price),
+                    "diff_b_ratio": float(diff_b_ratio),
+                    "diff_ne": float(diff_ne),
+                    "diff_month": float(diff_month),
+                    "diff_weekday": float(diff_weekday)
+                },
+                # 返回一些用于展示的数据
+                "load_curve": h_load.tolist(),
+                "price_curve": h_price.tolist(),
+                "temp_avg": float(np.mean(h_temp)),
+                "weather_type": h_weather[12] if len(h_weather) > 12 else "", # 取中午天气作为代表
+                "day_type": group['day_type'].iloc[0] if 'day_type' in group.columns else ""
+            })
+            
+        # 排序并返回前5
+        results.sort(key=lambda x: x['score'])
+        top_matches = results[:5]
+        
+        # 转换得分为相似度 (1 / (1 + score)) 或者 (1 - score)
+        for r in top_matches:
+            r['similarity_score'] = max(0, 1 - r['score']) # 简单线性映射
+            
+        return {
+            "target_date": target_date_str,
+            "target_day_type": target_day_type,
+            "target_weather_type": target_weather_type,
+            "target_stats": {
+                "avg_temp": target_avg_temp,
+                "avg_load": target_avg_load,
+                "avg_price": target_avg_price,
+                "avg_b_ratio": target_avg_b_ratio,
+                "avg_ne": target_avg_ne
+            },
+            "target_load_curve": t_load.tolist(),
+            "target_price_curve": t_price.tolist(),
+            "matches": top_matches
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/update-weather")
+async def update_weather(background_tasks: BackgroundTasks):
+    """手动触发天气数据更新"""
+    try:
+        import calendar_weather
+        today = datetime.date.today()
+        # 更新最近30天和未来15天的数据
+        start_date = today - datetime.timedelta(days=30)
+        end_date = today + datetime.timedelta(days=15)
+        
+        # 使用后台任务执行，避免阻塞
+        def run_update():
+            print(f"🌦️ 开始更新天气数据: {start_date} -> {end_date}")
+            calendar_weather.update_calendar(start_date, end_date)
+            print("✅ 天气数据更新完成")
+            
+        background_tasks.add_task(run_update)
+        
+        return {"status": "success", "message": f"天气更新任务已启动 ({start_date} 至 {end_date})"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"启动天气更新任务失败: {str(e)}")
+
 @app.post("/import")
-async def import_file(filename: str = Form(...)):
+async def import_file(filename: str = Form(...), background_tasks: BackgroundTasks = BackgroundTasks()):
     """导入指定的Excel文件到数据库"""
     data_folder = "data"
     file_path = os.path.join(data_folder, filename)
@@ -107,10 +413,14 @@ async def import_file(filename: str = Form(...)):
 
     if "负荷实际信息" in filename or "负荷预测信息" in filename:
         method = importer.import_power_data
-    elif "信息披露(区域)查询实际信息" in filename:
-        method = importer.import_custom_excel
-    elif "信息披露(区域)查询预测信息" in filename:
-        method = importer.import_custom_excel_pred
+    # elif "信息披露(区域)查询实际信息" in filename:
+    #     method = importer.import_custom_excel
+    # elif "信息披露(区域)查询预测信息" in filename:
+    #     method = importer.import_custom_excel_pred
+    elif "信息披露查询预测信息" in filename:
+        method = importer.import_imformation_pred
+    elif "信息披露查询实际信息" in filename:
+        method = importer.import_imformation_true    
     # 先处理带日期的特殊版本
     elif re.search(dated_realtime_pattern, filename) or re.search(dated_dayahead_pattern, filename):
         method = importer.import_point_data_new
@@ -123,25 +433,108 @@ async def import_file(filename: str = Form(...)):
     # 执行同步导入
     result = method(file_path)
     
-    # import_custom_excel 返回两个结果元组，其他方法返回单个四元组
-    if method == importer.import_custom_excel:
-        # 解包三个结果元组
-        (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2),(success3,table_name3,record_count3,preview_data3) = result
-        # 合并结果，这里我们使用三个结果的组合
-        success = success1 and success2 and success3
-        table_name = f"{table_name1}, {table_name2}, {table_name3}"
-        record_count = record_count1 + record_count2 + record_count3
-        preview_data = preview_data1 + preview_data2 + preview_data3
+    # 检查结果是否为 False (表示导入失败)
+    if result is False:
+        raise HTTPException(status_code=500, detail=f"导入失败: {filename}，请检查文件格式或日志")
+
+    # [新增逻辑] 自动触发缓存更新
+    try:
+        # 尝试从文件名提取日期
+        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", filename)
+        if not date_match:
+             date_match = re.search(r"(\d{8})", filename)
+        
+        target_date = None
+        if date_match:
+            d_str = date_match.group(1)
+            if len(d_str) == 8:
+                target_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+            else:
+                target_date = d_str
+        
+        # 只有在导入了节点电价相关文件或信息披露文件，且能提取到日期时，才触发更新
+        if target_date and ("节点电价" in filename or "信息披露" in filename):
+            print(f"🚀 自动触发缓存更新任务: {target_date}")
+            background_tasks.add_task(update_price_cache_for_date, target_date)
+            
+    except Exception as e:
+        print(f"⚠️ 自动触发缓存更新失败: {e}")
+
+    if method == importer.import_imformation_pred:
+        # 结果可能是单个四元组 (success, table, count, preview)
+        # 也可能是多个四元组的元组 ((s1,t1,c1,p1), (s2,t2,c2,p2))
+        
+        # 情况1: 单个结果 (4个元素)
+        if isinstance(result, tuple) and len(result) == 4 and not isinstance(result[0], tuple):
+             success, table_name, record_count, preview_data = result
+             
+        # 情况2: 多个结果 (元组的元组)
+        elif isinstance(result, tuple) and len(result) > 0 and isinstance(result[0], tuple):
+             # 合并所有结果
+             success = all(r[0] for r in result)
+             table_name = ", ".join([str(r[1]) for r in result])
+             record_count = sum(r[2] for r in result)
+             # 合并预览数据 (取前几个)
+             preview_data = []
+             for r in result:
+                 if r[3]:
+                     preview_data.extend(r[3])
+             preview_data = preview_data[:5] # 只保留前5条作为总预览
+             
+        else:
+             raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
+    
+    elif method == importer.import_imformation_true:
+         if isinstance(result, tuple) and len(result) == 4:
+             success, table_name, record_count, preview_data = result
+         # 处理可能返回None的情况（例如导入过程报错了）
+         elif result is None:
+             raise HTTPException(status_code=500, detail="导入失败: 内部错误")
+         # 处理返回多表结果的情况 (tuple of tuples)
+         elif isinstance(result, tuple) and len(result) > 0 and isinstance(result[0], tuple):
+             # 合并所有结果
+             success = all(r[0] for r in result)
+             table_name = ", ".join([str(r[1]) for r in result])
+             record_count = sum(r[2] for r in result)
+             # 合并预览数据 (取前几个)
+             preview_data = []
+             for r in result:
+                 if r[3]:
+                     preview_data.extend(r[3])
+             preview_data = preview_data[:5]
+         else:
+             # 如果是其他格式，尝试打印一下看看
+             print(f"DEBUG: import_imformation_true returned: {type(result)} - {result}")
+             raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
+
+    elif method == importer.import_custom_excel:
+        if isinstance(result, tuple) and len(result) == 3:
+            # 解包三个结果元组
+            (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2),(success3,table_name3,record_count3,preview_data3) = result
+            # 合并结果，这里我们使用三个结果的组合
+            success = success1 and success2 and success3
+            table_name = f"{table_name1}, {table_name2}, {table_name3}"
+            record_count = record_count1 + record_count2 + record_count3
+            preview_data = preview_data1 + preview_data2 + preview_data3
+        else:
+             raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
+
     elif method == importer.import_custom_excel_pred:
-        (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2), (success4, table_name4, record_count4, preview_data4), (success5, table_nam5, record_count5, preview_data5) = result
-        # 合并结果，这里我们使用三个结果的组合
-        success = success1 and success2 and success4 and success5
-        table_name = f"{table_name1}, {table_name2}, {table_name4}, {table_nam5}"
-        record_count = record_count1 + record_count2 + record_count4 + record_count5 
-        preview_data = preview_data1 + preview_data2 + preview_data4 + preview_data5 
+        if isinstance(result, tuple) and len(result) == 4:
+            (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2), (success4, table_name4, record_count4, preview_data4), (success5, table_name5, record_count5, preview_data5) = result
+            # 合并结果，这里我们使用四个结果的组合
+            success = success1 and success2 and success4 and success5
+            table_name = f"{table_name1}, {table_name2}, {table_name4}, {table_name5}"
+            record_count = record_count1 + record_count2 + record_count4 + record_count5 
+            preview_data = preview_data1 + preview_data2 + preview_data4 + preview_data5 
+        else:
+             raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
     else:
         # 其他导入方法的常规处理
-        success, table_name, record_count, preview_data = result
+        if isinstance(result, tuple) and len(result) == 4:
+            success, table_name, record_count, preview_data = result
+        else:
+            raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
         
     if success:
         return {
@@ -696,6 +1089,244 @@ async def delete_all_tables():
     except Exception as e:
         print(f"删除所有表时出错: {e}")
         raise HTTPException(status_code=500, detail="删除所有表失败")
+
+        return {
+            "message": f"成功删除 {len(deleted_tables)} 个表",
+            "deleted_tables": deleted_tables
+        }
+    except Exception as e:
+        print(f"删除所有表时出错: {e}")
+        raise HTTPException(status_code=500, detail="删除所有表失败")
+
+@app.post("/api/generate-daily-hourly-cache")
+async def generate_daily_hourly_cache():
+    """
+    生成所有日期的分时数据缓存
+    """
+    from sql_config import SQL_RULES
+    try:
+        # 1. 确定表结构
+        table_name = "cache_daily_hourly"
+        
+        # 构建字段列表
+        # 基础字段
+        columns_def = [
+            "`record_date` DATE NOT NULL",
+            "`hour` TINYINT NOT NULL",
+            "`updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+        ]
+        
+        # 从 SQL_RULES 动态生成字段
+        # 加上计算字段
+        calc_fields = {
+            "price_diff": "FLOAT COMMENT '价差'",
+            "load_deviation": "FLOAT COMMENT '负荷偏差'",
+            "new_energy_forecast": "FLOAT COMMENT '新能源预测总和'"
+        }
+        
+        # 合并所有字段
+        all_fields = {}
+        
+        # 添加规则中的字段
+        for key, rule in SQL_RULES.items():
+            field_name = key
+            # 默认都是 FLOAT，除了日期/字符串类型
+            if key in ['date', 'day_type', 'week_day', 'weather', 'wind_direction']:
+                col_type = "VARCHAR(50)"
+            else:
+                col_type = "FLOAT"
+            
+            all_fields[field_name] = f"`{field_name}` {col_type} COMMENT '{rule.get('name', '')}'"
+            
+        # 添加计算字段
+        for k, v in calc_fields.items():
+            all_fields[k] = f"`{k}` {v}"
+            
+        # 组装 CREATE TABLE 语句
+        cols_sql = ",\n".join(list(all_fields.values()) + columns_def)
+        
+        with db_manager.engine.begin() as conn:
+            create_sql = f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                {cols_sql},
+                PRIMARY KEY (`record_date`, `hour`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+            conn.execute(text(create_sql))
+            print(f"✅ 缓存表 {table_name} 已就绪")
+
+        # 2. 获取所有有数据的日期
+        all_tables = db_manager.get_tables()
+        power_tables = [t for t in all_tables if t.startswith('power_data_')]
+        
+        dates_to_process = []
+        for t in power_tables:
+            try:
+                d_str = t.replace('power_data_', '')
+                dates_to_process.append(d_str) # YYYYMMDD
+            except:
+                pass
+        
+        dates_to_process.sort()
+        print(f"待处理日期: {len(dates_to_process)} 天")
+        
+        # 3. 逐日计算并入库
+        processed_count = 0
+        for date_str in dates_to_process:
+            # 转换为 YYYY-MM-DD 格式供 calculation 使用
+            date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            
+            # 调用计算逻辑
+            daily_data = await calculate_daily_hourly_data(date_fmt)
+            
+            if not daily_data:
+                continue
+                
+            # 批量插入
+            with db_manager.engine.begin() as conn:
+                for row in daily_data:
+                    # 补充 record_date
+                    row['record_date'] = date_fmt
+                    
+                    # 构建插入语句
+                    keys = [k for k in row.keys() if k in all_fields or k in ['record_date', 'hour']]
+                    # 过滤掉不在表结构中的字段
+                    
+                    vals = [f":{k}" for k in keys]
+                    update_str = ", ".join([f"`{k}`=VALUES(`{k}`)" for k in keys if k not in ['record_date', 'hour']])
+                    
+                    sql = text(f"""
+                    INSERT INTO {table_name} ({', '.join([f"`{k}`" for k in keys])})
+                    VALUES ({', '.join(vals)})
+                    ON DUPLICATE KEY UPDATE {update_str}
+                    """)
+                    
+                    conn.execute(sql, {k: row[k] for k in keys})
+            
+            processed_count += 1
+            if processed_count % 10 == 0:
+                print(f"已处理 {processed_count}/{len(dates_to_process)} 天")
+
+        return {"status": "success", "processed_days": processed_count}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+async def calculate_daily_hourly_data(date: str):
+    """
+    计算指定日期的分时数据（核心逻辑提取）
+    返回: List[Dict] (24小时数据)
+    """
+    from sql_config import SQL_RULES, TABLE_SOURCE_POWER, TABLE_SOURCE_WEATHER
+    try:
+        target_date = pd.to_datetime(date).date()
+        date_str = target_date.strftime("%Y%m%d")
+        target_date_str = target_date.strftime("%Y-%m-%d")
+        table_name_power = f"power_data_{date_str}"
+        table_name_weather = "calendar_weather"
+        
+        tables = db_manager.get_tables()
+        if table_name_power not in tables:
+            return None
+            
+        hourly_data_lists = {h: {} for h in range(24)}
+        daily_weather_data = {}
+        
+        with db_manager.engine.connect() as conn:
+            # 1. 查电力数据
+            for key, rule in SQL_RULES.items():
+                if rule.get("source") == TABLE_SOURCE_POWER:
+                    where_clause = rule["where"]
+                    sql = text(f"SELECT record_time, value FROM {table_name_power} WHERE {where_clause}")
+                    result = conn.execute(sql).fetchall()
+                    
+                    for row in result:
+                        r_time = row[0]
+                        val = float(row[1]) if row[1] is not None else 0
+                        
+                        if hasattr(r_time, 'total_seconds'):
+                            hour = int(r_time.total_seconds() // 3600)
+                        else:
+                            continue
+                            
+                        if 0 <= hour <= 23:
+                            hourly_data_lists[hour].setdefault(key, []).append(val)
+
+        # 2. 查天气数据
+        if table_name_weather in tables:
+            with db_manager.engine.connect() as conn:
+                sql = text(f"SELECT * FROM {table_name_weather} WHERE date = :d")
+                row = conn.execute(sql, {"d": target_date_str}).fetchone()
+                
+                if row:
+                    row_dict = dict(row._mapping)
+                    weather_json = row_dict.get("weather_json")
+                    if isinstance(weather_json, str):
+                        try:
+                            import json
+                            weather_json = json.loads(weather_json)
+                        except:
+                            weather_json = {}
+                    elif weather_json is None:
+                        weather_json = {}
+                    
+                    for key, rule in SQL_RULES.items():
+                        if rule.get("source") == TABLE_SOURCE_WEATHER:
+                            col = rule.get("column")
+                            json_key = rule.get("json_key")
+                            
+                            val = None
+                            if col == "weather_json" and json_key:
+                                val = weather_json.get(json_key)
+                                if isinstance(val, list) and len(val) == 24:
+                                    for h in range(24):
+                                        hourly_data_lists[h][key] = val[h]
+                                    continue
+                            elif col in row_dict:
+                                val = row_dict[col]
+                            
+                            daily_weather_data[key] = val
+
+        # 3. 聚合与计算
+        result_list = []
+        for h in range(24):
+            lists = hourly_data_lists[h]
+            row = {"hour": h}
+            
+            # 均值聚合
+            for key, rule in SQL_RULES.items():
+                if rule.get("source") == TABLE_SOURCE_POWER:
+                    vals = lists.get(key, [])
+                    if vals:
+                        row[key] = sum(vals) / len(vals)
+                elif key in lists:
+                    row[key] = lists[key]
+            
+            # 填充单日天气
+            for k, v in daily_weather_data.items():
+                row[k] = v
+            
+            # 计算衍生字段
+            if "price_da" in row and "price_rt" in row:
+                row["price_diff"] = row["price_da"] - row["price_rt"]
+            
+            if "load_forecast" in row and "load_actual" in row:
+                row["load_deviation"] = row["load_forecast"] - row["load_actual"]
+            
+            if "new_energy_forecast" not in row:
+                pv = row.get("ne_pv_forecast", 0) or 0
+                wind = row.get("ne_wind_forecast", 0) or 0
+                if pv > 0 or wind > 0:
+                    row["new_energy_forecast"] = pv + wind
+            
+            result_list.append(row)
+            
+        return result_list
+    except Exception as e:
+        print(f"Calculation error for {date}: {e}")
+        return None
 
 @app.post("/daily-averages")
 async def query_daily_averages(
@@ -1406,6 +2037,521 @@ async def export_price_difference_from_result(
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
         }
     )
+
+@app.get("/daily_hourly", response_class=HTMLResponse)
+async def daily_hourly_page(request: Request):
+    """返回24小时数据展示页面"""
+    return templates.TemplateResponse("daily_hourly.html", {"request": request})
+
+@app.get("/similar_day", response_class=HTMLResponse)
+async def similar_day_page(request: Request):
+    """返回类比日匹配页面"""
+    return templates.TemplateResponse("similar_day.html", {"request": request})
+
+@app.get("/api/daily-hourly-data")
+async def get_daily_hourly_data(date: str):
+    """获取指定日期的24小时数据 (优先查缓存)"""
+    try:
+        # 1. 尝试从缓存表查询
+        table_name = "cache_daily_hourly"
+        target_date = pd.to_datetime(date).date()
+        date_str = target_date.strftime("%Y-%m-%d")
+        
+        tables = db_manager.get_tables()
+        if table_name in tables:
+            with db_manager.engine.connect() as conn:
+                # 获取所有列
+                sql = text(f"SELECT * FROM {table_name} WHERE record_date = :d ORDER BY hour ASC")
+                result = conn.execute(sql, {"d": date_str}).fetchall()
+                
+                if result:
+                    # 转换回字典列表
+                    data_list = []
+                    for row in result:
+                        d = dict(row._mapping)
+                        # 处理日期对象转字符串
+                        if 'record_date' in d:
+                            d['record_date'] = str(d['record_date'])
+                        if 'updated_at' in d:
+                            d['updated_at'] = str(d['updated_at'])
+                        data_list.append(d)
+                    return {"status": "success", "data": data_list, "source": "cache"}
+
+        # 2. 如果缓存没命中，实时计算
+        print(f"Cache miss for {date_str}, calculating...")
+        data = await calculate_daily_hourly_data(date_str)
+        
+        if data:
+            # 3. 异步写入缓存 (简单起见，这里同步写入，或留给下次批量生成)
+            # 为了保证下次查询快，最好这里就写入。
+            # 但考虑到表可能还没建，或者 calculate_daily_hourly_data 是独立的
+            # 我们可以在 calculate_daily_hourly_data 外部再调一次生成逻辑，或者暂时只返回实时数据
+            # 既然用户专门要了缓存表，我们应该尽力去存。
+            
+            # 尝试自动建表并存入? 
+            # 简单起见，直接返回实时计算结果，并建议用户点击"生成缓存"
+            # 或者，我们可以调用 generate_daily_hourly_cache 的一部分逻辑来存单日
+            # 这里我们选择直接返回实时数据，但在前端提示。
+            return {"status": "success", "data": data, "source": "realtime"}
+        else:
+             return {"status": "error", "message": f"未找到 {date} 的电力数据"}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/generate-price-cache")
+async def generate_price_cache(request: Request):
+    """
+    生成节点电价映射缓存表 -> 合并入 cache_daily_hourly
+    """
+    try:
+        # 1. 获取所有有数据的日期
+        all_tables = db_manager.get_tables()
+        power_tables = [t for t in all_tables if t.startswith('power_data_')]
+        
+        dates_to_process = []
+        for t in power_tables:
+            try:
+                d_str = t.replace('power_data_', '')
+                dates_to_process.append(d_str) # YYYYMMDD
+            except:
+                pass
+        
+        dates_to_process.sort()
+        total_days = len(dates_to_process)
+        print(f"待处理日期: {total_days} 天")
+        
+        processed_count = 0
+        inserted_count = 0
+        
+        for date_str in dates_to_process:
+            # YYYYMMDD -> YYYY-MM-DD
+            target_date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            
+            try:
+                count = update_price_cache_for_date(target_date_str)
+                inserted_count += count
+            except Exception as e:
+                print(f"Error processing {date_str}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+            
+            processed_count += 1
+            if processed_count % 10 == 0:
+                print(f"Price Cache: Processed {processed_count}/{total_days} days")
+
+        return {
+            "status": "success", 
+            "processed_days": processed_count, 
+            "inserted_records": inserted_count,
+            "table": "cache_daily_hourly"
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+def update_price_cache_for_date(target_date_str: str) -> int:
+    """
+    更新指定日期的电价缓存 (供 generate_price_cache 和 import_file 调用)
+    返回插入/更新的记录数 (最大24)
+    """
+    from sql_config import SQL_RULES
+    
+    table_name = "cache_daily_hourly"
+
+    # 1. 确保表存在
+    # (为了性能，这里可以假设表已存在，或者每次都检查，对于单次导入检查一下无妨)
+    # 构建字段列表
+    columns_def = [
+        "`record_date` DATE NOT NULL",
+        "`hour` TINYINT NOT NULL",
+        "`updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+    ]
+    
+    calc_fields = {
+        "price_diff": "FLOAT COMMENT '价差'",
+        "load_deviation": "FLOAT COMMENT '负荷偏差'",
+        "new_energy_forecast": "FLOAT COMMENT '新能源预测总和'"
+    }
+    
+    all_fields = {}
+    for key, rule in SQL_RULES.items():
+        field_name = key
+        if key in ['date', 'day_type', 'week_day', 'weather', 'wind_direction']:
+            col_type = "VARCHAR(50)"
+        else:
+            col_type = "FLOAT"
+        all_fields[field_name] = f"`{field_name}` {col_type} COMMENT '{rule.get('name', '')}'"
+        
+    for k, v in calc_fields.items():
+        all_fields[k] = f"`{k}` {v}"
+        
+    cols_sql = ",\n".join(list(all_fields.values()) + columns_def)
+    
+    with db_manager.engine.begin() as conn:
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            {cols_sql},
+            PRIMARY KEY (`record_date`, `hour`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """
+        conn.execute(text(create_sql))
+    
+    # 2. 获取数据 (使用 sql_config 中的规则动态查询)
+    from sql_config import SQL_RULES, TABLE_SOURCE_POWER, TABLE_SOURCE_WEATHER
+    
+    # 2.1 构造小时数据映射 {hour: {field_name: [val1, val2]}}
+    # 注意: SQL_RULES 里的 price_da/price_rt 我们已经有专门逻辑处理了(或者也可以统一)
+    # 为了保持之前的日前/实时逻辑(含区域过滤)，我们可以先保留 da/rt 的独立处理，
+    # 而将 SQL_RULES 中的其他指标作为补充。
+    
+    hourly_map = {h: {} for h in range(24)}
+    
+    # 初始化字段列表 (用于 hourly_map)
+    # 包括 price_da, price_rt 以及 SQL_RULES 中定义的所有 POWER 数据
+    field_keys = ['price_da', 'price_rt']
+    for k, v in SQL_RULES.items():
+        if v.get('source') == TABLE_SOURCE_POWER and k not in ['price_da', 'price_rt']:
+            field_keys.append(k)
+            
+    for h in range(24):
+        for k in field_keys:
+            hourly_map[h][k] = []
+
+    # 2.2 获取日前/实时电价 (保留之前的特定逻辑：区域过滤)
+    da_result = importer.query_daily_averages([target_date_str], "日前节点电价")
+    da_data = da_result.get("data", [])
+    
+    rt_result = importer.query_daily_averages([target_date_str], "实时节点电价")
+    rt_data = rt_result.get("data", [])
+    
+    def filter_and_process_price(data_list, type_key):
+        filtered = [item for item in data_list if "云南" not in str(item.get('type', ''))]
+        has_guangdong = any("广东" in str(item.get('type', '')) for item in filtered)
+        if has_guangdong:
+            filtered = [item for item in filtered if "广东" in str(item.get('type', ''))]
+        
+        for item in filtered:
+            rt_val = item['record_time']
+            norm_time = normalize_record_time(rt_val, target_date_str)
+            if norm_time is None:
+                continue
+            
+            hour = norm_time.hour
+            if 0 <= hour <= 23:
+                val = float(item['value']) if item['value'] is not None else 0
+                hourly_map[hour][type_key].append(val)
+
+    filter_and_process_price(da_data, 'price_da')
+    filter_and_process_price(rt_data, 'price_rt')
+
+    # 2.3 获取 SQL_RULES 中定义的其他电力数据
+    # 我们需要构建一个大的查询，或者对每个规则查一次
+    # 为了效率，我们可以查一次全表，然后在内存里匹配；或者按规则查。
+    # 考虑到数据量(单日几千行)，按规则查可能更清晰。
+    
+    # 构造表名
+    d_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d")
+    table_name_power = f"power_data_{d_obj.strftime('%Y%m%d')}"
+    
+    # 检查表是否存在
+    if table_name_power in db_manager.get_tables():
+        with db_manager.engine.connect() as conn:
+            for key, rule in SQL_RULES.items():
+                if rule.get('source') == TABLE_SOURCE_POWER and key not in ['price_da', 'price_rt']:
+                    where_clause = rule.get('where')
+                    if not where_clause:
+                        continue
+                        
+                    try:
+                        sql = text(f"SELECT record_time, value FROM {table_name_power} WHERE {where_clause}")
+                        result = conn.execute(sql).fetchall()
+                        
+                        for row in result:
+                            rt_val = row[0]
+                            norm_time = normalize_record_time(rt_val, target_date_str)
+                            if norm_time is None:
+                                continue
+                            
+                            hour = norm_time.hour
+                            if 0 <= hour <= 23:
+                                val = float(row[1]) if row[1] is not None else 0
+                                hourly_map[hour][key].append(val)
+                    except Exception as e:
+                        print(f"查询规则 {key} 失败: {e}")
+
+    # 2.4 获取 SQL_RULES 中定义的天气数据 (TABLE_SOURCE_WEATHER)
+    # 这部分数据需要从 calendar_weather 表中查询，然后拆解 json
+    # 查询该日期的天气数据
+    weather_row = None
+    with db_manager.engine.connect() as conn:
+        try:
+            sql = text("SELECT * FROM calendar_weather WHERE date = :d")
+            weather_row = conn.execute(sql, {"d": target_date_str}).mappings().fetchone()
+        except Exception as e:
+            print(f"查询天气数据失败: {e}")
+
+    # 无论是否有 weather_row，如果该日期只有天气数据而没有电力数据，我们也希望能入库
+    # 所以必须确保遍历到所有可能的来源
+    
+    if weather_row:
+        # 解析 JSON
+        weather_json = None
+        if weather_row.get('weather_json'):
+            try:
+                if isinstance(weather_row['weather_json'], str):
+                    weather_json = json.loads(weather_row['weather_json'])
+                else:
+                    weather_json = weather_row['weather_json']
+            except:
+                pass
+        
+        # 遍历规则填充数据
+        for key, rule in SQL_RULES.items():
+            if rule.get('source') == TABLE_SOURCE_WEATHER:
+                # 1. 直接映射列
+                col_name = rule.get('column')
+                json_key = rule.get('json_key')
+                
+                # 如果有 json_key，则从 JSON 中取值 (通常是数组)
+                if json_key and weather_json and json_key in weather_json:
+                    values = weather_json[json_key]
+                    if isinstance(values, list):
+                        # 假设数组长度为 24，对应 0-23 小时
+                        # 如果不足 24，则尽力填充
+                        for h in range(min(len(values), 24)):
+                            val = values[h]
+                            if val is not None:
+                                try:
+                                    hourly_map[h].setdefault(key, []).append(float(val))
+                                except (ValueError, TypeError):
+                                    hourly_map[h].setdefault(key, []).append(val)
+                
+                # 2. 如果没有 json_key，则是取列的标量值 (全天相同)
+                elif col_name and col_name in weather_row and not json_key:
+                    val = weather_row[col_name]
+                    # 特殊处理日期字段，将其转换为字符串
+                    if isinstance(val, (datetime.date, datetime.datetime)):
+                        val = val.strftime("%Y-%m-%d")
+                        
+                    if val is not None:
+                        # 全天 24 小时都用这个值
+                        for h in range(24):
+                            # 注意：如果是字符串，append 后求均值会报错
+                            # 这里需要判断类型
+                            if isinstance(val, (int, float)):
+                                hourly_map[h].setdefault(key, []).append(float(val))
+                            else:
+                                hourly_map[h].setdefault(key, []).append(val)
+    
+    # 即使没有 weather_row，也可能因为有电力数据而继续执行
+    # 如果只有天气数据没有电力数据，也会因为 weather_row 存在而有数据
+    # 如果两者都没有，下面的 batch_data 为空，返回 0
+
+    # 4. 构造入库数据
+    batch_data = []
+    
+    # 收集所有需要更新的字段
+    all_update_fields = set(['price_da', 'price_rt', 'price_diff'])
+    for k in field_keys:
+        all_update_fields.add(k)
+    # 加上计算字段
+    all_update_fields.add('new_energy_forecast')
+    all_update_fields.add('load_deviation')
+    
+    # 添加天气相关字段到更新列表
+    for key, rule in SQL_RULES.items():
+        if rule.get('source') == TABLE_SOURCE_WEATHER:
+            all_update_fields.add(key)
+
+    for h in range(24):
+        row_data = {
+            "record_date": target_date_str,
+            "hour": h
+        }
+        
+        has_data = False
+        
+        # 处理均值字段
+        for k in list(all_update_fields): # 遍历所有可能字段
+            if k in ['record_date', 'hour', 'price_diff', 'new_energy_forecast', 'load_deviation']:
+                continue
+                
+            vals = hourly_map[h].get(k, [])
+            if vals:
+                # 检查是否是数字
+                first_val = vals[0]
+                # 特殊处理：如果 first_val 是 datetime.date 对象，也转为字符串
+                if isinstance(first_val, (datetime.date, datetime.datetime)):
+                    first_val = first_val.strftime("%Y-%m-%d")
+                    row_data[k] = first_val
+                elif isinstance(first_val, (int, float)):
+                    avg = sum(vals) / len(vals)
+                    row_data[k] = avg
+                else:
+                    # 非数字，取第一个非空值
+                    row_data[k] = first_val
+                has_data = True
+            else:
+                row_data[k] = None
+                
+            # [新增] 对所有 row_data 的值再次进行类型清洗，确保没有 date 对象
+            val = row_data[k]
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                row_data[k] = val.strftime("%Y-%m-%d")
+        
+        # 如果整行没有任何数据(连电价都没有)，是否跳过？
+        # 如果是增量更新，可能只想更新部分字段。
+        # 但如果是 Upsert，None 会覆盖旧值吗？
+        # 我们应该只包含有值的字段，或者全部包含。
+        # 这里选择：如果没有任何数据，跳过该小时；否则插入/更新所有字段。
+        # 修改逻辑：只要有天气数据也算有数据，不能跳过
+        if not has_data:
+            continue
+            
+        # 计算衍生字段
+        # 1. 价差
+        p_da = row_data.get('price_da')
+        p_rt = row_data.get('price_rt')
+        # 修改逻辑：只要其中一个有值就可以更新，而不是必须两个都有
+        # 如果只有一个有值，diff 为 None (因为无法计算价差)，但原有的值应该保留
+        if p_da is not None and p_rt is not None:
+            row_data['price_diff'] = p_da - p_rt
+        else:
+            row_data['price_diff'] = None
+            
+        # 2. 新能源预测总和 (光伏+风电)
+        # 假设规则里有 ne_pv_forecast 和 ne_wind_forecast
+        pv = row_data.get('ne_pv_forecast', 0) or 0
+        wind = row_data.get('ne_wind_forecast', 0) or 0
+        if pv or wind:
+            row_data['new_energy_forecast'] = pv + wind
+        else:
+            row_data['new_energy_forecast'] = None
+
+        # 3. 负荷偏差 (预测 - 实际)
+        l_fore = row_data.get('load_forecast')
+        l_act = row_data.get('load_actual')
+        if l_fore is not None and l_act is not None:
+            row_data['load_deviation'] = l_fore - l_act
+        else:
+            row_data['load_deviation'] = None
+            
+        # [新增] 确保 record_date 和 hour 始终存在 (虽然前面已经定义了)
+        row_data['record_date'] = target_date_str
+        row_data['hour'] = h
+            
+        batch_data.append(row_data)
+    
+    # 5. 入库
+    if batch_data:
+        # 动态构建 SQL
+        # 字段列表: record_date, hour + 其他所有字段
+        # 因为 batch_data 里的 keys 可能不完全一致(有些是 None)，最好统一一下
+        # 其实 executemany 要求所有字典 keys 一致
+        
+        # 确保所有字典都有所有字段
+        final_keys = list(all_update_fields)
+        # 过滤掉不在 batch_data[0] 里的 key (虽然我们在循环里都加了)
+        # 为了安全，重新整理 batch_data
+        
+        # 移除 'record_date' 和 'hour'，因为它们已经单独处理
+        if 'record_date' in final_keys:
+             final_keys.remove('record_date')
+        if 'hour' in final_keys:
+             final_keys.remove('hour')
+             
+        # [DEBUG] 打印一下 final_keys 和 batch_data 的样例，方便调试
+        if len(batch_data) > 0:
+             print(f"[DEBUG] Cache Update for {target_date_str}: {len(batch_data)} records")
+             # print(f"[DEBUG] Keys: {final_keys}")
+             # print(f"[DEBUG] Sample Row: {batch_data[0]}")
+        else:
+             print(f"[DEBUG] Cache Update for {target_date_str}: NO DATA to update.")
+             if weather_row:
+                 print(f"[DEBUG] Weather Row found but no data mapped? Weather Keys: {weather_row.keys()}")
+             else:
+                 print(f"[DEBUG] No Weather Row and No Power Data.")
+        
+        clean_batch = []
+        for row in batch_data:
+            clean_row = {"record_date": row["record_date"], "hour": row["hour"]}
+            for k in final_keys:
+                clean_row[k] = row.get(k) # 默认为 None
+            clean_batch.append(clean_row)
+            
+        # 构建 INSERT ... ON DUPLICATE KEY UPDATE 语句
+        field_list = [f"`{k}`" for k in final_keys]
+        param_list = [f":{k}" for k in final_keys]
+        
+        # UPDATE 部分
+        update_parts = [f"`{k}`=VALUES(`{k}`)" for k in final_keys]
+        
+        # 注意: 这里的 record_date 和 hour 需要显式加入 VALUES 列表，但不在 UPDATE 列表(主键)
+        sql = f"""
+            INSERT INTO {table_name} 
+            (`record_date`, `hour`, {', '.join(field_list)})
+            VALUES (:record_date, :hour, {', '.join(param_list)})
+            ON DUPLICATE KEY UPDATE
+            {', '.join(update_parts)}
+        """
+        
+        with db_manager.engine.begin() as conn:
+             try:
+                conn.execute(text(sql), clean_batch)
+             except Exception as e:
+                 print(f"⚠️ SQL Execution Failed for {target_date_str}: {e}")
+                 import traceback
+                 traceback.print_exc()
+                 raise e # 重新抛出以便上层捕获
+            
+        return len(clean_batch)
+    
+    return 0
+
+def normalize_record_time(val, date_str):
+    """标准化时间字段，处理 timedelta 和 datetime"""
+    try:
+        # 1. 已经是 datetime
+        if isinstance(val, datetime.datetime):
+            return val
+            
+        # 2. 是 timedelta (Python/Pandas/NumPy)
+        # 注意: pd.Timedelta 也是 timedelta 的子类 (在某些版本中)，或者行为类似
+        # 分开检查更稳妥
+        is_delta = isinstance(val, (datetime.timedelta, pd.Timedelta, np.timedelta64))
+        
+        if is_delta:
+            base_date = pd.to_datetime(date_str)
+            return base_date + val
+            
+        # 3. 尝试 pd.to_datetime (针对字符串或 timestamp)
+        # 如果 val 是 timedelta 类型的字符串 (如 "00:15:00")，pd.to_datetime 可能会报错或行为不符合预期
+        # 所以先尝试转 timedelta
+        try:
+            base_date = pd.to_datetime(date_str)
+            delta = pd.to_timedelta(val)
+            return base_date + delta
+        except:
+            pass
+
+        return pd.to_datetime(val)
+    except:
+        # 4. 最后的尝试
+        try:
+            base_date = pd.to_datetime(date_str)
+            # 假设 val 是某种可以转为 timedelta 的东西
+            delta = pd.to_timedelta(val)
+            return base_date + delta
+        except:
+            # 打印错误以便调试，但在生产环境中可能太吵
+            # print(f"Failed to normalize time: {val} type: {type(val)}")
+            return None
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)

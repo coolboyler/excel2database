@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>类比日智能匹配 - Excel2SQL</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <!-- Flatpickr Date Picker -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
+    <style>
+        :root {
+            --bg-color: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-primary: #1f2937;
+            --text-secondary: #6b7280;
+            --accent-color: #3b82f6;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --purple-color: #8b5cf6;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--text-primary);
+        }
+
+        .navbar {
+            background: var(--card-bg);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+
+        .navbar-brand,
+        .navbar-brand:hover {
+            color: var(--text-primary);
+            font-weight: 800;
+            font-size: 1.4rem;
+            letter-spacing: -0.025em;
+        }
+
+        .navbar-nav {
+            gap: 0.75rem;
+        }
+
+        .navbar-nav .nav-link {
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 1.05rem;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .navbar-nav .nav-link:hover,
+        .navbar-nav .nav-link:focus {
+            color: var(--text-primary);
+            background-color: rgba(0, 0, 0, 0.08);
+        }
+
+        .navbar-nav .nav-link.active {
+            color: var(--accent-color);
+            font-weight: 700;
+            background-color: rgba(59, 130, 246, 0.12);
+            border-bottom: 2px solid var(--accent-color);
+        }
+
+        /* 状态徽章样式 */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .status-pending {
+            background-color: #ffeaa7;
+            color: #d35400;
+        }
+        .status-success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .status-processing {
+            background-color: #e0f7fa;
+            color: #0277bd;
+        }
+
+        .dashboard-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            height: 100%;
+            transition: transform 0.2s;
+            border: none;
+        }
+
+        .dashboard-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        .card-header-custom {
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .chart-container {
+            height: 400px;
+            width: 100%;
+            border-radius: 8px;
+        }
+
+        /* Table Styles */
+        .table-custom {
+            font-size: 0.9rem;
+            border-collapse: separate; 
+            border-spacing: 0;
+            width: 100%;
+        }
+        .table-custom thead th {
+            background-color: #f9fafb;
+            color: var(--text-secondary);
+            font-weight: 600;
+            border-bottom: 2px solid #e5e7eb;
+            padding: 12px 15px;
+            text-align: left;
+            white-space: nowrap;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .table-custom tbody td {
+            vertical-align: middle;
+            border-bottom: 1px solid #f3f4f6;
+            padding: 12px 15px;
+            color: var(--text-primary);
+            white-space: nowrap;
+        }
+        .table-custom tbody tr:hover td {
+            background-color: #f8fafc;
+        }
+        
+        .rank-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 0.85rem;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .rank-1 { background: linear-gradient(135deg, #ffd700, #f59e0b); }
+        .rank-2 { background: linear-gradient(135deg, #e5e7eb, #9ca3af); color: #374151; }
+        .rank-3 { background: linear-gradient(135deg, #fdba74, #d97706); }
+        .rank-other { background-color: #f3f4f6; color: var(--text-secondary); font-weight: 600; }
+
+        .similarity-bar {
+            height: 8px;
+            background-color: #e5e7eb;
+            border-radius: 4px;
+            overflow: hidden;
+            width: 100px;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        .similarity-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-color), #60a5fa);
+            border-radius: 4px;
+        }
+
+        /* Form Range Customization */
+        .form-range::-webkit-slider-thumb {
+            background: var(--accent-color);
+        }
+        
+        .weight-card {
+            background-color: #f8fafc;
+            border-radius: 8px;
+            padding: 15px;
+            border: 1px solid #e2e8f0;
+            transition: all 0.2s;
+        }
+        .weight-card:hover {
+            border-color: var(--accent-color);
+            background-color: #fff;
+        }
+        .weight-value {
+            font-weight: 700;
+            color: var(--accent-color);
+            display: inline-block;
+            width: 40px;
+            text-align: right;
+        }
+        
+        .bg-purple {
+            background-color: var(--purple-color) !important;
+        }
+        
+        .text-purple {
+            color: var(--purple-color) !important;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light mb-4">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="/similar_day">类比日匹配</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/daily_hourly">分时看板</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-4" style="max-width: 1600px;">
+        <!-- Configuration Section -->
+        <div class="dashboard-card mb-4">
+            <div class="card-header-custom">
+                <h5 class="card-title"><i class="bi bi-sliders"></i> 匹配参数配置</h5>
+            </div>
+            
+            <form id="similar-day-form" onsubmit="findSimilarDays(event)">
+                <div class="row g-4">
+                    <!-- Date Selection -->
+                    <div class="col-md-3 border-end">
+                        <div class="mb-3">
+                            <label for="target-date" class="form-label fw-bold">目标日期</label>
+                            <div class="input-group input-group-lg mb-2">
+                                <span class="input-group-text bg-white border-end-0">
+                                    <i class="bi bi-calendar3 text-primary"></i>
+                                </span>
+                                <input type="text" id="target-date" class="form-control flatpickr-input" placeholder="选择日期" readonly required>
+                            </div>
+                            <div class="quick-date-buttons mb-3">
+                                <div class="btn-group btn-group-sm w-100" role="group">
+                                    <button type="button" class="btn btn-outline-primary quick-date" data-days="0">今天</button>
+                                    <button type="button" class="btn btn-outline-primary quick-date" data-days="-1">昨天</button>
+                                    <button type="button" class="btn btn-outline-primary quick-date" data-days="-7">一周前</button>
+                                    <button type="button" class="btn btn-outline-primary quick-date" data-days="-30">一月前</button>
+                                </div>
+                            </div>
+                            <div class="form-text mt-2">
+                                <i class="bi bi-info-circle"></i> 请确保该日期已导入预测负荷数据。系统将自动从缓存读取各项指标。
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100 py-2 mt-3 fw-bold shadow-sm">
+                            <i class="bi bi-search"></i> 开始智能匹配
+                        </button>
+                    </div>
+
+                    <!-- Weights Configuration -->
+                    <div class="col-md-9">
+                        <label class="form-label fw-bold mb-3">权重设置 (0.0 - 1.0)</label>
+                        <div class="row g-3">
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-load" class="form-label d-flex justify-content-between">
+                                        <span>负荷预测</span>
+                                        <span class="weight-value" id="val-load">0.4</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-load" min="0" max="1" step="0.1" value="0.4" oninput="updateVal(this, 'val-load')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-temp" class="form-label d-flex justify-content-between">
+                                        <span>温度</span>
+                                        <span class="weight-value" id="val-temp">0.1</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-temp" min="0" max="1" step="0.1" value="0.1" oninput="updateVal(this, 'val-temp')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-weather" class="form-label d-flex justify-content-between">
+                                        <span>天气类型</span>
+                                        <span class="weight-value" id="val-weather">0.1</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-weather" min="0" max="1" step="0.1" value="0.1" oninput="updateVal(this, 'val-weather')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-b-ratio" class="form-label d-flex justify-content-between">
+                                        <span>B类占比</span>
+                                        <span class="weight-value" id="val-b-ratio">0.15</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-b-ratio" min="0" max="1" step="0.1" value="0.15" oninput="updateVal(this, 'val-b-ratio')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-ne" class="form-label d-flex justify-content-between">
+                                        <span>新能源D日</span>
+                                        <span class="weight-value" id="val-ne">0.1</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-ne" min="0" max="1" step="0.1" value="0.1" oninput="updateVal(this, 'val-ne')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-price" class="form-label d-flex justify-content-between">
+                                        <span>日前电价</span>
+                                        <span class="weight-value" id="val-price">0.1</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-price" min="0" max="1" step="0.1" value="0.1" oninput="updateVal(this, 'val-price')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card border-warning bg-light">
+                                    <label for="w-date" class="form-label d-flex justify-content-between text-warning">
+                                        <span>日期衰减</span>
+                                        <span class="weight-value text-warning" id="val-date">0.05</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-date" min="0" max="1" step="0.05" value="0.05" oninput="updateVal(this, 'val-date')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-month" class="form-label d-flex justify-content-between">
+                                        <span>月份相似</span>
+                                        <span class="weight-value" id="val-month">0.15</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-month" min="0" max="1" step="0.05" value="0.15" oninput="updateVal(this, 'val-month')">
+                                </div>
+                            </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-weekday" class="form-label d-flex justify-content-between">
+                                        <span>星期几相似</span>
+                                        <span class="weight-value" id="val-weekday">0.15</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-weekday" min="0" max="1" step="0.05" value="0.15" oninput="updateVal(this, 'val-weekday')">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <!-- Results Section -->
+        <div id="result-section" style="display: none;">
+            <!-- Target Date Info -->
+            <div class="dashboard-card mb-4">
+                <div class="card-header-custom">
+                    <h5 class="card-title"><i class="bi bi-calendar-event"></i> 目标日期信息</h5>
+                </div>
+                <div id="target-info" class="row g-3">
+                    <!-- Target info will be inserted here by JavaScript -->
+                    <div class="col-12 text-muted text-center py-3">
+                        匹配结果加载后，将显示目标日期的详细信息
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Charts Row -->
+            <div class="row g-4 mb-4">
+                <div class="col-lg-6">
+                    <div class="dashboard-card">
+                        <div class="card-header-custom">
+                            <h5 class="card-title"><i class="bi bi-graph-up"></i> 负荷曲线对比</h5>
+                        </div>
+                        <div id="load-chart" class="chart-container"></div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="dashboard-card">
+                        <div class="card-header-custom">
+                            <h5 class="card-title"><i class="bi bi-currency-yen"></i> 电价曲线对比</h5>
+                        </div>
+                        <div id="price-chart" class="chart-container"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table Row -->
+            <div class="dashboard-card mb-4">
+                <div class="card-header-custom">
+                    <h5 class="card-title"><i class="bi bi-list-ol"></i> 匹配结果详情 (Top 5)</h5>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover table-custom align-middle">
+                        <thead>
+                            <tr>
+                                <th class="text-center" width="80">排名</th>
+                                <th>历史日期</th>
+                                <th>相似度得分</th>
+                                <th>负荷差异 (MAPE)</th>
+                                <th>温度差异 (RMSE)</th>
+                                <th>最高温度差异</th>
+                                <th>最低温度差异</th>
+                                <th>月份差异</th>
+                                <th>星期几差异</th>
+                                <th>日期类型</th>
+                                <th>天气类型</th>
+                            </tr>
+                        </thead>
+                        <tbody id="result-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Init Date - Handled by Flatpickr (defaultDate: tomorrow)
+
+
+
+        function updateVal(input, displayId) {
+            document.getElementById(displayId).textContent = input.value;
+        }
+
+        let charts = [];
+
+        function findSimilarDays(event) {
+            event.preventDefault();
+            
+            const targetDate = document.getElementById('target-date').value;
+            
+            const weights = {
+                load: document.getElementById('w-load').value,
+                temp: document.getElementById('w-temp').value,
+                weather: document.getElementById('w-weather').value,
+                b_ratio: document.getElementById('w-b-ratio').value,
+                ne: document.getElementById('w-ne').value,
+                price: document.getElementById('w-price').value,
+                date: document.getElementById('w-date').value,
+                month: document.getElementById('w-month').value,
+                weekday: document.getElementById('w-weekday').value
+            };
+
+            const submitBtn = document.querySelector('button[type="submit"]');
+            const originalContent = submitBtn.innerHTML;
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 正在匹配中...';
+
+            fetch('/api/similar-day', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_date: targetDate, weights: weights })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('匹配失败: ' + data.error);
+                    return;
+                }
+                displayResults(data);
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('请求失败，请检查网络或服务器状态');
+            })
+            .finally(() => {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalContent;
+            });
+        }
+
+        function displayResults(data) {
+            const resultSection = document.getElementById('result-section');
+            resultSection.style.display = 'block';
+            
+            // Scroll smoothly to results
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            // Update Target Date Info
+            const targetInfoEl = document.getElementById('target-info');
+            if (targetInfoEl && data.target_stats) {
+                const stats = data.target_stats;
+                targetInfoEl.innerHTML = `
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-info bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-cloud-sun text-info fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">天气类型</div>
+                                <div class="fw-bold fs-5">${data.target_weather_type || '未知'}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-primary bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-thermometer-half text-primary fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">平均温度</div>
+                                <div class="fw-bold fs-5">${stats.avg_temp.toFixed(1)} °C</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-success bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-lightning-charge text-success fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">平均负荷</div>
+                                <div class="fw-bold fs-5">${stats.avg_load.toFixed(0)} MW</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-warning bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-cash-stack text-warning fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">平均电价</div>
+                                <div class="fw-bold fs-5">${stats.avg_price.toFixed(2)} 元/MWh</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-danger bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-bar-chart-line text-danger fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">B类占比</div>
+                                <div class="fw-bold fs-5">${(stats.avg_b_ratio * 100).toFixed(1)}%</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-purple bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-sun text-purple fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">新能源</div>
+                                <div class="fw-bold fs-5">${stats.avg_ne.toFixed(1)} MW</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Render Table
+            const tbody = document.getElementById('result-body');
+            tbody.innerHTML = '';
+            
+            if (!data.matches || data.matches.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" class="text-center py-5 text-muted">未找到符合条件的相似日</td></tr>';
+                return;
+            }
+
+            data.matches.forEach((item, index) => {
+                const rankClass = index < 3 ? `rank-${index + 1}` : 'rank-other';
+                const similarity = (item.similarity_score * 100).toFixed(1);
+                
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="text-center"><span class="rank-badge ${rankClass}">${index + 1}</span></td>
+                    <td><strong>${item.date}</strong></td>
+                    <td>
+                        <div class="d-flex align-items-center">
+                            <span class="fw-bold me-2" style="width: 45px;">${similarity}%</span>
+                            <div class="progress flex-grow-1" style="height: 6px;">
+                                <div class="progress-bar bg-primary" role="progressbar" style="width: ${similarity}%"></div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>${(item.details.diff_load * 100).toFixed(2)}%</td>
+                    <td>${item.details.diff_temp.toFixed(2)} °C</td>
+                    <td>${item.details.diff_temp_max.toFixed(2)} °C</td>
+                    <td>${item.details.diff_temp_min.toFixed(2)} °C</td>
+                    <td>${(item.details.diff_month * 100).toFixed(1)}%</td>
+                    <td>${(item.details.diff_weekday * 100).toFixed(1)}%</td>
+                    <td><span class="badge bg-info text-dark">${item.day_type || '-'}</span></td>
+                    <td><span class="badge bg-light text-dark border">${item.weather_type || '-'}</span></td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Show Target Day Type
+            const title = document.querySelector('#result-section .card-title');
+            if(data.target_day_type) {
+                const badge = document.createElement('span');
+                badge.className = 'badge bg-info text-dark ms-2';
+                badge.style.fontSize = '0.8rem';
+                badge.innerText = `目标日类型: ${data.target_day_type}`;
+                
+                // Clear previous badges if any
+                const oldBadge = title.querySelector('.badge');
+                if(oldBadge) oldBadge.remove();
+                
+                title.appendChild(badge);
+            }
+
+            renderCharts(data);
+        }
+
+        function renderCharts(data) {
+            // Dispose old charts if exist
+            charts.forEach(c => c.dispose());
+            charts = [];
+
+            const chartCommonOption = {
+                grid: { left: '3%', right: '4%', bottom: '10%', top: '15%', containLabel: true },
+                tooltip: { trigger: 'axis' },
+                legend: { top: 0, icon: 'circle' },
+                xAxis: { 
+                    type: 'category', 
+                    data: Array.from({length: 24}, (_, i) => `${i}:00`),
+                    boundaryGap: false
+                },
+            };
+
+            // 1. Load Chart
+            const loadChart = echarts.init(document.getElementById('load-chart'));
+            charts.push(loadChart);
+            
+            const loadSeries = [{
+                name: '目标日预测',
+                type: 'line',
+                data: data.target_load_curve,
+                lineStyle: { width: 3, type: 'dashed', color: '#ef4444' },
+                itemStyle: { color: '#ef4444' },
+                symbol: 'none',
+                z: 10
+            }];
+
+            data.matches.forEach((item, index) => {
+                if (item.load_curve) {
+                    loadSeries.push({
+                        name: `${item.date} (#${index+1})`,
+                        type: 'line',
+                        data: item.load_curve,
+                        smooth: true,
+                        lineStyle: { width: 2, opacity: 0.7 - index * 0.15 },
+                        symbol: 'none'
+                    });
+                }
+            });
+
+            loadChart.setOption({
+                ...chartCommonOption,
+                yAxis: { type: 'value', scale: true, name: 'MW' },
+                series: loadSeries
+            });
+
+            // 2. Price Chart
+            const priceChart = echarts.init(document.getElementById('price-chart'));
+            charts.push(priceChart);
+            
+            const priceSeries = [{
+                name: '目标日预测',
+                type: 'line',
+                data: data.target_price_curve,
+                lineStyle: { width: 3, type: 'dashed', color: '#ef4444' },
+                itemStyle: { color: '#ef4444' },
+                symbol: 'none',
+                z: 10
+            }];
+
+            data.matches.forEach((item, index) => {
+                if (item.price_curve) {
+                    priceSeries.push({
+                        name: `${item.date} (#${index+1})`,
+                        type: 'line',
+                        data: item.price_curve,
+                        smooth: true,
+                        lineStyle: { width: 2, opacity: 0.7 - index * 0.15 },
+                        symbol: 'none'
+                    });
+                }
+            });
+
+            priceChart.setOption({
+                ...chartCommonOption,
+                yAxis: { type: 'value', scale: true, name: '元/MWh' },
+                series: priceSeries
+            });
+        }
+
+        // Initialize Flatpickr date picker
+        const targetDatePicker = flatpickr("#target-date", {
+            locale: "zh",
+            dateFormat: "Y-m-d",
+            defaultDate: new Date(new Date().getTime() + 86400000), // tomorrow
+            theme: "material_blue",
+            allowInput: false,
+            clickOpens: true,
+            disableMobile: true,
+            onChange: function(selectedDates, dateStr) {
+                console.log("Selected date:", dateStr);
+            }
+        });
+
+        // Quick date buttons
+        document.querySelectorAll('.quick-date').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const days = parseInt(this.getAttribute('data-days'));
+                const targetDate = new Date();
+                targetDate.setDate(targetDate.getDate() + days);
+                targetDatePicker.setDate(targetDate);
+            });
+        });
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            charts.forEach(c => c.resize());
+        });
+    </script>
+</body>
+</html>

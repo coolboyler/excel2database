@@ -1,6 +1,8 @@
 import pandas as pd
+import numpy as np
 import datetime
 import re
+import os
 from sqlalchemy import text
 from database import DatabaseManager
 
@@ -83,8 +85,162 @@ class PowerDataImporter:
             print(f"⚠️ 未找到 '通道名称' 或 '类型' 列，跳过。可用列: {list(df.columns)}")
             return records
 
-        print(f"✅ {data_type} 导入 {len(records)} 条记录")
-        return records
+    def save_to_imformation_pred_database(self, records, data_date):
+        """保存信息披露预测数据到自定义表 (动态分表)"""
+        if not records:
+            print("❌ 没有可保存的记录")
+            return True, None, 0, []
+
+        # 1. 过滤无效记录
+        valid_records = []
+        for r in records:
+            if isinstance(r, dict):
+                r['record_date'] = data_date
+                valid_records.append(r)
+
+        if not valid_records:
+            return False, None, 0, []
+        
+        # 翻译映射
+        translation_map = {
+            "电厂名称": "power_plant_name", "机组名称": "generator_name",
+            "最小技术出力": "min_technical_output", "最小技术出力(MW)": "min_technical_output",
+            "额定出力": "rated_output", "额定出力(MW)": "rated_output",
+            "日期": "maintenance_date", "时间": "record_time", "类型": "type",
+            "备注": "remarks", "序号": "seq_no", "元件名称": "component_name",
+            "设备名称": "device_name", "电压等级": "voltage_level", "电压等级(Kv)": "voltage_level",
+            "停电范围": "outage_scope", "停电时间": "outage_time", "送电时间": "restore_time",
+            "工作内容": "work_content", "检修性质": "maintenance_type", "申请单位": "applicant",
+            "数据项": "data_item", "断面名称": "section_name", "机组群名": "unit_group_name",
+            "开始时间": "start_time", "结束时间": "end_time", "状态类型": "status_type",
+            "设备改变原因": "equipment_change_reason",
+            "机组检修预测信息": "unit_maintenance_prediction", "机组技术参数": "unit_technical_parameters",
+            "检修计划": "maintenance_plan", "输变电检修预测信息": "transmission_maintenance",
+            "机组检修容量预测信息": "unit_maintenance_capacity_prediction", "备用预测信息": "reserve_prediction",
+            "阻塞预测信息": "congestion_prediction", "日前阻塞断面信息": "day_ahead_congestion_section",
+            "必开必停机组（群）约束预测信息": "must_run_stop_unit_constraint",
+            "必开必停机组信息预测信息": "must_run_stop_unit_info",
+            "开停机不满足最小约束时间机组信息": "unit_constraint_violation_info",
+            "必开必停容量预测信息": "must_run_stop_capacity",
+            "市场机组总容量（MW）": "market_unit_total_capacity", "总容量（MW）": "total_capacity",
+            "阻塞信息": "congestion_info", "报价模式": "quotation_mode", "运行日": "operation_date",
+            # New mappings from user request
+            "温度": "temperature", "天气": "weather", "风向": "wind_direction", "风速": "wind_speed",
+            "降雨概率": "precipitation_probability", "体感温度": "apparent_temperature",
+            "湿度": "humidity", "紫外线": "uv_index", "云量": "cloud_cover", "降雨量": "rainfall",
+            "星期": "week_day", "天": "day",
+            "统调预测": "dispatch_forecast", "A类电源预测": "class_a_power_forecast",
+            "B类电源预测": "class_b_power_forecast", "地方电源预测": "local_power_forecast",
+            "西电东送电源预测": "west_to_east_power_forecast", "粤港澳预测": "guangdong_hongkong_macau_forecast",
+            "发电总预测": "total_generation_forecast", "现货新能源D日预测": "spot_new_energy_day_ahead_forecast",
+            "统调新能源光伏预测": "dispatch_new_energy_pv_forecast", "统调新能源风电预测": "dispatch_new_energy_wind_forecast",
+            "水电（含抽蓄）预测": "hydro_power_forecast_incl_pumped", "抽蓄出力预测": "pumped_storage_output_forecast",
+            "实际统调负荷": "actual_dispatch_load", "A类电源实际": "actual_class_a_power",
+            "B类电源实际": "actual_class_b_power", "地方电源实际": "actual_local_power",
+            "西电东送实际": "actual_west_to_east_power", "粤港联络实际": "actual_guangdong_hongkong_link",
+            "新能源总实际": "actual_total_new_energy", "水电含抽蓄实际": "actual_hydro_power_incl_pumped",
+            "统调负荷偏差": "dispatch_load_deviation",
+        }
+        
+        def translate(name):
+            clean = str(name).strip()
+            if clean in translation_map: return translation_map[clean]
+            for k, v in translation_map.items():
+                if k in clean: return v
+            # 简单的拼音/英文处理 fallback
+            return clean.replace("(", "_").replace(")", "_").replace(" ", "_").replace("（", "_").replace("）", "_")
+
+        # 按 sheet 分组
+        sheet_groups = {}
+        for r in valid_records:
+            s_name = r.get('sheet_name', 'Unknown')
+            if s_name not in sheet_groups:
+                sheet_groups[s_name] = []
+            sheet_groups[s_name].append(r)
+
+        preview_data = []
+        
+        try:
+            with self.db_manager.engine.begin() as conn:
+                for sheet_name, sheet_records in sheet_groups.items():
+                    # 确定表名
+                    base_sheet = re.sub(r'\d{4}[-/]?\d{1,2}[-/]?\d{1,2}', '', sheet_name).replace('()', '').strip()
+                    table_suffix = translate(base_sheet)
+                    table_name = f"imformation_pred_{table_suffix}".lower()
+                    
+                    # 确定所有列
+                    all_keys = set()
+                    for r in sheet_records:
+                        all_keys.update(r.keys())
+                    
+                    # 移除系统字段以重新排序
+                    if 'record_date' in all_keys: all_keys.remove('record_date')
+                    if 'sheet_name' in all_keys: all_keys.remove('sheet_name')
+                    if 'type' in all_keys: all_keys.remove('type')
+                    if 'created_at' in all_keys: all_keys.remove('created_at')
+                    
+                    # 构建列定义
+                    col_defs = []
+                    col_map = {} # 原始列 -> 安全列
+                    
+                    for k in sorted(list(all_keys)):
+                        safe_col = translate(k)
+                        col_map[k] = safe_col
+                        col_defs.append(f"`{safe_col}` text COMMENT '{k}'")
+                        
+                    # 创建表 SQL
+                    create_sql = f"""
+                    CREATE TABLE IF NOT EXISTS `{table_name}` (
+                        `id` bigint(20) NOT NULL AUTO_INCREMENT,
+                        `record_date` date DEFAULT NULL,
+                        `sheet_name` varchar(255) DEFAULT NULL,
+                        `type` varchar(100) DEFAULT NULL,
+                        {','.join(col_defs)},
+                        `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (`id`),
+                        KEY `idx_record_date` (`record_date`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                    conn.execute(text(create_sql))
+                    
+                    # 清理数据
+                    conn.execute(text(f"DELETE FROM `{table_name}` WHERE record_date = :date"), {'date': data_date})
+                    
+                    # 准备插入数据
+                    insert_records = []
+                    for r in sheet_records:
+                        new_r = {
+                            'record_date': r['record_date'],
+                            'sheet_name': r['sheet_name'],
+                            'type': r.get('type', r.get('data_type')),
+                        }
+                        for k, v in r.items():
+                            if k in col_map:
+                                new_r[col_map[k]] = v
+                        insert_records.append(new_r)
+                        
+                    # 插入
+                    if insert_records:
+                        keys = list(insert_records[0].keys())
+                        values_clause = ", ".join([f":{k}" for k in keys])
+                        columns_clause = ", ".join([f"`{k}`" for k in keys])
+                        
+                        stmt = text(f"INSERT INTO `{table_name}` ({columns_clause}) VALUES ({values_clause})")
+                        conn.execute(stmt, insert_records)
+                        
+                        print(f"✅ 已保存 {len(insert_records)} 条记录到 {table_name}")
+                        if not preview_data:
+                            preview_data = insert_records[:10]
+
+            return True, None, len(valid_records), preview_data
+
+        except Exception as e:
+            print(f"❌ 保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+
+        
 
     def _process_channel_format(self, df, data_date, sheet_name, data_type):
         """处理有'通道名称'列的数据格式"""
@@ -239,7 +395,7 @@ class PowerDataImporter:
                 preview_data = []
                 for row in result:
                     # 将行对象转换为字典
-                    preview_data.append(dict(zip(result.keys(), row)))
+                    preview_data.append(dict(row._mapping))
                 
                 print(f"✅ 数据库保存成功: {count} 条记录")
                 return True, table_name, count, preview_data
@@ -515,7 +671,7 @@ class PowerDataImporter:
                 preview_data = []
                 for row in result:
                     # 将行对象转换为字典
-                    preview_data.append(dict(zip(result.keys(), row)))
+                    preview_data.append(dict(row._mapping))
                 
                 print(f"✅ 数据库保存成功: {count} 条记录")
                 return True, table_name, count, []
@@ -1285,6 +1441,154 @@ class PowerDataImporter:
 
         return records
     
+    def save_to_shubiandian_database(self, records, data_date):
+        """保存输变电信息到数据库"""
+        if not records:
+            return True, None, 0, []
+            
+        table_suffix = data_date.strftime("%Y%m%d")
+        table_name = f"power_substation_device_{table_suffix}"
+        
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # 创建表
+                create_sql = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    serial_number INT,
+                    record_date DATE,
+                    device_name VARCHAR(255),
+                    voltage_level VARCHAR(50),
+                    sheet_name VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                conn.execute(text(create_sql))
+                
+                # 删除旧数据
+                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :d"), {"d": data_date})
+                
+                # 插入数据
+                insert_sql = text(f"""
+                INSERT INTO {table_name} (serial_number, record_date, device_name, voltage_level, sheet_name)
+                VALUES (:serial_number, :record_date, :device_name, :voltage_level, :sheet_name)
+                """)
+                
+                conn.execute(insert_sql, records)
+                
+                count = len(records)
+                print(f"✅ {table_name} 保存成功: {count} 条")
+                return True, table_name, count, records[:5]
+                
+        except Exception as e:
+            print(f"❌ {table_name} 保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+
+    def save_to_jizujichu_database(self, records, data_date):
+        """保存机组基础信息到数据库"""
+        if not records:
+            return True, None, 0, []
+            
+        table_suffix = data_date.strftime("%Y%m%d")
+        table_name = f"power_unit_basic_{table_suffix}"
+        
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # 创建表
+                create_sql = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    record_date DATE,
+                    unit_group_name VARCHAR(255),
+                    power_plant_id VARCHAR(100),
+                    power_plant_name VARCHAR(255),
+                    unit_id VARCHAR(100),
+                    unit_name VARCHAR(255),
+                    proportion FLOAT,
+                    sheet_name VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                conn.execute(text(create_sql))
+                
+                # 删除旧数据
+                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :d"), {"d": data_date})
+                
+                # 插入数据
+                insert_sql = text(f"""
+                INSERT INTO {table_name} (record_date, unit_group_name, power_plant_id, power_plant_name, unit_id, unit_name, proportion, sheet_name)
+                VALUES (:record_date, :unit_group_name, :power_plant_id, :power_plant_name, :unit_id, :unit_name, :proportion, :sheet_name)
+                """)
+                
+                conn.execute(insert_sql, records)
+                
+                count = len(records)
+                print(f"✅ {table_name} 保存成功: {count} 条")
+                return True, table_name, count, records[:5]
+                
+        except Exception as e:
+            print(f"❌ {table_name} 保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+
+    def save_to_jizuyueshu_database(self, records, data_date):
+        """保存机组约束信息到数据库"""
+        if not records:
+            return True, None, 0, []
+            
+        table_suffix = data_date.strftime("%Y%m%d")
+        table_name = f"power_unit_constraint_{table_suffix}"
+        
+        try:
+            with self.db_manager.engine.begin() as conn:
+                # 创建表
+                create_sql = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    record_date DATE,
+                    unit_group_name VARCHAR(255),
+                    effective_time VARCHAR(50),
+                    expire_time VARCHAR(50),
+                    power_constraint INT COMMENT '1=是, 0=否',
+                    electricity_constraint INT COMMENT '1=是, 0=否',
+                    max_operation_constraint INT COMMENT '1=是, 0=否',
+                    min_operation_constraint INT COMMENT '1=是, 0=否',
+                    max_electricity FLOAT,
+                    min_electricity FLOAT,
+                    sheet_name VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                conn.execute(text(create_sql))
+                
+                # 删除旧数据
+                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :d"), {"d": data_date})
+                
+                # 插入数据
+                insert_sql = text(f"""
+                INSERT INTO {table_name} (record_date, unit_group_name, effective_time, expire_time, 
+                    power_constraint, electricity_constraint, max_operation_constraint, min_operation_constraint, 
+                    max_electricity, min_electricity, sheet_name)
+                VALUES (:record_date, :unit_group_name, :effective_time, :expire_time, 
+                    :power_constraint, :electricity_constraint, :max_operation_constraint, :min_operation_constraint, 
+                    :max_electricity, :min_electricity, :sheet_name)
+                """)
+                
+                conn.execute(insert_sql, records)
+                
+                count = len(records)
+                print(f"✅ {table_name} 保存成功: {count} 条")
+                return True, table_name, count, records[:5]
+                
+        except Exception as e:
+            print(f"❌ {table_name} 保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, None, 0, []
+
     def import_point_data(self, excel_file):
         """自动导入Excel第一个Sheet的数据，并按列求均值"""
         import re
@@ -1315,10 +1619,12 @@ class PowerDataImporter:
                 return False, None, 0, []
 
         # 根据文件名识别类型
-        file_name = str(excel_file)
+        file_name = os.path.basename(str(excel_file)) # 确保只取文件名
         chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
         if chinese_match:
             data_type = chinese_match.group(1)
+            # 修正: 如果识别出的 data_type 包含 "查询" 字样，去掉它，保持简洁
+            data_type = data_type.replace("查询", "")
             print(f"📁 文件类型识别: {data_type}")
         else:
             print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
@@ -1407,10 +1713,10 @@ class PowerDataImporter:
                 overall_mean = sum(values) / len(values)
                 record = {
                     "record_date": pd.to_datetime(data_date).date(),
-                    "record_time": f"{hour}:00",   # "HH:00" にフォーマット
+                    "record_time": f"{hour}:00",
                     "channel_name": f"{data_type}_均值",
                     "value": round(overall_mean, 2),
-                    "type": data_type,
+                    "type": str(data_type),
                     "sheet_name": sheet_name,
                     "created_at": pd.Timestamp.now(),
                 }
@@ -1450,6 +1756,7 @@ class PowerDataImporter:
 
         # 根据文件名识别类型
         file_name = str(excel_file)
+        file_name = os.path.basename(file_name)
         chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
         if chinese_match:
             data_type = chinese_match.group(1)
@@ -1581,7 +1888,468 @@ class PowerDataImporter:
 
         print(f"✅ {data_type} 生成 {len(records)} 条记录")
         return records
+    def import_imformation_true(self, excel_file):
+        """自动生成的导入函数: 信息披露查询实际信息(2025-12-23).xlsx (类)"""
+        try:
+            sheet_dict = pd.read_excel(excel_file, sheet_name=None, header=0)
+        except Exception as e:
+            print(f"❌ 无法读取Excel: {e}")
+            return False, None, 0, []
+        file_name = str(excel_file)
+        chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
+        if chinese_match:
+                data_type = chinese_match.group(1)
+                print(f"📁 文件类型识别: {data_type}")
+        else:
+            print(f"⚠️ 未能在文件名中找到汉字：{file_name}，跳过。")
+            return False
+        all_records = []
+        jizuchuli_records = []
+        data_date = None
+        
+        # 尝试从文件名提取日期
+        match = re.search(r'(\d{4}-\d{1,2}-\d{1,2})', str(excel_file))
+        if match:
+            data_date = datetime.datetime.strptime(match.group(1), '%Y-%m-%d').date()
+        else:
+            # 如果文件名没日期，尝试用当天或抛出警告
+            print(f"⚠️ 未能在文件名中识别日期，默认使用今日")
+            data_date = datetime.date.today()
 
+        sheet_names = list(sheet_dict.keys())
+
+        # 处理第 1 个 Sheet (原名: 负荷实际信息(2025-12-23))
+        if len(sheet_names) > 0:
+            current_sheet_name = sheet_names[0]
+            records = self._process_imformation_true_sheet_1(sheet_dict[current_sheet_name], data_date, current_sheet_name,data_type)
+            all_records.extend(records)
+
+        # 处理第 2 个 Sheet (原名: 地方电实际信息(2025-12-23))
+        if len(sheet_names) > 1:
+            current_sheet_name = sheet_names[1]
+            records = self._process_imformation_true_sheet_2(sheet_dict[current_sheet_name], data_date, current_sheet_name,data_type)
+            all_records.extend(records)
+
+        # 处理第 3 个 Sheet (原名: 西电东送各通道实际信息(2025-12-23))
+        if len(sheet_names) > 2:
+            current_sheet_name = sheet_names[2]
+            records = self._process_imformation_true_sheet_3(sheet_dict[current_sheet_name], data_date, current_sheet_name,data_type)
+            all_records.extend(records)
+
+
+        # 处理第 5 个 Sheet (原名: 备用实际信息(2025-12-23))
+        if len(sheet_names) > 4:
+            current_sheet_name = sheet_names[4]
+            records = self._process_imformation_true_sheet_5(sheet_dict[current_sheet_name], data_date, current_sheet_name, data_type)
+            all_records.extend(records)
+
+        # 处理第 6 个 Sheet (原名: 实时出清断面(2025-12-23))
+        if len(sheet_names) > 5:
+            current_sheet_name = sheet_names[5]
+            records = self._process_imformation_true_sheet_6(sheet_dict[current_sheet_name], data_date, current_sheet_name,data_type)
+            all_records.extend(records)
+
+        # 处理第 7 个 Sheet (原名: 实际断面(2025-12-23))
+        if len(sheet_names) > 6:
+            current_sheet_name = sheet_names[6]
+            records = self._process_imformation_true_sheet_7(sheet_dict[current_sheet_name], data_date, current_sheet_name,data_type)
+            all_records.extend(records)
+
+        # 处理第 9 个 Sheet (原名: 机组出力受限情况(2025-12-23))
+        if len(sheet_names) > 8:
+            current_sheet_name = sheet_names[8]
+            records = self._process_imformation_true_sheet_9(sheet_dict[current_sheet_name], data_date, current_sheet_name)
+            jizuchuli_records.extend(records)
+
+
+        # 处理第 13 个 Sheet (原名: 输变电设备检修计划执行情况(2025-12-23))
+        # if len(sheet_names) > 12:
+        #     current_sheet_name = sheet_names[12]
+        #     records = self._process_imformation_true_sheet_13(sheet_dict[current_sheet_name], data_date, current_sheet_name)
+        #     all_records.extend(records)
+
+        # 处理第 15 个 Sheet (原名: 线路停运情况(2025-12-23))
+        if len(sheet_names) > 14:
+            current_sheet_name = sheet_names[14]
+            records = self._process_imformation_true_sheet_15(sheet_dict[current_sheet_name], data_date, current_sheet_name, data_type)
+            all_records.extend(records)
+
+        # 处理第 16 个 Sheet (原名: 机组出力情况(2025-12-23))
+        if len(sheet_names) > 15:
+            current_sheet_name = sheet_names[15]
+            records = self._process_imformation_true_sheet_16(sheet_dict[current_sheet_name], data_date, current_sheet_name, data_type)
+            all_records.extend(records)
+            
+        if not all_records:
+            print("❌ 没有生成任何有效记录")
+            return False, None, 0, []
+
+        # 保存到数据库 (默认使用通用保存方法，可根据需要修改)
+        return (self.save_to_database(all_records, data_date)),(self.save_to_generator_tech_database(jizuchuli_records, data_date))
+
+    def _process_imformation_true_sheet_1(self, df, data_date, sheet_name,data_type):
+        """自动生成的处理函数: 负荷实际信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('通道名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_true_sheet_2(self, df, data_date, sheet_name,data_type):
+        """自动生成的处理函数: 地方电实际信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('通道名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_true_sheet_3(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 西电东送各通道实际信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('通道名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+    
+    def _process_imformation_true_sheet_5(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 备用实际信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '数据项' 列是指标名称
+            channel_name = str(row.get('数据项', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_true_sheet_6(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 实时出清断面(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '断面名称' 列是指标名称
+            channel_name = str(row.get('断面名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_true_sheet_7(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 实际断面(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '断面名称' 列是指标名称
+            channel_name = str(row.get('断面名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+    
+    def _process_imformation_true_sheet_9(self, df, data_date, sheet_name):
+        """
+        处理电厂机组技术参数sheet，提取机组技术参数数据，机组出力
+        """
+        records = []
+        df = df.dropna(how="all")  # 删除空行
+        
+        if df.empty:
+            print(f"警告：sheet '{sheet_name}' 无有效数据")
+            return records
+
+        # 确保列名正确
+        df.columns = [str(c).strip().replace('（', '(').replace('）', ')') for c in df.columns]
+        print(f"DEBUG: Sheet '{sheet_name}' columns: {df.columns.tolist()}")
+        
+        # ===== 添加调试：打印前几行原始数据 =====
+        print("DEBUG: 原始数据前5行:")
+        for i in range(min(5, len(df))):
+            row = df.iloc[i]
+            print(f"  行{i}: 电厂='{row.get('电厂名称')}' (类型: {type(row.get('电厂名称'))}), "
+                f"机组='{row.get('机组名称')}', "
+                f"最小出力='{row.get('最小技术出力(MW)')}', "
+                f"额定出力='{row.get('额定出力(MW)')}'")
+        
+        # 激进的清理策略：处理电厂名称
+        if "电厂名称" in df.columns:
+            # 转换为字符串
+            df["电厂名称"] = df["电厂名称"].astype(str)
+            print("DEBUG: 转换为字符串后前5行电厂名称:")
+            print(df["电厂名称"].head(5).tolist())
+            
+            # 将 'nan', 'None', 空白字符 替换为 NaN
+            df["电厂名称"] = df["电厂名称"].replace(r'^\s*$', np.nan, regex=True)
+            df["电厂名称"] = df["电厂名称"].replace(['nan', 'None'], np.nan)
+            
+            print("DEBUG: 替换空值后前5行电厂名称:")
+            print(df["电厂名称"].head(5).tolist())
+            
+            # 前向填充
+            df["电厂名称"] = df["电厂名称"].ffill()
+            print("DEBUG: 前向填充后前5行电厂名称:")
+            print(df["电厂名称"].head(5).tolist())
+            
+        # 遍历每一行数据
+        for idx, row in df.iterrows():
+            # 跳过空行
+            if pd.isna(row["机组名称"]) or str(row["机组名称"]).strip() == "":
+                continue
+            
+            # ===== 添加调试：打印当前行处理过程 =====
+            print(f"\nDEBUG 处理第{idx+1}行:")
+            print(f"  原始电厂名称: '{row['电厂名称']}' (类型: {type(row['电厂名称'])})")
+            print(f"  原始机组名称: '{row['机组名称']}'")
+            print(f"  原始最小出力: '{row['最小技术出力(MW)']}'")
+            
+            # 处理电厂名称
+            plant_name_raw = row["电厂名称"]
+            is_plant_na = pd.isna(plant_name_raw)
+            plant_name_str = str(plant_name_raw).strip() if not is_plant_na else ""
+            
+            print(f"  pd.isna(电厂名称) = {is_plant_na}")
+            print(f"  str(电厂名称) = '{plant_name_str}'")
+            
+            if is_plant_na or plant_name_str in ["nan", "None", ""]:
+                plant_name = str(row["机组名称"]).strip()
+                print(f"  → 使用机组名称作为电厂名称: '{plant_name}'")
+            else:
+                plant_name = plant_name_str
+                print(f"  → 使用原始电厂名称: '{plant_name}'")
+            
+            # 处理最小出力
+            min_output_raw = row["最小技术出力(MW)"]
+            min_output = min_output_raw
+            print(f"  原始最小出力值: {min_output_raw} (类型: {type(min_output_raw)})")
+            
+            if pd.isna(min_output_raw):
+                min_output = 0.0
+                print(f"  → 最小出力为NaN，填充为: {min_output}")
+            elif str(min_output_raw) == 'None':
+                min_output = 0.0
+                print(f"  → 最小出力为'None'字符串，填充为: {min_output}")
+            else:
+                try:
+                    min_output = float(min_output_raw)
+                    print(f"  → 最小出力转换为浮点数: {min_output}")
+                except Exception as e:
+                    min_output = 0.0
+                    print(f"  → 最小出力转换失败，填充为: {min_output}, 错误: {e}")
+            
+            record = {
+                "record_date": data_date,
+                "power_plant_name": plant_name,
+                "generator_name": str(row["机组名称"]).strip(),
+                "min_technical_output": min_output,
+                "rated_output": float(row["额定出力(MW)"]) if not pd.isna(row["额定出力(MW)"]) else None,
+                "sheet_name": sheet_name
+            }
+            
+            print(f"  → 最终记录: {record}")
+            records.append(record)
+                
+        print(f"✅ Sheet '{sheet_name}' 解析完成，共 {len(records)} 条记录")
+        
+        # ===== 添加调试：打印最终记录 =====
+        if records and len(records) > 0:
+            print("🔍 解析函数实际返回的字段名检查:")
+            first_record = records[0]
+            print(f"   第一条记录字段名: {list(first_record.keys())}")
+            print(f"   第一条记录内容:")
+            for key, value in first_record.items():
+                print(f"     {key}: {repr(value)}")
+            
+            # 检查是否有我们期望的中文字段
+            expected_fields = ["电厂名称", "机组名称", "最小技术出力(MW)", "额定出力(MW)"]
+            missing_fields = [field for field in expected_fields if field not in first_record]
+            if missing_fields:
+                print(f"   ❗ 缺少中文字段: {missing_fields}")
+
+        return records
+
+    # def _process_imformation_true_sheet_13(self, df, data_date, sheet_name):
+    #     """自动生成的处理函数: 输变电设备检修计划执行情况(2025-12-23) (模式: generic_table)"""
+    #     records = []
+    #     df = df.dropna(how='all')
+    #     df.columns = [str(c).strip() for c in df.columns]
+        
+    #     # 通用表格处理 (直接映射所有列)
+    #     for _, row in df.iterrows():
+    #         record = {
+    #             'record_date': data_date,
+    #             'sheet_name': sheet_name,
+    #             'created_at': datetime.datetime.now()
+    #         }
+    #         # 动态映射所有列
+    #         for col in df.columns:
+    #             val = row[col]
+    #             if pd.notna(val):
+    #                 record[col] = val
+    #         records.append(record)
+    #     return records
+
+    def _process_imformation_true_sheet_15(self, df, data_date, sheet_name,data_type):
+        """自动生成的处理函数: 线路停运情况(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            channel_name = str(row.get('内容', 'Unknown')).strip()
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'channel_name': channel_name,
+                'value': None,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_true_sheet_16(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 机组出力情况(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            # 优先查找 '类型'，如果没有则尝试 '数据项' (兼容性)
+            channel_name = str(row.get('类型', row.get('数据项', 'Unknown'))).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+    
     def query_daily_averages(self, date_list, data_type_keyword="日前节点电价"):
         """
         查询多天的均值数据（适用于已计算好的均值记录）
@@ -2131,198 +2899,874 @@ class PowerDataImporter:
             print(f"保存数据时出错：{e}")
             return False, None, 0, []
 
-    def save_to_jizuyueshu_database(self, records, data_date):
-        """保存机组约束数据到固定表 unit_group_constraint"""
+    def save_to_generator_tech_database(self, records, data_date, sheet_name="机组技术参数表"):
+        """
+        保存电厂机组技术参数数据到数据库
+        """
         if not records:
             print("❌ 没有可保存的记录")
-            return True, None, 0, []
+            return False, None, 0, []
 
-        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
         if isinstance(records, pd.DataFrame):
             records = records.to_dict(orient="records")
 
         if not isinstance(records, list):
-            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
+            print(f"❌ records 类型错误: {type(records)}")
             return False, None, 0, []
-
-        # 🧩 2. 过滤无效记录
+        
         valid_records = []
+        
         for i, r in enumerate(records):
             if not isinstance(r, dict):
                 continue
-            # 添加 record_date 字段
-            r["record_date"] = data_date
-            valid_records.append(r)
-
-        if not valid_records:
-            print("❌ 没有可保存的有效记录")
-            return False, None, 0, []
-
-        # --- 使用固定表名 ---
-        table_name = "power_yueshu"
-        preview_data = []
-
-        try:
-            with self.db_manager.engine.begin() as conn:
-                # --- 创建表（如果不存在）---
-                create_table_sql = f"""
-                CREATE TABLE IF NOT EXISTS `{table_name}` (
-                  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键，唯一标识一条约束记录',
-                  `unit_group_name` varchar(200) DEFAULT NULL COMMENT '机组群名（如"东方站短路电流控制""中珠片必开机组群1"）',
-                  `effective_time` datetime DEFAULT NULL COMMENT '生效时间（如2025-07-10 00:00:00，约束开始生效的时间）',
-                  `expire_time` datetime DEFAULT NULL COMMENT '失效时间（如2038-01-19 11:14:07，约束失效的时间，默认长期有效）',
-                  `power_constraint` tinyint(1) DEFAULT NULL COMMENT '电力约束（1=是，0=否，对应数据中的"是/否"）',
-                  `electricity_constraint` tinyint(1) DEFAULT NULL COMMENT '电量约束（1=是，0=否，对应数据中的"是/否"）',
-                  `max_operation_constraint` tinyint(1) DEFAULT NULL COMMENT '最大运行方式约束（1=是，0=否，对应数据中的"是/否"）',
-                  `min_operation_constraint` tinyint(1) DEFAULT NULL COMMENT '最小运行方式约束（1=是，0=否，对应数据中的"是/否"）',
-                  `max_electricity` decimal(18,2) DEFAULT NULL COMMENT '最大电量（数据中为0，支持小数，单位根据业务定义如MWh）',
-                  `min_electricity` decimal(18,2) DEFAULT NULL COMMENT '最小电量（数据中为0，支持小数，单位同最大电量）',
-                  `record_date` date DEFAULT NULL COMMENT '数据所属日期（如2025-09-18，统一标识该批数据的时间维度）',
-                  `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名（如"机组群约束配置表202509"，用于数据溯源）',
-                  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录入库时间（自动生成，无需手动插入）',
-                  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间（自动更新，无需维护）',
-                  PRIMARY KEY (`id`),
-                  KEY `idx_unit_group` (`unit_group_name`) COMMENT '机组群名索引，优化"按机组群查询约束"场景',
-                  KEY `idx_effective_time` (`effective_time`, `expire_time`) COMMENT '生效-失效时间联合索引，优化"查询当前有效约束"场景',
-                  KEY `idx_record_date` (`record_date`) COMMENT '数据日期索引，优化"按日期筛选批次数据"场景'
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='机组群约束配置表（存储机组群的电力/电量/运行方式约束配置）';
-                """
-                conn.execute(text(create_table_sql))
-                print(f"✅ 表 {table_name} 已存在或创建成功")
-
-                # 删除该日期的旧数据
-                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :record_date"), 
-                             {"record_date": data_date})
-                print(f"🗑️ 已删除 {data_date} 的旧数据")
-
-                # --- 批量插入 ---
-                insert_stmt = text(f"""
-                INSERT IGNORE INTO {table_name} 
-                (unit_group_name, effective_time, expire_time, power_constraint, electricity_constraint, 
-                 max_operation_constraint, min_operation_constraint, max_electricity, min_electricity, 
-                 record_date, sheet_name)
-                VALUES 
-                (:unit_group_name, :effective_time, :expire_time, :power_constraint, :electricity_constraint, 
-                 :max_operation_constraint, :min_operation_constraint, :max_electricity, :min_electricity, 
-                 :record_date, :sheet_name)
-                """)
-                
-                # 批量插入数据
-                batch_size = 200
-                for i in range(0, len(valid_records), batch_size):
-                    batch = valid_records[i:i + batch_size]
-                    conn.execute(insert_stmt, batch)
-                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
-
-                # 获取插入的数据总量
-                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
-                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
-                
-                # 获取预览数据
-                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date LIMIT 5")
-                preview_result = conn.execute(preview_stmt, {"record_date": data_date})
-                for row in preview_result:
-                    preview_data.append(dict(row._mapping))
-
-                print(f"✅ {table_name} 数据库保存成功: {count} 条记录")
-                return True, table_name, count, []
-        except Exception as e:
-            print(f"❌ {table_name} 数据库保存失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return False, None, 0, []
-
-    def save_to_jizujichu_database(self, records, data_date):
-        """保存机组基础数据到固定表 jizujichu"""
-        if not records:
-            print("❌ 没有可保存的记录")
-            return True, None, 0, []
-
-        # 🧩 1. 如果传入的是 DataFrame，转成 list[dict]
-        if isinstance(records, pd.DataFrame):
-            records = records.to_dict(orient="records")
-
-        if not isinstance(records, list):
-            print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
-            return False, None, 0, []
-
-        # 🧩 2. 过滤无效记录
-        valid_records = []
-        for i, r in enumerate(records):
-            if not isinstance(r, dict):
+            
+            # 🎯 使用英文字段名（与解析函数输出匹配）
+            standardized_record = {
+                "record_date": data_date,
+                "power_plant_name": r.get("power_plant_name") or r.get("电厂名称"),
+                "generator_name": r.get("generator_name") or r.get("机组名称"),
+                "min_technical_output": r.get("min_technical_output") or r.get("最小技术出力(MW)"),
+                "rated_output": r.get("rated_output") or r.get("额定出力(MW)"),
+                "sheet_name": r.get("sheet_name") or sheet_name
+            }
+            
+            # 🔧 关键修复：正确处理最小出力为0的情况
+            min_output = standardized_record["min_technical_output"]
+            
+            if min_output is not None:
+                # 如果是字符串类型
+                if isinstance(min_output, str):
+                    min_output_str = min_output.strip().lower()
+                    # 处理各种0值表示
+                    if min_output_str in ["0", "0.0", "0.00", "0.000", "0.0000", "0.00000"]:
+                        standardized_record["min_technical_output"] = 0.0
+                    elif min_output_str in ["none", "nan", "null", ""]:
+                        # 新能源电站最小出力应该为0，不是None
+                        standardized_record["min_technical_output"] = 0.0
+                    else:
+                        try:
+                            # 尝试转换为浮点数
+                            float_val = float(min_output)
+                            standardized_record["min_technical_output"] = float_val
+                        except (ValueError, TypeError):
+                            # 转换失败时，新能源电站默认为0
+                            standardized_record["min_technical_output"] = 0.0
+                else:
+                    # 已经是数字类型
+                    try:
+                        # 确保是浮点数
+                        float_val = float(min_output)
+                        standardized_record["min_technical_output"] = float_val
+                    except (ValueError, TypeError):
+                        standardized_record["min_technical_output"] = 0.0
+            else:
+                # 最小出力为None时，新能源电站默认为0
+                standardized_record["min_technical_output"] = 0.0
+            
+            # 🔧 处理额定出力
+            rated_output = standardized_record["rated_output"]
+            if rated_output is not None:
+                if isinstance(rated_output, str):
+                    rated_str = rated_output.strip().lower()
+                    if rated_str in ["none", "nan", "null", ""]:
+                        standardized_record["rated_output"] = None
+                    else:
+                        try:
+                            standardized_record["rated_output"] = float(rated_output)
+                        except (ValueError, TypeError):
+                            standardized_record["rated_output"] = None
+                else:
+                    try:
+                        standardized_record["rated_output"] = float(rated_output)
+                    except (ValueError, TypeError):
+                        standardized_record["rated_output"] = None
+            
+            # 关键字段不能为空
+            if not standardized_record["generator_name"]:
                 continue
-            # 添加 record_date 字段
-            r["record_date"] = data_date
-            valid_records.append(r)
+                
+            # 🔍 调试：查看新能源电站的处理结果
+            if i < 5 and standardized_record["min_technical_output"] == 0.0:
+                print(f"🔍 新能源电站处理: {standardized_record['generator_name']} 最小出力设置为0.0")
+                
+            valid_records.append(standardized_record)
 
         if not valid_records:
-            print("❌ 没有可保存的有效记录")
+            print("❌ 没有有效记录可保存")
             return False, None, 0, []
 
-        # --- 使用固定表名 ---
-        table_name = "power_jichu"
-        preview_data = []
+        table_name = "generator_technical_parameters"
 
         try:
             with self.db_manager.engine.begin() as conn:
-                # --- 创建表（如果不存在）---
+                # 创建表（如果不存在）
                 create_table_sql = f"""
                 CREATE TABLE IF NOT EXISTS `{table_name}` (
-                  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键，唯一标识一条记录',
-                  `unit_group_name` varchar(200) DEFAULT NULL COMMENT '机组群名（如"东方站短路电流控制""中珠片必开机组群1"）',
-                  `power_plant_id` varchar(50) DEFAULT NULL COMMENT '电厂ID（唯一标识，如"0300F15000014""0300F13000059"）',
-                  `power_plant_name` varchar(200) DEFAULT NULL COMMENT '电厂名称（如"沙角C厂""粤海厂"）',
-                  `unit_id` varchar(100) DEFAULT NULL COMMENT '机组ID（唯一标识，如"0300F150000140HNN00FAB001"）',
-                  `unit_name` varchar(100) DEFAULT NULL COMMENT '机组名称（如"C1F发电机""2G"）',
-                  `proportion` decimal(5,2) DEFAULT NULL COMMENT '所占比例（数据中为整数1，支持小数如0.5表示50%，精度保留2位）',
-                  `record_date` date DEFAULT NULL COMMENT '数据所属日期（如2025-09-18，统一标识数据的时间维度）',
-                  `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名（如"东方站机组群比例表20250918"，用于数据溯源）',
-                  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录入库时间（自动生成，无需手动插入）',
-                  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间（自动更新，无需维护）',
-                  PRIMARY KEY (`id`),
-                  KEY `idx_unit_group` (`unit_group_name`) COMMENT '机组群名索引，优化"按机组群查询所有机组"场景',
-                  KEY `idx_power_plant` (`power_plant_id`, `power_plant_name`) COMMENT '电厂ID+名称联合索引，优化"按电厂筛选"场景',
-                  KEY `idx_record_date` (`record_date`) COMMENT '数据日期索引，优化"按日期范围统计"场景'
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='机组群-机组分配比例记录表（存储机组群与机组的归属比例关系）';
+                    `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+                    `record_date` date NOT NULL COMMENT '数据日期',
+                    `power_plant_name` varchar(200) NOT NULL COMMENT '电厂名称',
+                    `generator_name` varchar(150) NOT NULL COMMENT '机组名称',
+                    `min_technical_output` decimal(10,4) DEFAULT NULL COMMENT '最小技术出力(MW)',
+                    `rated_output` decimal(10,4) DEFAULT NULL COMMENT '额定出力(MW)',
+                    `sheet_name` varchar(255) DEFAULT NULL COMMENT '数据来源表名',
+                    `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    PRIMARY KEY (`id`),
+                    UNIQUE KEY `uk_generator_date` (`generator_name`, `record_date`) COMMENT '机组+日期唯一索引',
+                    KEY `idx_power_plant` (`power_plant_name`) COMMENT '电厂名称索引',
+                    KEY `idx_record_date` (`record_date`) COMMENT '日期索引',
+                    KEY `idx_sheet_name` (`sheet_name`) COMMENT '数据来源索引'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='电厂机组技术参数表';
                 """
                 conn.execute(text(create_table_sql))
-                print(f"✅ 表 {table_name} 已存在或创建成功")
 
-                # 删除该日期的旧数据
-                conn.execute(text(f"DELETE FROM {table_name} WHERE record_date = :record_date"), 
-                             {"record_date": data_date})
-                print(f"🗑️ 已删除 {data_date} 的旧数据")
-
-                # --- 批量插入 ---
-                insert_stmt = text(f"""
-                INSERT IGNORE INTO {table_name} 
-                (unit_group_name, power_plant_id, power_plant_name, unit_id, unit_name, proportion, record_date, sheet_name)
-                VALUES 
-                (:unit_group_name, :power_plant_id, :power_plant_name, :unit_id, :unit_name, :proportion, :record_date, :sheet_name)
+                # 插入数据
+                insert_sql = text(f"""
+                INSERT INTO `{table_name}` (
+                    `record_date`,
+                    `power_plant_name`,
+                    `generator_name`,
+                    `min_technical_output`,
+                    `rated_output`,
+                    `sheet_name`
+                ) VALUES (
+                    :record_date,
+                    :power_plant_name,
+                    :generator_name,
+                    :min_technical_output,
+                    :rated_output,
+                    :sheet_name
+                )
+                ON DUPLICATE KEY UPDATE
+                    `power_plant_name` = VALUES(power_plant_name),
+                    `min_technical_output` = VALUES(min_technical_output),
+                    `rated_output` = VALUES(rated_output),
+                    `sheet_name` = VALUES(sheet_name),
+                    `update_time` = CURRENT_TIMESTAMP
                 """)
                 
-                # 批量插入数据
-                batch_size = 200
-                for i in range(0, len(valid_records), batch_size):
-                    batch = valid_records[i:i + batch_size]
-                    conn.execute(insert_stmt, batch)
-                    print(f"💾 已插入第 {i // batch_size + 1} 批数据 ({len(batch)} 条)")
-
-                # 获取插入的数据总量
-                count_stmt = text(f"SELECT COUNT(*) FROM {table_name} WHERE record_date = :record_date")
-                count = conn.execute(count_stmt, {"record_date": data_date}).scalar()
+                # 🔍 调试：查看要插入的数据
+                print("🔍 前5条要插入的数据:")
+                for i, rec in enumerate(valid_records[:5]):
+                    print(f"  记录{i}: {rec['generator_name']} - 最小出力: {rec['min_technical_output']} (类型: {type(rec['min_technical_output'])})")
                 
-                # 获取预览数据
-                preview_stmt = text(f"SELECT * FROM {table_name} WHERE record_date = :record_date LIMIT 5")
-                preview_result = conn.execute(preview_stmt, {"record_date": data_date})
-                for row in preview_result:
-                    preview_data.append(dict(row._mapping))
+                result = conn.execute(insert_sql, valid_records)
+                inserted_count = result.rowcount
 
-                print(f"✅ {table_name} 数据库保存成功: {count} 条记录")
-                return True, table_name, count, []
+                # 获取插入结果预览
+                preview_sql = text(f"""
+                SELECT 
+                    `record_date`,
+                    `power_plant_name`,
+                    `generator_name`,
+                    `min_technical_output`,
+                    `rated_output`
+                FROM `{table_name}`
+                WHERE `record_date` = :record_date
+                ORDER BY `id` DESC
+                LIMIT 5;
+                """)
+                
+                # 获取数据并转换为普通字典列表
+                preview_result = conn.execute(preview_sql, {"record_date": data_date})
+                preview_data = []
+                zero_min_output_count = 0
+                
+                for row in preview_result:
+                    # 转换SQLAlchemy Row对象为普通字典
+                    row_dict = {
+                        "record_date": row.record_date.isoformat() if row.record_date else None,
+                        "power_plant_name": row.power_plant_name,
+                        "generator_name": row.generator_name,
+                        "min_technical_output": float(row.min_technical_output) if row.min_technical_output is not None else None,
+                        "rated_output": float(row.rated_output) if row.rated_output is not None else None
+                    }
+                    
+                    # 统计最小出力为0的记录
+                    if row.min_technical_output == 0 or row.min_technical_output == 0.0:
+                        zero_min_output_count += 1
+                    
+                    preview_data.append(row_dict)
+
+                print(f"✅ 成功保存 {inserted_count} 条记录到表 `{table_name}`")
+                print(f"📊 统计: 最小出力为0的记录有 {zero_min_output_count} 条")
+                
+                if preview_data:
+                    print("📊 数据预览（前5条）：")
+                    for item in preview_data:
+                        min_output_display = item['min_technical_output']
+                        if min_output_display == 0 or min_output_display == 0.0:
+                            min_output_display = "0.0"
+                        print(f"   {item['power_plant_name']} - {item['generator_name']}: "
+                            f"最小出力={min_output_display}MW, 额定出力={item['rated_output']}MW")
+
+                return True, table_name, inserted_count, preview_data
 
         except Exception as e:
-            print(f"❌ {table_name} 数据库保存失败: {e}")
+            print(f"❌ 保存数据时出错：{e}")
             import traceback
             traceback.print_exc()
             return False, None, 0, []
+        
+        
+    def import_imformation_pred(self, excel_file):
+        """自动生成的导入函数: 信息披露查询预测信息(2025-12-23).xlsx (类)"""
+        try:
+            sheet_dict = pd.read_excel(excel_file, sheet_name=None, header=0)
+        except Exception as e:
+            print(f"❌ 无法读取Excel: {e}")
+            return False, None, 0, []
+
+        power_data_records = []
+        custom_table_records = []
+        data_date = None
+        
+        # 尝试从文件名提取日期
+        match = re.search(r'(\d{4}-\d{1,2}-\d{1,2})', str(excel_file))
+        if match:
+            data_date = datetime.datetime.strptime(match.group(1), '%Y-%m-%d').date()
+        else:
+            print(f"⚠️ 未能在文件名中识别日期，默认使用今日")
+            data_date = datetime.date.today()
+
+        # 根据文件名识别类型
+        file_name = str(excel_file)
+        chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
+        if chinese_match:
+            data_type = chinese_match.group(1)
+            print(f"📁 文件类型识别: {data_type}")
+        else:
+            data_type = "自动导入"
+            print(f"⚠️ 未能在文件名中找到汉字，默认类型: {data_type}")
+
+        sheet_names = list(sheet_dict.keys())
+
+        # 动态处理所有 Sheet，根据内容模式分发
+        for i, sheet_name in enumerate(sheet_names):
+            # 基础Sheet名 (去除日期)，用于匹配
+            base_sheet_name = re.sub(r'\(\d{4}[-/]?\d{1,2}[-/]?\d{1,2}\)', '', str(sheet_name))
+            base_sheet_name = re.sub(r'\d{4}[-/]?\d{1,2}[-/]?\d{1,2}', '', base_sheet_name).strip()
+            
+            # 使用模糊匹配分发到具体的处理函数
+            # 这里为了保持原有逻辑的兼容性，我们仍然按顺序调用，或者按名称分发
+            # 但最好的方式是像 AutoImporter 那样，统一收集 records 然后在 save 方法里分发
+            # 不过这里我们已经有了现成的 _process_sheet_N 方法，它们返回 records 列表
+            
+            # 优化：不依赖硬编码的顺序，而是尝试根据 Sheet 名称特征调用对应的处理逻辑
+            # 但目前的实现是 _process__sheet_1 对应第一个 sheet。
+            # 只要 Excel 文件的 Sheet 顺序不变，这没问题。
+            # 如果顺序变了，我们需要根据 sheet_name 来判断。
+            
+            # 既然是自动生成的代码，我们假设用户重新生成会覆盖。
+            # 但用户现在问的是 "检查import_imformation_pred里的代码...看能否符合直接导入我所需文件"
+            # 现有的代码是按索引 0, 1, 2... 处理的。如果用户上传的文件 sheet 顺序一致，那就没问题。
+            
+            # 继续使用索引处理
+            func_name = f"_process_imformation_pred_sheet_{i+1}"
+            if hasattr(self, func_name):
+                func = getattr(self, func_name)
+                try:
+                    records = func(sheet_dict[sheet_name], data_date, sheet_name, data_type)
+                    
+                    # 智能分发逻辑
+                    if records:
+                        # 检查第一条记录的特征
+                        first_record = records[0]
+                        # 判定为时序数据的条件：有 record_time 且 value
+                        is_time_series = False
+                        if 'record_time' in first_record and 'value' in first_record:
+                            # 进一步检查 record_time 是否像时间
+                            rt = first_record.get('record_time')
+                            if rt and isinstance(rt, str) and ':' in rt:
+                                is_time_series = True
+                        
+                        if is_time_series:
+                            power_data_records.extend(records)
+                        else:
+                            custom_table_records.extend(records)
+                            
+                except Exception as e:
+                    print(f"⚠️ 处理 Sheet '{sheet_name}' (索引 {i+1}) 时出错: {e}")
+            else:
+                print(f"⚠️ 未找到处理 Sheet '{sheet_name}' (索引 {i+1}) 的函数 {func_name}")
+
+        if not power_data_records and not custom_table_records:
+            print("❌ 没有生成任何有效记录")
+            return False, None, 0, []
+
+        results = []
+        
+        # 1. 保存时序数据到 power_data
+        if power_data_records:
+            print(f"📊 保存 {len(power_data_records)} 条时序数据到 power_data")
+            res_power = self.save_to_database(power_data_records, data_date)
+            results.append(res_power)
+            
+        # 2. 保存其他数据到自定义表
+        if custom_table_records:
+            print(f"📊 保存 {len(custom_table_records)} 条自定义数据到独立表")
+            res_custom = self.save_to_imformation_pred_database(custom_table_records, data_date)
+            results.append(res_custom)
+
+        return tuple(results) if len(results) > 1 else (results[0] if results else False)
+
+    def _process_imformation_pred_sheet_1(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 负荷预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('通道名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_2(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 地方电预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('通道名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_3(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 发电总出力预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('类型', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_4(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 现货新能源总出力(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('类型', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_5(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 统调新能源出力信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('类型', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_6(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 水电（含抽蓄）总出力预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('类型', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_7(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 抽蓄电站出力计划(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '类型' 列是指标名称
+            channel_name = str(row.get('类型', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_8(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 机组检修预测信息(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_pred_sheet_9(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 输变电检修预测信息(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_pred_sheet_10(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 机组检修容量预测信息(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_pred_sheet_11(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 备用预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '数据项' 列是指标名称
+            channel_name = str(row.get('数据项', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_12(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 阻塞预测信息(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_pred_sheet_13(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 日前阻塞断面信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '断面名称' 列是指标名称
+            channel_name = str(row.get('断面名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    # def _process_imformation_pred_sheet_14(self, df, data_date, sheet_name, data_type):
+    #     """自动生成的处理函数: 必开必停机组（群）约束预测信息(2025-12-23) (模式: time_series_matrix)"""
+    #     records = []
+    #     df = df.dropna(how='all')
+    #     df.columns = [str(c).strip() for c in df.columns]
+        
+    #     # 识别时间列
+    #     time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+    #     for _, row in df.iterrows():
+    #         # 假设 '机组群名' 列是指标名称
+    #         channel_name = str(row.get('机组群名', 'Unknown')).strip()
+            
+    #         for t in time_cols:
+    #             val = row[t]
+    #             if pd.isna(val): continue
+                
+    #             records.append({
+    #                 'record_date': data_date,
+    #                 'record_time': t,
+    #                 'channel_name': channel_name,
+    #                 'value': val,
+    #                 'sheet_name': sheet_name,
+    #                 'type': data_type,
+    #                 'created_at': datetime.datetime.now()
+    #             })
+    #     return records
+
+    # def _process_imformation_pred_sheet_15(self, df, data_date, sheet_name, data_type):
+    #     """自动生成的处理函数: 必开必停机组信息预测信息(2025-12-23) (模式: time_series_matrix)"""
+    #     records = []
+    #     df = df.dropna(how='all')
+    #     df.columns = [str(c).strip() for c in df.columns]
+        
+    #     # 识别时间列
+    #     time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+    #     for _, row in df.iterrows():
+    #         # 假设 '电厂名称' 列是指标名称
+    #         channel_name = str(row.get('电厂名称', 'Unknown')).strip() +str(row.get('机组名称', 'Unknown')).strip() +str(row.get('数据类型', 'Unknown')).strip()
+            
+    #         for t in time_cols:
+    #             val = row[t]
+    #             if pd.isna(val): continue
+                
+    #             records.append({
+    #                 'record_date': data_date,
+    #                 'record_time': t,
+    #                 'channel_name': channel_name,
+    #                 'value': val,
+    #                 'sheet_name': sheet_name,
+    #                 'type': data_type,
+    #                 'created_at': datetime.datetime.now()
+    #             })
+    #     return records
+
+    def _process_imformation_pred_sheet_16(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 开停机不满足最小约束时间机组信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '机组名称' 列是指标名称
+            channel_name = str(row.get('机组名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if val == "自由优化":
+                    val = 1
+                else:
+                    val = 0
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_17(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 必开必停容量预测信息(2025-12-23) (模式: standard_list)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 标准列表处理
+        for _, row in df.iterrows():
+            # 解析日期
+            r_date = pd.to_datetime(row['日期']).date() if pd.notna(row['日期']) else data_date
+            channel = str(row['类型']).strip()
+            
+            # 遍历可能的数值列
+            value_cols = ['序号', '必开机组容量(MW)', '必停机组容量(MW)']
+            for col in value_cols:
+                val = row[col]
+                if pd.isna(val): continue
+                
+                # 如果有多列数值，将列名拼接到 channel_name
+                final_channel = f'{channel}-{col}' if len(value_cols) > 1 else channel
+                
+                records.append({
+                    'record_date': r_date,
+                    'record_time': None,
+                    'channel_name': final_channel,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_18(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 机组出力受限情况(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_pred_sheet_19(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 储能机组指定模式清单(2025-12-23) (模式: generic_table)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 通用表格处理 (直接映射所有列)
+        for _, row in df.iterrows():
+            record = {
+                'record_date': data_date,
+                'sheet_name': sheet_name,
+                'type': data_type,
+                'created_at': datetime.datetime.now()
+            }
+            # 动态映射所有列
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    record[col] = val
+            records.append(record)
+        return records
+
+    def _process_imformation_pred_sheet_20(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 日前出清情况-机组详情（2025-12-23） (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '电厂名称' 列是指标名称
+            channel_name = str(row.get('电厂名称', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_21(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 日前出清情况-节点详情（2025-12-23） (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+        
+        for _, row in df.iterrows():
+            # 假设 '地区' 列是指标名称
+            channel_name = str(row.get('地区', 'Unknown')).strip()
+            
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val): continue
+                
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+

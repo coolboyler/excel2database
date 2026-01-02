@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分时数据看板 - Excel2SQL</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <!-- Flatpickr Date Picker -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
+    <style>
+        :root {
+            --bg-color: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-primary: #1f2937;
+            --text-secondary: #6b7280;
+            --accent-color: #3b82f6;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--text-primary);
+        }
+
+        .navbar {
+            background: var(--card-bg);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+
+        .navbar-brand,
+        .navbar-brand:hover {
+            color: var(--text-primary);
+            font-weight: 800;
+            font-size: 1.4rem;
+            letter-spacing: -0.025em;
+        }
+
+        .navbar-nav {
+            gap: 0.75rem;
+        }
+
+        .navbar-nav .nav-link {
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 1.05rem;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .navbar-nav .nav-link:hover,
+        .navbar-nav .nav-link:focus {
+            color: var(--text-primary);
+            background-color: rgba(0, 0, 0, 0.08);
+        }
+
+        .navbar-nav .nav-link.active {
+            color: var(--accent-color);
+            font-weight: 700;
+            background-color: rgba(59, 130, 246, 0.12);
+            border-bottom: 2px solid var(--accent-color);
+        }
+
+        /* 状态徽章样式 */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .status-pending {
+            background-color: #ffeaa7;
+            color: #d35400;
+        }
+        .status-success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .status-processing {
+            background-color: #e0f7fa;
+            color: #0277bd;
+        }
+
+        .dashboard-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            height: 100%;
+            transition: transform 0.2s;
+        }
+
+        .dashboard-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .stat-sub {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .chart-container {
+            height: 400px;
+            width: 100%;
+            border-radius: 8px;
+        }
+
+        .table-custom {
+            font-size: 0.85rem;
+            border-collapse: separate; 
+            border-spacing: 0;
+        }
+        .table-custom thead th {
+            background-color: #f9fafb;
+            color: var(--text-secondary);
+            font-weight: 600;
+            border-bottom: 2px solid #e5e7eb;
+            white-space: nowrap;
+            padding: 12px 15px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .table-custom tbody td {
+            vertical-align: middle;
+            border-bottom: 1px solid #f3f4f6;
+            padding: 10px 15px;
+            white-space: nowrap;
+        }
+        .table-custom tbody tr:hover td {
+            background-color: #f8fafc;
+        }
+        
+        .sticky-col {
+            position: sticky;
+            left: 0;
+            background: white;
+            z-index: 10;
+            font-weight: 600;
+            border-right: 1px solid #e5e7eb;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+        }
+        
+        /* Alternating row colors for better readability */
+        .table-custom tbody tr:nth-of-type(even) {
+            background-color: #fcfcfc;
+        }
+
+        /* Badge Styles */
+        .badge-weather { background-color: #e0f2fe; color: #0284c7; }
+        .badge-price { background-color: #fef3c7; color: #d97706; }
+        .badge-load { background-color: #d1fae5; color: #059669; }
+        .badge-power { background-color: #e0e7ff; color: #4f46e5; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light mb-4">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/similar_day">类比日匹配</a></li>
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="/daily_hourly">分时看板</a></li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <div class="input-group input-group-sm me-2" style="width: 220px;">
+                        <span class="input-group-text bg-white border-end-0">
+                            <i class="bi bi-calendar3"></i>
+                        </span>
+                        <input type="text" id="queryDate" class="form-control flatpickr-input" placeholder="选择日期" readonly>
+                        <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            快速
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item quick-date" href="#" data-days="0">今天</a></li>
+                            <li><a class="dropdown-item quick-date" href="#" data-days="-1">昨天</a></li>
+                            <li><a class="dropdown-item quick-date" href="#" data-days="-7">一周前</a></li>
+                            <li><a class="dropdown-item quick-date" href="#" data-days="-30">一月前</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" onclick="document.getElementById('queryDate').value=''; return false;">清空</a></li>
+                        </ul>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="queryData()">查询</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-4">
+        <!-- Loading State -->
+        <div id="loading" class="text-center py-5" style="display: none;">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="mt-2 text-muted">正在分析数据...</p>
+        </div>
+
+        <!-- No Data State -->
+        <div id="noData" class="text-center py-5" style="display: none;">
+            <div class="display-1 text-muted"><i class="bi bi-inbox"></i></div>
+            <p class="text-muted">该日期暂无分时数据</p>
+        </div>
+
+        <!-- Dashboard Content -->
+        <div id="dashboard" style="display: none;">
+            <!-- 1. KPI Cards -->
+            <div class="row g-3 mb-4">
+                <div class="col-md-3">
+                    <div class="dashboard-card">
+                        <div class="stat-label">最高负荷 (实际)</div>
+                        <div class="stat-value" id="kpi-max-load">-</div>
+                        <div class="stat-sub text-success" id="kpi-load-diff"></div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="dashboard-card">
+                        <div class="stat-label">日均价差 (日前-实时)</div>
+                        <div class="stat-value" id="kpi-avg-spread">-</div>
+                        <div class="stat-sub" id="kpi-spread-range"></div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="dashboard-card">
+                        <div class="stat-label">新能源总出力 (预测)</div>
+                        <div class="stat-value" id="kpi-total-ne" style="font-size: 1.2rem;">-</div>
+                        <div class="stat-sub">MWh</div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="dashboard-card">
+                        <div class="stat-label">B类平均占比 (预测)</div>
+                        <div class="stat-value" id="kpi-avg-b-ratio" style="font-size: 1.2rem;">-</div>
+                        <div class="stat-sub">占统调负荷</div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="dashboard-card">
+                        <div class="stat-label">最高温 / 日期类型</div>
+                        <div class="stat-value" id="kpi-max-temp" style="font-size: 1.2rem;">-</div>
+                        <div class="stat-sub" id="kpi-weather-date"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. Charts Row -->
+            <div class="row g-3 mb-4">
+                <!-- Left: Price Analysis -->
+                <div class="col-lg-7">
+                    <div class="dashboard-card">
+                        <h5 class="mb-3"><i class="bi bi-graph-up text-primary"></i> 电价与负荷趋势</h5>
+                        <div id="chart-price" class="chart-container"></div>
+                    </div>
+                </div>
+                <!-- Right: Power Composition -->
+                <div class="col-lg-5">
+                    <div class="dashboard-card">
+                        <h5 class="mb-3"><i class="bi bi-pie-chart text-success"></i> 电源出力构成 (预测)</h5>
+                        <div id="chart-power" class="chart-container"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. Detail Table -->
+            <div class="dashboard-card mb-4">
+                <h5 class="mb-3"><i class="bi bi-table text-secondary"></i> 详细分时数据</h5>
+                <div class="table-responsive" style="max-height: 600px; border: 1px solid #e5e7eb; border-radius: 8px;">
+                    <table class="table table-hover table-custom mb-0">
+                        <thead style="position: sticky; top: 0; z-index: 20;">
+                            <tr>
+                                <th class="sticky-col text-center" style="min-width: 80px; box-shadow: 2px 0 5px rgba(0,0,0,0.05);">时刻</th>
+                                
+                                <th class="text-center" style="background: #eff6ff;">日前电价</th>
+                                <th class="text-center" style="background: #eff6ff;">实时电价</th>
+                                <th class="text-center" style="background: #eff6ff; color: var(--accent-color);">价差</th>
+                                
+                                <th class="text-center" style="background: #f0fdf4;">统调预测</th>
+                                <th class="text-center" style="background: #f0fdf4;">统调实际</th>
+                                <th class="text-center" style="background: #f0fdf4; color: var(--success-color);">负荷偏差(源)</th>
+                                
+                                <th class="text-center">A类预测</th>
+                                <th class="text-center">A类实际</th>
+                                <th class="text-center">B类预测</th>
+                                <th class="text-center">B类实际</th>
+                                <th class="text-center" style="background: #f3e8ff;">B类占比(%)</th>
+                                <th class="text-center">地方预测</th>
+                                <th class="text-center">地方实际</th>
+                                <th class="text-center">西电预测</th>
+                                <th class="text-center">西电实际</th>
+                                <th class="text-center">粤港预测</th>
+                                <th class="text-center">粤港实际</th>
+                                <th class="text-center">发电总预测</th>
+                                
+                                <th class="text-center">光伏预测</th>
+                                <th class="text-center">风电预测</th>
+                                <th class="text-center">新能源总实</th>
+                                <th class="text-center">水电预测</th>
+                                <th class="text-center">水电含抽蓄实际</th>
+                                <th class="text-center">抽蓄预测</th>
+                                <th class="text-center">现货新能源D日预测</th>
+                                
+                                <th class="text-center" style="background: #fffbeb;">温度</th>
+                                <th class="text-center" style="background: #fffbeb;">湿度</th>
+                                <th class="text-center" style="background: #fffbeb;">风速</th>
+                                <th class="text-center" style="background: #fffbeb;">风向</th>
+                                <th class="text-center" style="background: #fffbeb;">降雨概率</th>
+                                <th class="text-center" style="background: #fffbeb;">体感温度</th>
+                                <th class="text-center" style="background: #fffbeb;">紫外线</th>
+                                <th class="text-center" style="background: #fffbeb;">云量</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+
+
+        // Init Date
+        const urlParams = new URLSearchParams(window.location.search);
+        const dateParam = urlParams.get('date');
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('queryDate').value = dateParam || today;
+
+        let charts = [];
+
+        async function queryData() {
+            const date = document.getElementById('queryDate').value;
+            if (!date) return;
+
+            // UI Reset
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('dashboard').style.display = 'none';
+            document.getElementById('noData').style.display = 'none';
+            
+            try {
+                const res = await fetch(`/api/daily-hourly-data?date=${date}`);
+                const json = await res.json();
+                
+                document.getElementById('loading').style.display = 'none';
+                
+                if (json.status === 'error' || !json.data || json.data.length === 0) {
+                    document.getElementById('noData').style.display = 'block';
+                    if (json.message) console.warn(json.message);
+                    return;
+                }
+
+                renderDashboard(json.data);
+                document.getElementById('dashboard').style.display = 'block';
+                
+                // Resize charts
+                setTimeout(() => charts.forEach(c => c.resize()), 100);
+
+            } catch (e) {
+                console.error(e);
+                alert('数据加载失败');
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+
+        function renderDashboard(data) {
+            // Sort data by hour just in case
+            data.sort((a, b) => a.hour - b.hour);
+            const hours = data.map(d => String(d.hour).padStart(2, '0') + ':00');
+
+            // 1. Calculate KPIs
+            const loads = data.map(d => d.load_actual).filter(v => v);
+            const maxLoad = loads.length ? Math.max(...loads) : 0;
+            const loadForecasts = data.map(d => d.load_forecast).filter(v => v);
+            const maxLoadF = loadForecasts.length ? Math.max(...loadForecasts) : 0;
+            
+            const priceDiffs = data.map(d => (d.price_da || 0) - (d.price_rt || 0));
+            const avgDiff = priceDiffs.reduce((a,b) => a+b, 0) / (priceDiffs.length || 1);
+            
+            const neTotals = data.map(d => (d.ne_pv_forecast || 0) + (d.ne_wind_forecast || 0));
+            const totalNe = neTotals.reduce((a,b) => a+b, 0);
+            
+            // Calculate Average Class B Ratio
+            // Ratio = (class_b_forecast / load_forecast) * 100
+            // We can calculate daily average ratio as (Sum Class B / Sum Load) or (Average of Ratios)
+            // Usually weighted average (Sum B / Sum Load) is more meaningful for "total day", 
+            // but "average ratio" usually implies average of hourly ratios. 
+            // Let's use Sum/Sum as it represents the day's energy mix better.
+            const totalClassB = data.reduce((sum, d) => sum + (d.class_b_forecast || 0), 0);
+            const totalLoad = data.reduce((sum, d) => sum + (d.load_forecast || 0), 0);
+            const avgBRatio = totalLoad ? (totalClassB / totalLoad * 100) : 0;
+
+            const temps = data.map(d => d.temperature).filter(v => v);
+            const maxTemp = temps.length ? Math.max(...temps) : '-';
+
+            // Update DOM
+            document.getElementById('kpi-max-load').innerText = fmt(maxLoad, 0);
+            document.getElementById('kpi-load-diff').innerText = `预测最高: ${fmt(maxLoadF, 0)}`;
+            
+            document.getElementById('kpi-avg-spread').innerText = fmt(avgDiff);
+            document.getElementById('kpi-avg-spread').style.color = avgDiff >= 0 ? 'var(--success-color)' : 'var(--danger-color)';
+            document.getElementById('kpi-spread-range').innerText = `最大: ${fmt(Math.max(...priceDiffs))} / 最小: ${fmt(Math.min(...priceDiffs))}`;
+
+            document.getElementById('kpi-total-ne').innerText = fmt(totalNe, 0);
+            
+            document.getElementById('kpi-avg-b-ratio').innerText = fmt(avgBRatio, 2) + '%';
+            
+            document.getElementById('kpi-max-temp').innerText = maxTemp === '-' ? '-' : maxTemp + '°C';
+            
+            const weather = data[0].weather || '未知天气';
+            const dayType = data[0].day_type || '未知类型';
+            document.getElementById('kpi-weather-date').innerHTML = `${weather} <span class="badge badge-weather ms-1">${dayType}</span>`;
+
+            // 2. Render Charts
+            renderPriceChart(hours, data);
+            renderPowerChart(hours, data);
+
+            // 3. Render Table
+            renderTable(data);
+        }
+
+        function renderPriceChart(hours, data) {
+            const dom = document.getElementById('chart-price');
+            if (echarts.getInstanceByDom(dom)) echarts.dispose(dom);
+            const chart = echarts.init(dom);
+            charts.push(chart);
+
+            const option = {
+                tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                legend: { bottom: 0 },
+                grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
+                xAxis: { type: 'category', data: hours, boundaryGap: false },
+                yAxis: [
+                    { type: 'value', name: '电价', position: 'left', splitLine: { show: false } },
+                    { type: 'value', name: '负荷', position: 'right', splitLine: { lineStyle: { type: 'dashed' } } }
+                ],
+                series: [
+                    {
+                        name: '日前电价', type: 'line', data: data.map(d => d.price_da),
+                        smooth: true, showSymbol: false,
+                        itemStyle: { color: '#f59e0b' }, lineStyle: { width: 3 }
+                    },
+                    {
+                        name: '实时电价', type: 'line', data: data.map(d => d.price_rt),
+                        smooth: true, showSymbol: false,
+                        itemStyle: { color: '#ef4444' }, lineStyle: { width: 2, type: 'dashed' }
+                    },
+                    {
+                        name: '统调负荷(实)', type: 'line', yAxisIndex: 1, data: data.map(d => d.load_actual),
+                        smooth: true, showSymbol: false,
+                        itemStyle: { color: '#10b981' }, areaStyle: { opacity: 0.1 }
+                    }
+                ]
+            };
+            chart.setOption(option);
+        }
+
+        function renderPowerChart(hours, data) {
+            const dom = document.getElementById('chart-power');
+            if (echarts.getInstanceByDom(dom)) echarts.dispose(dom);
+            const chart = echarts.init(dom);
+            charts.push(chart);
+
+            // Calculate stacked data
+            const option = {
+                tooltip: { trigger: 'axis' },
+                legend: { bottom: 0, type: 'scroll' },
+                grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
+                xAxis: { type: 'category', data: hours, boundaryGap: false },
+                yAxis: { type: 'value', name: 'MW' },
+                series: [
+                    {
+                        name: '光伏', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.ne_pv_forecast || 0), itemStyle: { color: '#fbbf24' }
+                    },
+                    {
+                        name: '风电', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.ne_wind_forecast || 0), itemStyle: { color: '#34d399' }
+                    },
+                    {
+                        name: '水电', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.hydro_forecast || 0), itemStyle: { color: '#60a5fa' }
+                    },
+                    {
+                        name: '西电', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.west_east_forecast || 0), itemStyle: { color: '#818cf8' }
+                    },
+                    {
+                        name: 'B类', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.class_b_forecast || 0), itemStyle: { color: '#a78bfa' }
+                    },
+                    {
+                        name: 'A类', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.class_a_forecast || 0), itemStyle: { color: '#f472b6' }
+                    },
+                    {
+                        name: '负荷(实)', type: 'line', data: data.map(d => d.load_actual),
+                        itemStyle: { color: '#374151' }, lineStyle: { width: 2, type: 'dotted' }
+                    }
+                ]
+            };
+            chart.setOption(option);
+        }
+
+        function renderTable(data) {
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = '';
+            
+            data.forEach(d => {
+                const tr = document.createElement('tr');
+                const diff = (d.price_da || 0) - (d.price_rt || 0);
+                const loadDiff = (d.load_forecast || 0) - (d.load_actual || 0);
+                
+                // Calculate Class B Ratio (Forecast)
+                const bRatio = d.load_forecast ? ((d.class_b_forecast || 0) / d.load_forecast * 100) : 0;
+                
+                tr.innerHTML = `
+                    <td class="sticky-col text-center">${String(d.hour).padStart(2,'0')}:00</td>
+                    
+                    <td class="text-end">${fmt(d.price_da)}</td>
+                    <td class="text-end">${fmt(d.price_rt)}</td>
+                    <td class="text-end fw-bold" style="color: ${diff >= 0 ? 'green' : 'red'}">${fmt(diff)}</td>
+                    
+                    <td class="text-end">${fmt(d.load_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.load_actual, 0)}</td>
+                    <td class="text-end" style="color: ${d.load_deviation >= 0 ? 'green' : 'red'}">${fmt(d.load_deviation, 0)}</td>
+                    
+                    <td class="text-end">${fmt(d.class_a_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.class_a_actual, 0)}</td>
+                    <td class="text-end">${fmt(d.class_b_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.class_b_actual, 0)}</td>
+                    <td class="text-end" style="background: #fbf5ff; color: #7e22ce;">${fmt(bRatio, 1)}%</td>
+                    <td class="text-end">${fmt(d.local_power_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.local_power_actual, 0)}</td>
+                    <td class="text-end">${fmt(d.west_east_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.west_east_actual, 0)}</td>
+                    <td class="text-end">${fmt(d.guangdong_hongkong_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.guangdong_hongkong_actual, 0)}</td>
+                    <td class="text-end">${fmt(d.gen_total_forecast, 0)}</td>
+                    
+                    <td class="text-end">${fmt(d.ne_pv_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.ne_wind_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.ne_total_actual, 0)}</td>
+                    <td class="text-end">${fmt(d.hydro_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.hydro_actual, 0)}</td>
+                <td class="text-end">${fmt(d.pumped_storage_forecast, 0)}</td>
+                <td class="text-end">${fmt(d.spot_ne_d_forecast, 0)}</td>
+                
+                <td class="text-end">${fmt(d.temperature, 1)}</td>
+                    <td class="text-end">${fmt(d.humidity, 0)}%</td>
+                    <td class="text-end">${fmt(d.wind_speed, 1)}</td>
+                    <td class="text-end">${d.wind_direction || '-'}</td>
+                    <td class="text-end">${fmt(d.rain_prob, 0)}%</td>
+                    <td class="text-end">${fmt(d.apparent_temp, 1)}</td>
+                    <td class="text-end">${fmt(d.uv_index, 0)}</td>
+                    <td class="text-end">${fmt(d.cloud_cover, 0)}%</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function fmt(n, f=2) {
+            if (n === null || n === undefined) return '-';
+            return Number(n).toFixed(f);
+        }
+
+        // Initialize Flatpickr date picker
+        const queryDatePicker = flatpickr("#queryDate", {
+            locale: "zh",
+            dateFormat: "Y-m-d",
+            defaultDate: new Date(),
+            theme: "material_blue",
+            allowInput: false,
+            clickOpens: true,
+            disableMobile: true,
+            onChange: function(selectedDates, dateStr) {
+                console.log("Selected date:", dateStr);
+            }
+        });
+
+        // Quick date dropdown items
+        document.querySelectorAll('.quick-date').forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const days = parseInt(this.getAttribute('data-days'));
+                const targetDate = new Date();
+                targetDate.setDate(targetDate.getDate() + days);
+                queryDatePicker.setDate(targetDate);
+                // Close dropdown
+                const dropdown = this.closest('.dropdown-menu');
+                if (dropdown) {
+                    const dropdownInstance = bootstrap.Dropdown.getInstance(dropdown.previousElementSibling);
+                    if (dropdownInstance) dropdownInstance.hide();
+                }
+            });
+        });
+
+        window.addEventListener('resize', () => charts.forEach(c => c.resize()));
+        
+        // Initial load
+        queryData();
+    </script>
+</body>
+</html>

@@ -5,35 +5,338 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Excel2SQL - 数据导入工具</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+  <style>
+    :root {
+      --bg-color: #f3f4f6;
+      --card-bg: #ffffff;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --accent-color: #3b82f6;
+      --navbar-bg: #2563eb;
+      --navbar-text: #ffffff;
+      --success-color: #10b981;
+      --warning-color: #f59e0b;
+      --danger-color: #ef4444;
+      --purple-color: #8b5cf6;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--text-primary);
+    }
+
+    .navbar {
+      background: var(--card-bg);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    }
+
+    .navbar-brand,
+    .navbar-brand:hover {
+      color: var(--text-primary);
+      font-weight: 800;
+      font-size: 1.4rem;
+      letter-spacing: -0.025em;
+    }
+
+    .navbar-nav {
+      gap: 0.75rem;
+    }
+
+    .navbar-nav .nav-link {
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 1.05rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+
+    .navbar-nav .nav-link:hover,
+    .navbar-nav .nav-link:focus {
+      color: var(--text-primary);
+      background-color: rgba(0, 0, 0, 0.08);
+    }
+
+    .navbar-nav .nav-link.active {
+      color: var(--accent-color);
+      font-weight: 700;
+      background-color: rgba(59, 130, 246, 0.12);
+      border-bottom: 2px solid var(--accent-color);
+    }
+
+    .dashboard-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      height: 100%;
+      transition: transform 0.2s;
+      border: none;
+      margin-bottom: 24px;
+    }
+
+    .dashboard-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+
+    .card-header-custom {
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 15px;
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 状态徽章样式 */
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .status-pending {
+      background-color: #ffeaa7;
+      color: #d35400;
+    }
+    .status-success {
+      background-color: #d4edda;
+      color: #155724;
+    }
+    .status-error {
+      background-color: #f8d7da;
+      color: #721c24;
+    }
+    .status-processing {
+      background-color: #e0f7fa;
+      color: #0277bd;
+    }
+
+    /* 上传区域样式 */
+    .upload-area {
+      border: 2px dashed #d1d5db;
+      border-radius: 12px;
+      padding: 40px 20px;
+      text-align: center;
+      margin-bottom: 20px;
+      transition: all 0.3s ease;
+      background-color: #f9fafb;
+    }
+    .upload-area:hover {
+      border-color: var(--accent-color);
+      background-color: #f0f9ff;
+    }
+    .upload-area.dragover {
+      border-color: var(--success-color);
+      background-color: rgba(16, 185, 129, 0.05);
+    }
+
+    /* 进度条样式 */
+    .progress {
+      height: 8px;
+      background-color: #e5e7eb;
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 15px 0;
+    }
+    .progress-bar {
+      height: 100%;
+      background-color: var(--accent-color);
+      transition: width 0.3s ease;
+    }
+
+    /* 文件列表样式 */
+    .file-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .file-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      transition: background-color 0.2s;
+    }
+    .file-item:hover {
+      background-color: #f8fafc;
+    }
+    .file-item:last-child {
+      border-bottom: none;
+    }
+    .file-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 500;
+    }
+    .file-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    /* 按钮样式覆盖 */
+    .btn {
+      border-radius: 8px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background-color: var(--accent-color);
+      border-color: var(--accent-color);
+    }
+    .btn-success {
+      background-color: var(--success-color);
+      border-color: var(--success-color);
+    }
+    .btn-danger {
+      background-color: var(--danger-color);
+      border-color: var(--danger-color);
+    }
+    .btn-warning {
+      background-color: var(--warning-color);
+      border-color: var(--warning-color);
+    }
+    .btn-info {
+      background-color: #0ea5e9;
+      border-color: #0ea5e9;
+    }
+    .btn-outline-primary {
+      color: var(--accent-color);
+      border-color: var(--accent-color);
+    }
+    .btn-outline-primary:hover {
+      background-color: var(--accent-color);
+      color: white;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    /* 缺失的样式补充 */
+    .scrollable-list {
+      max-height: 400px;
+      overflow-y: auto;
+      margin-top: 15px;
+    }
+    .data-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .table-filter-container {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .filter-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+    .filter-select {
+      min-width: 120px;
+    }
+    .spinner {
+      display: inline-block;
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spinner-rotate 0.75s linear infinite;
+      vertical-align: text-bottom;
+      margin-right: 0.5rem;
+    }
+    @keyframes spinner-rotate {
+      to { transform: rotate(360deg); }
+    }
+
+    /* 响应式调整 */
+    @media (max-width: 768px) {
+      .dashboard-card {
+        padding: 16px;
+      }
+      .card-header-custom {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+    }
+
+    /* 页脚样式 */
+    footer p {
+      text-align: center;
+      margin-bottom: 0;
+    }
+  </style>
 </head>
 
 <body>
-  <header>
-    <div class="container">
-      <h1>Excel2SQL</h1>
-      <div>
-        <span id="db-status" class="status-badge status-pending">检查数据库连接...</span>
+  <nav class="navbar navbar-expand-lg navbar-light mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav me-auto">
+          <li class="nav-item"><a class="nav-link active fw-bold" href="/">首页</a></li>
+          <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
+          <li class="nav-item"><a class="nav-link" href="/similar_day">类比日匹配</a></li>
+          <li class="nav-item"><a class="nav-link" href="/daily_hourly">分时看板</a></li>
+        </ul>
       </div>
     </div>
-  </header>
+  </nav>
 
   <div class="container">
     <div id="alerts"></div>
 
-    <div class="card">
-      <h2>上传Excel文件</h2>
+    <div class="dashboard-card">
+      <div class="card-header-custom">
+        <h5 class="card-title"><i class="bi bi-upload"></i> 上传Excel文件</h5>
+      </div>
       <div id="drop-area" class="upload-area">
         <p>拖放Excel文件到这里，或点击下方按钮选择文件</p>
         <form id="upload-form">
           <input type="file" id="file-input" accept=".xlsx" style="display: none" />
-          <button type="button" class="btn" onclick="document.getElementById('file-input').click()">
-            选择文件
+          <button type="button" class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+            <i class="bi bi-folder-plus"></i> 选择文件
           </button>
-          <div id="selected-file" style="margin: 10px 0; display: none">
-            <span>已选择文件: <span id="selected-file-name"></span></span>
-            <button type="button" class="btn btn-primary" id="upload-button" style="margin-left: 10px">
-              上传
+          <div id="selected-file" style="margin: 15px 0; display: none">
+            <span>已选择文件: <strong id="selected-file-name"></strong></span>
+            <button type="button" class="btn btn-success ms-3" id="upload-button">
+              <i class="bi bi-cloud-upload"></i> 上传
             </button>
           </div>
         </form>
@@ -45,21 +348,21 @@
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <h2>文件列表</h2>
+    <div class="dashboard-card">
+      <div class="card-header-custom">
+        <h5 class="card-title"><i class="bi bi-files"></i> 文件列表</h5>
         <div class="card-actions">
-          <button class="btn btn-toggle" onclick="toggleList('file-list-container')">
-            展开
+          <button class="btn btn-outline-primary btn-sm" onclick="toggleList('file-list-container')">
+            <i class="bi bi-arrows-expand"></i> 展开
           </button>
-          <button id="import-all-btn" class="btn btn-success" onclick="importAllFiles()">
-            导入所有文件
+          <button id="import-all-btn" class="btn btn-success btn-sm" onclick="importAllFiles()">
+            <i class="bi bi-download"></i> 导入所有文件
           </button>
-          <button class="btn btn-danger" onclick="deleteAllFiles()">
-            全部删除
+          <button class="btn btn-danger btn-sm" onclick="deleteAllFiles()">
+            <i class="bi bi-trash"></i> 全部删除
           </button>
-          <button class="btn btn-secondary" onclick="loadFileList()">
-            <span class="refresh-icon">↻</span> 刷新
+          <button class="btn btn-secondary btn-sm" onclick="loadFileList()">
+            <i class="bi bi-arrow-clockwise"></i> 刷新
           </button>
         </div>
       </div>
@@ -70,24 +373,24 @@
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <h2>数据库表</h2>
+    <div class="dashboard-card">
+      <div class="card-header-custom">
+        <h5 class="card-title"><i class="bi bi-table"></i> 数据库表</h5>
         <div class="card-actions">
           <div class="table-filter-container">
             <label for="table-year-month-filter" class="filter-label">按年月筛选:</label>
-            <select id="table-year-month-filter" onchange="filterTablesByYearMonth()" class="filter-select">
+            <select id="table-year-month-filter" onchange="filterTablesByYearMonth()" class="filter-select form-select form-select-sm">
               <option value="">所有日期</option>
             </select>
           </div>
-          <button class="btn btn-toggle" onclick="toggleList('table-list-container')">
-            展开
+          <button class="btn btn-outline-primary btn-sm" onclick="toggleList('table-list-container')">
+            <i class="bi bi-arrows-expand"></i> 展开
           </button>
-          <button class="btn btn-danger" onclick="deleteAllTables()">
-            全部删除
+          <button class="btn btn-danger btn-sm" onclick="deleteAllTables()">
+            <i class="bi bi-trash"></i> 全部删除
           </button>
-          <button class="btn btn-secondary" onclick="loadTableList()">
-            <span class="refresh-icon">↻</span> 刷新
+          <button class="btn btn-secondary btn-sm" onclick="loadTableList()">
+            <i class="bi bi-arrow-clockwise"></i> 刷新
           </button>
         </div>
       </div>
@@ -98,10 +401,28 @@
       </div>
     </div>
 
-    <div class="card">
-      <h2>拓展功能</h2>
-      <div class="actions">
-        <a href="/join_query" class="btn btn-primary">多天均值查询</a>
+    <div class="dashboard-card">
+      <div class="card-header-custom">
+        <h5 class="card-title"><i class="bi bi-tools"></i> 数据维护</h5>
+        <div class="card-actions">
+          <button class="btn btn-outline-primary btn-sm" onclick="toggleList('data-maintenance-container')">
+            <i class="bi bi-arrows-expand"></i> 展开
+          </button>
+        </div>
+      </div>
+      <div id="data-maintenance-container" class="scrollable-list" style="display: none;">
+        <div class="data-actions">
+          <button id="generate-all-cache-btn" class="btn btn-warning" onclick="generateAllCache()">
+            <i class="bi bi-database"></i> 生成全量缓存
+          </button>
+          <button id="generate-price-cache-btn" class="btn btn-info" onclick="generatePriceCache()">
+            <i class="bi bi-cash-stack"></i> 生成电价缓存
+          </button>
+          <button id="update-weather-btn" class="btn btn-primary" onclick="updateWeather()">
+            <i class="bi bi-cloud-sun"></i> 更新天气数据
+          </button>
+        </div>
+        <div id="maintenance-result"></div>
       </div>
     </div>
   </div>
@@ -114,25 +435,7 @@
 
   <script src="/static/js/main.js"></script>
   <script>
-    // 检查数据库连接状态
-    fetch("/health")
-      .then((response) => response.json())
-      .then((data) => {
-        const dbStatus = document.getElementById("db-status");
-        if (data.status === "healthy") {
-          dbStatus.className = "status-badge status-success";
-          dbStatus.textContent = "数据库已连接";
-        } else {
-          dbStatus.className = "status-badge status-error";
-          dbStatus.textContent = "数据库未连接";
-        }
-      })
-      .catch((error) => {
-        console.error("Error checking health:", error);
-        const dbStatus = document.getElementById("db-status");
-        dbStatus.className = "status-badge status-error";
-        dbStatus.textContent = "连接错误";
-      });
+
 
     // 页面加载完成后获取表列表
     document.addEventListener("DOMContentLoaded", function () {
@@ -299,6 +602,119 @@
             console.error("Error checking import status:", error);
           });
       }, 5000); // 每5秒检查一次
+    }
+
+    // 生成全量缓存
+    function generateAllCache() {
+      const btn = document.getElementById("generate-all-cache-btn");
+      const originalText = btn.innerHTML;
+
+      if (!confirm("确定要生成全量缓存吗？这可能需要较长时间。")) {
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div> 生成中...';
+
+      fetch("/api/generate-daily-hourly-cache", {
+        method: "POST"
+      })
+      .then(response => {
+        if (!response.ok) throw new Error("API 请求失败");
+        return response.json();
+      })
+      .then(data => {
+        if (data.status === "success") {
+          showAlert(`全量缓存生成成功，处理了 ${data.processed_days} 天数据`, "success");
+        } else {
+          showAlert(data.error || "生成缓存失败", "danger");
+        }
+      })
+      .catch(error => {
+        console.error("Error generating cache:", error);
+        showAlert("生成全量缓存失败: " + error.message, "danger");
+      })
+      .finally(() => {
+        // 2秒后恢复按钮状态
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        }, 2000);
+      });
+    }
+
+    // 生成电价缓存
+    function generatePriceCache() {
+      const btn = document.getElementById("generate-price-cache-btn");
+      const originalText = btn.innerHTML;
+
+      if (!confirm("确定要生成电价缓存吗？这可能需要一些时间。")) {
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div> 生成中...';
+
+      fetch("/api/generate-price-cache", {
+        method: "POST"
+      })
+      .then(response => {
+        if (!response.ok) throw new Error("API 请求失败");
+        return response.json();
+      })
+      .then(data => {
+        if (data.status === "success") {
+          showAlert(`电价缓存生成成功，处理了 ${data.processed_days} 天，更新了 ${data.inserted_records} 条记录`, "success");
+        } else {
+          showAlert(data.error || "生成电价缓存失败", "danger");
+        }
+      })
+      .catch(error => {
+        console.error("Error generating price cache:", error);
+        showAlert("生成电价缓存失败: " + error.message, "danger");
+      })
+      .finally(() => {
+        // 2秒后恢复按钮状态
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        }, 2000);
+      });
+    }
+
+    // 更新天气数据
+    function updateWeather() {
+      const btn = document.getElementById("update-weather-btn");
+      const originalText = btn.innerHTML;
+
+      if (!confirm("确定要触发天气数据更新吗？这可能需要几秒钟。")) {
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div> 更新中...';
+
+      fetch("/api/update-weather", {
+        method: "POST"
+      })
+      .then(response => {
+        if (!response.ok) throw new Error("API 请求失败");
+        return response.json();
+      })
+      .then(data => {
+        showAlert(data.message || "天气更新任务已启动", "success");
+      })
+      .catch(error => {
+        console.error("Error updating weather:", error);
+        showAlert("启动天气更新失败: " + error.message, "danger");
+      })
+      .finally(() => {
+        // 2秒后恢复按钮状态
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        }, 2000);
+      });
     }
   </script>
 </body>
