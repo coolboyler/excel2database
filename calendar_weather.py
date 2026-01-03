@@ -128,7 +128,8 @@ def update_calendar(start_date, end_date):
             # 因为天气数据可能会更新，或者节假日类型会更新，这些都在 sql_config 里被用到了
             try:
                 date_str = current_date.strftime("%Y-%m-%d")
-                update_price_cache_for_date(date_str)
+                # 仅更新天气字段，避免覆盖已有的电力数据或触发耗时的电力查询
+                update_price_cache_for_date(date_str, only_weather=True)
             except Exception as e:
                 print(f"⚠️ 缓存同步失败 ({current_date}): {e}")
             

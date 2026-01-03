@@ -2350,13 +2350,14 @@ class PowerDataImporter:
                 })
         return records
     
-    def query_daily_averages(self, date_list, data_type_keyword="日前节点电价"):
+    def query_daily_averages(self, date_list, data_type_keyword="日前节点电价", station_name=None):
         """
         查询多天的均值数据（适用于已计算好的均值记录）
         
         Args:
             date_list (list): 日期列表，格式为 "YYYY-MM-DD"
             data_type_keyword (str): 数据类型关键字，用于筛选特定类型的数据
+            station_name (str): 站点名称，如果提供则按照站点名称模糊匹配，否则默认匹配'均值'
             
         Returns:
             dict: 包含查询结果的字典
@@ -2381,8 +2382,12 @@ class PowerDataImporter:
             
             # 构造UNION查询语句：查找包含指定关键字和"均值"的记录
             union_parts = []
+            
+            # 确定筛选条件：如果有站点名称，则按站点名称模糊匹配，否则按'均值'匹配
+            name_filter = f"channel_name LIKE '%{station_name}%'" if station_name and station_name.strip() else "channel_name LIKE '%均值%'"
+            
             for table in valid_tables:
-                union_parts.append(f""" SELECT * FROM {table} WHERE channel_name LIKE '%均值%' AND type LIKE '%{data_type_keyword}%'""")
+                union_parts.append(f""" SELECT * FROM {table} WHERE {name_filter} AND type LIKE '%{data_type_keyword}%'""")
             if not union_parts:
                 return {"data": [], "total": 0, "message": "没有找到匹配的数据"}
                 
@@ -2411,13 +2416,14 @@ class PowerDataImporter:
             traceback.print_exc()
             return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
 
-    def query_price_difference(self, date_list, region=""):
+    def query_price_difference(self, date_list, region="", station_name=None):
         """
         查询价差数据（日前节点电价 - 实时节点电价）
         
         Args:
             date_list (list): 日期列表，格式为 "YYYY-MM-DD"
             region (str): 地区前缀，如"云南_"，默认为空
+            station_name (str): 站点名称
             
         Returns:
             dict: 包含价差查询结果的字典
@@ -2433,13 +2439,14 @@ class PowerDataImporter:
             print(f"  - 日前节点电价关键词: {dayahead_keyword}")
             print(f"  - 实时节点电价关键词: {realtime_keyword}")
             print(f"  - 日期列表: {date_list}")
+            print(f"  - 站点筛选: {station_name or '默认(均值)'}")
             
             # 查询日前节点电价数据
-            dayahead_result = self.query_daily_averages(date_list, dayahead_keyword)
+            dayahead_result = self.query_daily_averages(date_list, dayahead_keyword, station_name)
             dayahead_data = dayahead_result.get("data", [])
             
             # 查询实时节点电价数据
-            realtime_result = self.query_daily_averages(date_list, realtime_keyword)
+            realtime_result = self.query_daily_averages(date_list, realtime_keyword, station_name)
             realtime_data = realtime_result.get("data", [])
             
             # 检查是否有两个数据

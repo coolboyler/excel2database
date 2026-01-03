@@ -386,8 +386,10 @@ async def update_weather(background_tasks: BackgroundTasks):
         # 使用后台任务执行，避免阻塞
         def run_update():
             print(f"🌦️ 开始更新天气数据: {start_date} -> {end_date}")
+            # update_calendar 内部现在会自动调用 update_price_cache_for_date(..., only_weather=True)
+            # 从而实现“只更新天气表，并存入缓存表，不更新价差数据”
             calendar_weather.update_calendar(start_date, end_date)
-            print("✅ 天气数据更新完成")
+            print("✅ 天气数据及缓存更新完成")
             
         background_tasks.add_task(run_update)
         
@@ -1102,10 +1104,14 @@ async def delete_all_tables():
 async def generate_daily_hourly_cache():
     """
     生成所有日期的分时数据缓存
+    (修改为：仅执行 init_weather 逻辑，即全量更新日历和天气，并同步缓存中的天气数据)
     """
     from sql_config import SQL_RULES
+    from fastapi.concurrency import run_in_threadpool
+    import calendar_weather
+    
     try:
-        # 1. 确定表结构
+        # 1. 确定表结构 (保留建表逻辑，防止表不存在导致后续更新缓存失败)
         table_name = "cache_daily_hourly"
         
         # 构建字段列表
@@ -1155,59 +1161,17 @@ async def generate_daily_hourly_cache():
             conn.execute(text(create_sql))
             print(f"✅ 缓存表 {table_name} 已就绪")
 
-        # 2. 获取所有有数据的日期
-        all_tables = db_manager.get_tables()
-        power_tables = [t for t in all_tables if t.startswith('power_data_')]
+        # 2. 执行 init_weather 逻辑 (全量更新日历和天气)
+        # 参考 init_calendar.py 的范围，或者覆盖较长的时间段
+        start_date = datetime.date(2023, 1, 1)
+        end_date = datetime.date(2027, 12, 31)
         
-        dates_to_process = []
-        for t in power_tables:
-            try:
-                d_str = t.replace('power_data_', '')
-                dates_to_process.append(d_str) # YYYYMMDD
-            except:
-                pass
+        print(f"🚀 开始执行全量天气初始化: {start_date} -> {end_date}")
         
-        dates_to_process.sort()
-        print(f"待处理日期: {len(dates_to_process)} 天")
+        # 在线程池中运行，避免阻塞主线程
+        await run_in_threadpool(calendar_weather.update_calendar, start_date, end_date)
         
-        # 3. 逐日计算并入库
-        processed_count = 0
-        for date_str in dates_to_process:
-            # 转换为 YYYY-MM-DD 格式供 calculation 使用
-            date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-            
-            # 调用计算逻辑
-            daily_data = await calculate_daily_hourly_data(date_fmt)
-            
-            if not daily_data:
-                continue
-                
-            # 批量插入
-            with db_manager.engine.begin() as conn:
-                for row in daily_data:
-                    # 补充 record_date
-                    row['record_date'] = date_fmt
-                    
-                    # 构建插入语句
-                    keys = [k for k in row.keys() if k in all_fields or k in ['record_date', 'hour']]
-                    # 过滤掉不在表结构中的字段
-                    
-                    vals = [f":{k}" for k in keys]
-                    update_str = ", ".join([f"`{k}`=VALUES(`{k}`)" for k in keys if k not in ['record_date', 'hour']])
-                    
-                    sql = text(f"""
-                    INSERT INTO {table_name} ({', '.join([f"`{k}`" for k in keys])})
-                    VALUES ({', '.join(vals)})
-                    ON DUPLICATE KEY UPDATE {update_str}
-                    """)
-                    
-                    conn.execute(sql, {k: row[k] for k in keys})
-            
-            processed_count += 1
-            if processed_count % 10 == 0:
-                print(f"已处理 {processed_count}/{len(dates_to_process)} 天")
-
-        return {"status": "success", "processed_days": processed_count}
+        return {"status": "success", "message": f"全量天气及缓存更新完成 ({start_date} 至 {end_date})"}
 
     except Exception as e:
         import traceback
@@ -1331,7 +1295,8 @@ async def calculate_daily_hourly_data(date: str):
 @app.post("/daily-averages")
 async def query_daily_averages(
     dates: str = Form(..., description="日期列表，JSON格式，例如: [\"2023-09-18\", \"2023-09-19\"]"),
-    data_type_keyword: str = Form("日前节点电价", description="数据类型关键字")
+    data_type_keyword: str = Form("日前节点电价", description="数据类型关键字"),
+    station_name: str = Form(None, description="站点名称（可选）")
 ):
     """
     查询多天的均值数据
@@ -1339,6 +1304,7 @@ async def query_daily_averages(
     参数:
     - dates: 日期列表，JSON格式
     - data_type_keyword: 数据类型关键字
+    - station_name: 站点名称（可选）
     
     返回:
     - 查询结果
@@ -1349,7 +1315,7 @@ async def query_daily_averages(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
     
-    result = importer.query_daily_averages(date_list, data_type_keyword)
+    result = importer.query_daily_averages(date_list, data_type_keyword, station_name)
     
     if result["total"] == 0:
         return {"total": 0, "data": []}
@@ -1766,7 +1732,8 @@ async def export_daily_averages_from_result(
 @app.post("/price-difference")
 async def query_price_difference(
     dates: str = Form(..., description="日期列表，JSON格式，例如: [\"2023-09-18\", \"2023-09-19\"]"),
-    region: str = Form("", description="地区前缀，如'云南_'，默认为空")
+    region: str = Form("", description="地区前缀，如'云南_'，默认为空"),
+    station_name: str = Form(None, description="站点名称（可选）")
 ):
     """
     查询价差数据（日前节点电价 - 实时节点电价）
@@ -1774,6 +1741,7 @@ async def query_price_difference(
     参数:
     - dates: 日期列表，JSON格式
     - region: 地区前缀，如"云南_"，默认为空
+    - station_name: 站点名称（可选）
     
     返回:
     - 价差查询结果
@@ -1784,7 +1752,7 @@ async def query_price_difference(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
     
-    result = importer.query_price_difference(date_list, region)
+    result = importer.query_price_difference(date_list, region, station_name)
     
     return result
 
@@ -2155,12 +2123,16 @@ async def generate_price_cache(request: Request):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-def update_price_cache_for_date(target_date_str: str) -> int:
+def update_price_cache_for_date(target_date_str: str, only_weather: bool = False) -> int:
     """
     更新指定日期的电价缓存 (供 generate_price_cache 和 import_file 调用)
     返回插入/更新的记录数 (最大24)
+    
+    Args:
+        target_date_str: 目标日期 YYYY-MM-DD
+        only_weather: 是否只更新天气数据 (保留原有电力数据)
     """
-    from sql_config import SQL_RULES
+    from sql_config import SQL_RULES, TABLE_SOURCE_POWER, TABLE_SOURCE_WEATHER
     
     table_name = "cache_daily_hourly"
 
@@ -2203,12 +2175,10 @@ def update_price_cache_for_date(target_date_str: str) -> int:
         conn.execute(text(create_sql))
     
     # 2. 获取数据 (使用 sql_config 中的规则动态查询)
-    from sql_config import SQL_RULES, TABLE_SOURCE_POWER, TABLE_SOURCE_WEATHER
+    # from sql_config import SQL_RULES, TABLE_SOURCE_POWER, TABLE_SOURCE_WEATHER (Moved to top)
     
     # 2.1 构造小时数据映射 {hour: {field_name: [val1, val2]}}
-    # 注意: SQL_RULES 里的 price_da/price_rt 我们已经有专门逻辑处理了(或者也可以统一)
-    # 为了保持之前的日前/实时逻辑(含区域过滤)，我们可以先保留 da/rt 的独立处理，
-    # 而将 SQL_RULES 中的其他指标作为补充。
+    # ...
     
     hourly_map = {h: {} for h in range(24)}
     
@@ -2219,71 +2189,69 @@ def update_price_cache_for_date(target_date_str: str) -> int:
         if v.get('source') == TABLE_SOURCE_POWER and k not in ['price_da', 'price_rt']:
             field_keys.append(k)
             
-    for h in range(24):
-        for k in field_keys:
-            hourly_map[h][k] = []
+    # 如果 only_weather=True，则不需要初始化这些字段的列表，也不需要查询电力数据
+    if not only_weather:
+        for h in range(24):
+            for k in field_keys:
+                hourly_map[h][k] = []
 
-    # 2.2 获取日前/实时电价 (保留之前的特定逻辑：区域过滤)
-    da_result = importer.query_daily_averages([target_date_str], "日前节点电价")
-    da_data = da_result.get("data", [])
-    
-    rt_result = importer.query_daily_averages([target_date_str], "实时节点电价")
-    rt_data = rt_result.get("data", [])
-    
-    def filter_and_process_price(data_list, type_key):
-        filtered = [item for item in data_list if "云南" not in str(item.get('type', ''))]
-        has_guangdong = any("广东" in str(item.get('type', '')) for item in filtered)
-        if has_guangdong:
-            filtered = [item for item in filtered if "广东" in str(item.get('type', ''))]
+        # 2.2 获取日前/实时电价 (保留之前的特定逻辑：区域过滤)
+        da_result = importer.query_daily_averages([target_date_str], "日前节点电价")
+        da_data = da_result.get("data", [])
         
-        for item in filtered:
-            rt_val = item['record_time']
-            norm_time = normalize_record_time(rt_val, target_date_str)
-            if norm_time is None:
-                continue
+        rt_result = importer.query_daily_averages([target_date_str], "实时节点电价")
+        rt_data = rt_result.get("data", [])
+        
+        def filter_and_process_price(data_list, type_key):
+            filtered = [item for item in data_list if "云南" not in str(item.get('type', ''))]
+            has_guangdong = any("广东" in str(item.get('type', '')) for item in filtered)
+            if has_guangdong:
+                filtered = [item for item in filtered if "广东" in str(item.get('type', ''))]
             
-            hour = norm_time.hour
-            if 0 <= hour <= 23:
-                val = float(item['value']) if item['value'] is not None else 0
-                hourly_map[hour][type_key].append(val)
+            for item in filtered:
+                rt_val = item['record_time']
+                norm_time = normalize_record_time(rt_val, target_date_str)
+                if norm_time is None:
+                    continue
+                
+                hour = norm_time.hour
+                if 0 <= hour <= 23:
+                    val = float(item['value']) if item['value'] is not None else 0
+                    hourly_map[hour][type_key].append(val)
 
-    filter_and_process_price(da_data, 'price_da')
-    filter_and_process_price(rt_data, 'price_rt')
+        filter_and_process_price(da_data, 'price_da')
+        filter_and_process_price(rt_data, 'price_rt')
 
-    # 2.3 获取 SQL_RULES 中定义的其他电力数据
-    # 我们需要构建一个大的查询，或者对每个规则查一次
-    # 为了效率，我们可以查一次全表，然后在内存里匹配；或者按规则查。
-    # 考虑到数据量(单日几千行)，按规则查可能更清晰。
-    
-    # 构造表名
-    d_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d")
-    table_name_power = f"power_data_{d_obj.strftime('%Y%m%d')}"
-    
-    # 检查表是否存在
-    if table_name_power in db_manager.get_tables():
-        with db_manager.engine.connect() as conn:
-            for key, rule in SQL_RULES.items():
-                if rule.get('source') == TABLE_SOURCE_POWER and key not in ['price_da', 'price_rt']:
-                    where_clause = rule.get('where')
-                    if not where_clause:
-                        continue
-                        
-                    try:
-                        sql = text(f"SELECT record_time, value FROM {table_name_power} WHERE {where_clause}")
-                        result = conn.execute(sql).fetchall()
-                        
-                        for row in result:
-                            rt_val = row[0]
-                            norm_time = normalize_record_time(rt_val, target_date_str)
-                            if norm_time is None:
-                                continue
+        # 2.3 获取 SQL_RULES 中定义的其他电力数据
+        # 构造表名
+        d_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d")
+        table_name_power = f"power_data_{d_obj.strftime('%Y%m%d')}"
+        
+        # 检查表是否存在
+        if table_name_power in db_manager.get_tables():
+            with db_manager.engine.connect() as conn:
+                for key, rule in SQL_RULES.items():
+                    if rule.get('source') == TABLE_SOURCE_POWER and key not in ['price_da', 'price_rt']:
+                        where_clause = rule.get('where')
+                        if not where_clause:
+                            continue
                             
-                            hour = norm_time.hour
-                            if 0 <= hour <= 23:
-                                val = float(row[1]) if row[1] is not None else 0
-                                hourly_map[hour][key].append(val)
-                    except Exception as e:
-                        print(f"查询规则 {key} 失败: {e}")
+                        try:
+                            sql = text(f"SELECT record_time, value FROM {table_name_power} WHERE {where_clause}")
+                            result = conn.execute(sql).fetchall()
+                            
+                            for row in result:
+                                rt_val = row[0]
+                                norm_time = normalize_record_time(rt_val, target_date_str)
+                                if norm_time is None:
+                                    continue
+                                
+                                hour = norm_time.hour
+                                if 0 <= hour <= 23:
+                                    val = float(row[1]) if row[1] is not None else 0
+                                    hourly_map[hour][key].append(val)
+                        except Exception as e:
+                            print(f"查询规则 {key} 失败: {e}")
 
     # 2.4 获取 SQL_RULES 中定义的天气数据 (TABLE_SOURCE_WEATHER)
     # 这部分数据需要从 calendar_weather 表中查询，然后拆解 json
@@ -2357,12 +2325,16 @@ def update_price_cache_for_date(target_date_str: str) -> int:
     batch_data = []
     
     # 收集所有需要更新的字段
-    all_update_fields = set(['price_da', 'price_rt', 'price_diff'])
-    for k in field_keys:
-        all_update_fields.add(k)
-    # 加上计算字段
-    all_update_fields.add('new_energy_forecast')
-    all_update_fields.add('load_deviation')
+    all_update_fields = set()
+    
+    if not only_weather:
+        all_update_fields.add('price_da')
+        all_update_fields.add('price_rt')
+        all_update_fields.add('price_diff')
+        all_update_fields.add('new_energy_forecast')
+        all_update_fields.add('load_deviation')
+        for k in field_keys:
+            all_update_fields.add(k)
     
     # 添加天气相关字段到更新列表
     for key, rule in SQL_RULES.items():

@@ -405,6 +405,12 @@
             </div>
           </div>
 
+          <!-- 站点名称 (新增) -->
+          <div class="control-group">
+            <label class="form-label">站点名称</label>
+            <input type="text" class="form-control" id="station-name-input" placeholder="输入站点名称 (留空查均值)">
+          </div>
+
           <!-- 数据类型 -->
           <div class="control-group">
             <label class="form-label">数据类型</label>
@@ -945,6 +951,7 @@
       // 收集参数
       const region = document.querySelector('input[name="region"]:checked').value;
       const dataTypeFull = document.getElementById("data-type-select").value;
+      const stationName = document.getElementById("station-name-input").value;
       let dates = [];
 
       // 根据当前模式收集日期
@@ -998,6 +1005,9 @@
 
       const formData = new FormData();
       formData.append("dates", JSON.stringify(dates));
+      if (stationName && stationName.trim()) {
+        formData.append("station_name", stationName.trim());
+      }
       
       let apiUrl;
       if (isPriceDifference) {
