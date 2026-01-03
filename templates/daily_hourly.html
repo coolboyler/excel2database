@@ -225,24 +225,10 @@
                     <li class="nav-item"><a class="nav-link active fw-bold" href="/daily_hourly">分时看板</a></li>
                 </ul>
                 <div class="d-flex align-items-center">
-                    <div class="input-group input-group-sm me-2" style="width: 220px;">
-                        <span class="input-group-text bg-white border-end-0">
-                            <i class="bi bi-calendar3"></i>
-                        </span>
-                        <input type="text" id="queryDate" class="form-control flatpickr-input" placeholder="选择日期" readonly>
-                        <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            快速
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><a class="dropdown-item quick-date" href="#" data-days="0">今天</a></li>
-                            <li><a class="dropdown-item quick-date" href="#" data-days="-1">昨天</a></li>
-                            <li><a class="dropdown-item quick-date" href="#" data-days="-7">一周前</a></li>
-                            <li><a class="dropdown-item quick-date" href="#" data-days="-30">一月前</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="#" onclick="document.getElementById('queryDate').value=''; return false;">清空</a></li>
-                        </ul>
+                    <div class="position-relative shadow-sm me-2" style="width: 240px; border-radius: 6px; background: #fff;">
+                        <i class="bi bi-calendar-event text-primary position-absolute" style="left: 15px; top: 50%; transform: translateY(-50%); pointer-events: none;"></i>
+                        <input type="text" id="queryDate" class="form-control border-0 text-center" placeholder="点击选择日期" readonly style="cursor: pointer; font-weight: 600; background: transparent; padding-left: 40px; padding-right: 40px; height: 38px;">
                     </div>
-                    <button class="btn btn-primary btn-sm" onclick="queryData()">查询</button>
                 </div>
             </div>
         </div>
@@ -649,32 +635,26 @@
         const queryDatePicker = flatpickr("#queryDate", {
             locale: "zh",
             dateFormat: "Y-m-d",
-            defaultDate: new Date(),
+            defaultDate: dateParam || new Date(), // Use URL param or today
             theme: "material_blue",
             allowInput: false,
             clickOpens: true,
             disableMobile: true,
+            maxDate: new Date().fp_incr(30), // Allow future dates for forecast
             onChange: function(selectedDates, dateStr) {
-                console.log("Selected date:", dateStr);
+                // Auto query on date change
+                if (dateStr) {
+                    // Update URL without reload
+                    const newUrl = new URL(window.location);
+                    newUrl.searchParams.set('date', dateStr);
+                    window.history.pushState({}, '', newUrl);
+                    queryData();
+                }
             }
         });
 
-        // Quick date dropdown items
-        document.querySelectorAll('.quick-date').forEach(link => {
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                const days = parseInt(this.getAttribute('data-days'));
-                const targetDate = new Date();
-                targetDate.setDate(targetDate.getDate() + days);
-                queryDatePicker.setDate(targetDate);
-                // Close dropdown
-                const dropdown = this.closest('.dropdown-menu');
-                if (dropdown) {
-                    const dropdownInstance = bootstrap.Dropdown.getInstance(dropdown.previousElementSibling);
-                    if (dropdownInstance) dropdownInstance.hide();
-                }
-            });
-        });
+        // Quick date dropdown items (Removed as per requirement)
+        // document.querySelectorAll('.quick-date').forEach(...)
 
         window.addEventListener('resize', () => charts.forEach(c => c.resize()));
         
