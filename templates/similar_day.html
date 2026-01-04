@@ -257,7 +257,7 @@
                 <h5 class="card-title"><i class="bi bi-sliders"></i> 匹配参数配置</h5>
             </div>
             
-            <form id="similar-day-form" onsubmit="findSimilarDays(event)">
+            <form id="similar-day-form" onsubmit="return findSimilarDays(event)">
                 <div class="row g-4">
                     <!-- Date Selection -->
                     <div class="col-md-3 border-end">
@@ -335,15 +335,7 @@
                                     <input type="range" class="form-range" id="w-ne" min="0" max="1" step="0.1" value="0.1" oninput="updateVal(this, 'val-ne')">
                                 </div>
                             </div>
-                            <div class="col-md-4 col-lg-3">
-                                <div class="weight-card">
-                                    <label for="w-price" class="form-label d-flex justify-content-between">
-                                        <span>日前电价</span>
-                                        <span class="weight-value" id="val-price">0.1</span>
-                                    </label>
-                                    <input type="range" class="form-range" id="w-price" min="0" max="1" step="0.1" value="0.1" oninput="updateVal(this, 'val-price')">
-                                </div>
-                            </div>
+                            <!-- 移除日前电价权重 -->
                             <div class="col-md-4 col-lg-3">
                                 <div class="weight-card border-warning bg-light">
                                     <label for="w-date" class="form-label d-flex justify-content-between text-warning">
@@ -371,6 +363,15 @@
                                     <input type="range" class="form-range" id="w-weekday" min="0" max="1" step="0.05" value="0.15" oninput="updateVal(this, 'val-weekday')">
                                 </div>
                             </div>
+                            <div class="col-md-4 col-lg-3">
+                                <div class="weight-card">
+                                    <label for="w-day-type" class="form-label d-flex justify-content-between">
+                                        <span>日期类型</span>
+                                        <span class="weight-value" id="val-day-type">0.2</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="w-day-type" min="0" max="1" step="0.05" value="0.2" oninput="updateVal(this, 'val-day-type')">
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -394,20 +395,12 @@
             
             <!-- Charts Row -->
             <div class="row g-4 mb-4">
-                <div class="col-lg-6">
+                <div class="col-12">
                     <div class="dashboard-card">
                         <div class="card-header-custom">
                             <h5 class="card-title"><i class="bi bi-graph-up"></i> 负荷曲线对比</h5>
                         </div>
                         <div id="load-chart" class="chart-container"></div>
-                    </div>
-                </div>
-                <div class="col-lg-6">
-                    <div class="dashboard-card">
-                        <div class="card-header-custom">
-                            <h5 class="card-title"><i class="bi bi-currency-yen"></i> 电价曲线对比</h5>
-                        </div>
-                        <div id="price-chart" class="chart-container"></div>
                     </div>
                 </div>
             </div>
@@ -424,12 +417,18 @@
                                 <th class="text-center" width="80">排名</th>
                                 <th>历史日期</th>
                                 <th>相似度得分</th>
-                                <th>负荷差异 (MAPE)</th>
-                                <th>温度差异 (RMSE)</th>
-                                <th>最高温度差异</th>
-                                <th>最低温度差异</th>
+                                <th>负荷差异</th>
+                                <th>温度差异</th>
+                                <th>温度差异(归一化)</th>
+                                <th>最高温差异</th>
+                                <th>最低温差异</th>
+                                <th>B类占比差异</th>
+                                <th>新能源差异</th>
+                                <th>天气差异</th>
+                                <th>日期权重</th>
                                 <th>月份差异</th>
                                 <th>星期几差异</th>
+                                <th>日期类型差异</th>
                                 <th>日期类型</th>
                                 <th>天气类型</th>
                             </tr>
@@ -443,8 +442,6 @@
 
     <script>
         // Init Date - Handled by Flatpickr (defaultDate: tomorrow)
-
-
 
         function updateVal(input, displayId) {
             document.getElementById(displayId).textContent = input.value;
@@ -463,11 +460,18 @@
                 weather: document.getElementById('w-weather').value,
                 b_ratio: document.getElementById('w-b-ratio').value,
                 ne: document.getElementById('w-ne').value,
-                price: document.getElementById('w-price').value,
                 date: document.getElementById('w-date').value,
                 month: document.getElementById('w-month').value,
-                weekday: document.getElementById('w-weekday').value
+                weekday: document.getElementById('w-weekday').value,
+                day_type: document.getElementById('w-day-type').value
             };
+            
+            // Basic validation - ensure sum of weights is not zero
+            const totalWeight = Object.values(weights).reduce((sum, val) => sum + parseFloat(val || 0), 0);
+            if (totalWeight <= 0) {
+                alert('至少需要一个权重值大于0才能进行匹配！');
+                return false;
+            }
 
             const submitBtn = document.querySelector('button[type="submit"]');
             const originalContent = submitBtn.innerHTML;
@@ -544,17 +548,6 @@
                     </div>
                     <div class="col-md-6 col-lg-4">
                         <div class="d-flex align-items-center border rounded p-3">
-                            <div class="bg-warning bg-opacity-10 p-2 rounded me-3">
-                                <i class="bi bi-cash-stack text-warning fs-4"></i>
-                            </div>
-                            <div>
-                                <div class="text-muted small">平均电价</div>
-                                <div class="fw-bold fs-5">${stats.avg_price.toFixed(2)} 元/MWh</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-6 col-lg-4">
-                        <div class="d-flex align-items-center border rounded p-3">
                             <div class="bg-danger bg-opacity-10 p-2 rounded me-3">
                                 <i class="bi bi-bar-chart-line text-danger fs-4"></i>
                             </div>
@@ -575,6 +568,17 @@
                             </div>
                         </div>
                     </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="d-flex align-items-center border rounded p-3">
+                            <div class="bg-warning bg-opacity-10 p-2 rounded me-3">
+                                <i class="bi bi-calendar-date text-warning fs-4"></i>
+                            </div>
+                            <div>
+                                <div class="text-muted small">日期类型</div>
+                                <div class="fw-bold fs-5">${data.target_day_type || '-'}</div>
+                            </div>
+                        </div>
+                    </div>
                 `;
             }
 
@@ -583,51 +587,56 @@
             tbody.innerHTML = '';
             
             if (!data.matches || data.matches.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="11" class="text-center py-5 text-muted">未找到符合条件的相似日</td></tr>';
-                return;
-            }
-
-            data.matches.forEach((item, index) => {
-                const rankClass = index < 3 ? `rank-${index + 1}` : 'rank-other';
-                const similarity = (item.similarity_score * 100).toFixed(1);
-                
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td class="text-center"><span class="rank-badge ${rankClass}">${index + 1}</span></td>
-                    <td><strong>${item.date}</strong></td>
-                    <td>
-                        <div class="d-flex align-items-center">
-                            <span class="fw-bold me-2" style="width: 45px;">${similarity}%</span>
-                            <div class="progress flex-grow-1" style="height: 6px;">
-                                <div class="progress-bar bg-primary" role="progressbar" style="width: ${similarity}%"></div>
+                tbody.innerHTML = '<tr><td colspan="17" class="text-center py-5 text-muted">未找到符合条件的相似日</td></tr>';
+            } else {
+                data.matches.forEach((item, index) => {
+                    const rankClass = index < 3 ? `rank-${index + 1}` : 'rank-other';
+                    const similarity = (item.similarity_score * 100).toFixed(1);
+                    
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td class="text-center"><span class="rank-badge ${rankClass}">${index + 1}</span></td>
+                        <td><strong>${item.date}</strong></td>
+                        <td>
+                            <div class="d-flex align-items-center">
+                                <span class="fw-bold me-2" style="width: 45px;">${similarity}%</span>
+                                <div class="progress flex-grow-1" style="height: 6px;">
+                                    <div class="progress-bar bg-primary" role="progressbar" style="width: ${similarity}%"></div>
+                                </div>
                             </div>
-                        </div>
-                    </td>
-                    <td>${(item.details.diff_load * 100).toFixed(2)}%</td>
-                    <td>${item.details.diff_temp.toFixed(2)} °C</td>
-                    <td>${item.details.diff_temp_max.toFixed(2)} °C</td>
-                    <td>${item.details.diff_temp_min.toFixed(2)} °C</td>
-                    <td>${(item.details.diff_month * 100).toFixed(1)}%</td>
-                    <td>${(item.details.diff_weekday * 100).toFixed(1)}%</td>
-                    <td><span class="badge bg-info text-dark">${item.day_type || '-'}</span></td>
-                    <td><span class="badge bg-light text-dark border">${item.weather_type || '-'}</span></td>
-                `;
-                tbody.appendChild(tr);
-            });
+                        </td>
+                        <td>${(item.details.diff_load * 100).toFixed(2)}%</td>
+                        <td>${item.details.diff_temp.toFixed(2)} °C</td>
+                        <td>${item.details.diff_temp_norm.toFixed(3)}</td>
+                        <td>${item.details.diff_temp_max.toFixed(2)} °C</td>
+                        <td>${item.details.diff_temp_min.toFixed(2)} °C</td>
+                        <td>${(item.details.diff_b_ratio * 100).toFixed(2)}%</td>
+                        <td>${(item.details.diff_ne * 100).toFixed(2)}%</td>
+                        <td>${(item.details.diff_weather * 100).toFixed(1)}%</td>
+                        <td>${(item.details.date_penalty * 100).toFixed(1)}%</td>
+                        <td>${(item.details.diff_month * 100).toFixed(1)}%</td>
+                        <td>${(item.details.diff_weekday * 100).toFixed(1)}%</td>
+                        <td>${(item.details.diff_day_type * 100).toFixed(1)}%</td>
+                        <td><span class="badge bg-info text-dark">${item.day_type || '-'}</span></td>
+                        <td><span class="badge bg-light text-dark border">${item.weather_type || '-'}</span></td>
+                    `;
+                    tbody.appendChild(tr);
+                });
 
-            // Show Target Day Type
-            const title = document.querySelector('#result-section .card-title');
-            if(data.target_day_type) {
-                const badge = document.createElement('span');
-                badge.className = 'badge bg-info text-dark ms-2';
-                badge.style.fontSize = '0.8rem';
-                badge.innerText = `目标日类型: ${data.target_day_type}`;
-                
-                // Clear previous badges if any
-                const oldBadge = title.querySelector('.badge');
-                if(oldBadge) oldBadge.remove();
-                
-                title.appendChild(badge);
+                // Show Target Day Type
+                const title = document.querySelector('#result-section .card-title');
+                if(data.target_day_type) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-info text-dark ms-2';
+                    badge.style.fontSize = '0.8rem';
+                    badge.innerText = `目标日类型: ${data.target_day_type}`;
+                    
+                    // Clear previous badges if any
+                    const oldBadges = title.querySelectorAll('.badge');
+                    oldBadges.forEach(b => b.remove());
+                    
+                    title.appendChild(badge);
+                }
             }
 
             renderCharts(data);
@@ -680,39 +689,6 @@
                 ...chartCommonOption,
                 yAxis: { type: 'value', scale: true, name: 'MW' },
                 series: loadSeries
-            });
-
-            // 2. Price Chart
-            const priceChart = echarts.init(document.getElementById('price-chart'));
-            charts.push(priceChart);
-            
-            const priceSeries = [{
-                name: '目标日预测',
-                type: 'line',
-                data: data.target_price_curve,
-                lineStyle: { width: 3, type: 'dashed', color: '#ef4444' },
-                itemStyle: { color: '#ef4444' },
-                symbol: 'none',
-                z: 10
-            }];
-
-            data.matches.forEach((item, index) => {
-                if (item.price_curve) {
-                    priceSeries.push({
-                        name: `${item.date} (#${index+1})`,
-                        type: 'line',
-                        data: item.price_curve,
-                        smooth: true,
-                        lineStyle: { width: 2, opacity: 0.7 - index * 0.15 },
-                        symbol: 'none'
-                    });
-                }
-            });
-
-            priceChart.setOption({
-                ...chartCommonOption,
-                yAxis: { type: 'value', scale: true, name: '元/MWh' },
-                series: priceSeries
             });
         }
 

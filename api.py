@@ -103,7 +103,7 @@ class SimilarDayRequest(BaseModel):
 async def find_similar_days(request: SimilarDayRequest):
     """
     查找相似日
-    匹配维度：负荷预测、天气、温度、B类占比、新能源D日预测、日前电价
+    匹配维度：负荷预测、天气、温度、B类占比、新能源D日预测、日期类型
     """
     try:
         target_date_str = request.target_date
@@ -115,12 +115,13 @@ async def find_similar_days(request: SimilarDayRequest):
         w_temp = float(weights.get('temp', 0.1))
         w_b_ratio = float(weights.get('b_ratio', 0.15))
         w_ne = float(weights.get('ne', 0.1))
-        w_price = float(weights.get('price', 0.1))
+        # w_price = float(weights.get('price', 0.1)) # 移除日前电价权重
         w_date = float(weights.get('date', 0.05)) # 日期衰减系数
         
         # 新增权重
         w_month = float(weights.get('month', 0.15)) # 默认考虑月份相似性（二进制：同月=0，不同月=1）
         w_weekday = float(weights.get('weekday', 0.15)) # 默认考虑星期几相似性（二进制：同星期几=0，不同=1）
+        w_day_type = float(weights.get('day_type', 0.2)) # 新增：日期类型权重（工作日/周末/节假日）
 
         # 1. 获取所有缓存数据
         table_name = "cache_daily_hourly"
@@ -139,18 +140,18 @@ async def find_similar_days(request: SimilarDayRequest):
             fields = [
                 "record_date", "hour", 
                 "load_forecast", "weather", "temperature",
-                "class_b_forecast", "spot_ne_d_forecast", "price_da"
+                "class_b_forecast", "spot_ne_d_forecast", "day_type" # 移除了 price_da
             ]
             
             # 检查字段是否存在 (防止报错)
             # 简单起见，使用 SELECT *，然后在 Pandas 里处理
             df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            
+            if df.empty:
+                return {"error": "缓存表中无数据"}
 
-        if df.empty:
-            return {"error": "缓存表中无数据"}
-
-        # 转换日期格式
-        df['record_date'] = pd.to_datetime(df['record_date']).dt.strftime('%Y-%m-%d')
+            # 转换日期格式
+            df['record_date'] = pd.to_datetime(df['record_date']).dt.strftime('%Y-%m-%d')
         
         # 2. 提取目标日数据
         target_df = df[df['record_date'] == target_date_str].sort_values('hour')
@@ -191,15 +192,15 @@ async def find_similar_days(request: SimilarDayRequest):
         
         results = []
         print(f"[DEBUG] 权重配置 - load:{w_load}, temp:{w_temp}, weather:{w_weather}, "
-              f"b_ratio:{w_b_ratio}, ne:{w_ne}, price:{w_price}, "
-              f"date:{w_date}, month:{w_month}, weekday:{w_weekday}")
+              f"b_ratio:{w_b_ratio}, ne:{w_ne}, "
+              f"date:{w_date}, month:{w_month}, weekday:{w_weekday}, day_type:{w_day_type}")
         target_date_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
         print(f"[DEBUG] 目标日期: {target_date_str}, 月份: {target_date_obj.month}, 星期几: {target_date_obj.weekday()}(0=周一)")
 
         # 预计算目标向量
         t_load = target_df['load_forecast'].fillna(0).values
         t_temp = target_df['temperature'].fillna(0).values
-        t_price = target_df['price_da'].fillna(0).values
+        # t_price = target_df['price_da'].fillna(0).values # 移除
         
         # B类占比
         t_b = target_df['class_b_forecast'].fillna(0).values
@@ -219,6 +220,9 @@ async def find_similar_days(request: SimilarDayRequest):
         # 天气 (字符串数组)
         t_weather = target_df['weather'].fillna("").values
         
+        # 目标日期类型 (字符串)
+        t_day_type = target_df['day_type'].iloc[0] if 'day_type' in target_df.columns else ""
+        
         # 计算目标日期的统计信息
         target_weather_type = ""
         if len(t_weather) > 12:
@@ -228,7 +232,7 @@ async def find_similar_days(request: SimilarDayRequest):
         
         target_avg_temp = float(np.mean(t_temp)) if len(t_temp) > 0 else 0.0
         target_avg_load = float(np.mean(t_load)) if len(t_load) > 0 else 0.0
-        target_avg_price = float(np.mean(t_price)) if len(t_price) > 0 else 0.0
+        # target_avg_price = float(np.mean(t_price)) if len(t_price) > 0 else 0.0 # 移除
         target_avg_b_ratio = float(np.mean(t_b_ratio)) if len(t_b_ratio) > 0 else 0.0
         target_avg_ne = float(np.mean(t_ne)) if len(t_ne) > 0 else 0.0
 
@@ -279,10 +283,10 @@ async def find_similar_days(request: SimilarDayRequest):
             mean_ne_target = np.mean(t_ne) if np.mean(t_ne) > 0 else 1
             diff_ne = np.mean(np.abs(t_ne - h_ne)) / mean_ne_target
             
-            # 5. 价格差异
-            h_price = group['price_da'].fillna(0).values
-            mean_price_target = np.mean(t_price) if np.mean(t_price) > 0 else 1
-            diff_price = np.mean(np.abs(t_price - h_price)) / mean_price_target
+            # 5. 价格差异 (移除)
+            # h_price = group['price_da'].fillna(0).values
+            # mean_price_target = np.mean(t_price) if np.mean(t_price) > 0 else 1
+            # diff_price = np.mean(np.abs(t_price - h_price)) / mean_price_target
             
             # 6. 天气差异 (不匹配的小时数比例)
             h_weather = group['weather'].fillna("").values
@@ -307,6 +311,15 @@ async def find_similar_days(request: SimilarDayRequest):
             hist_weekday = hist_date_obj.weekday()
             diff_weekday = 0.0 if target_weekday == hist_weekday else 1.0
             
+            # 10. 日期类型差异 (新增)
+            # 获取历史日期的 day_type
+            h_day_type = group['day_type'].iloc[0] if 'day_type' in group.columns else ""
+            # 如果目标或历史缺失日期类型，则视为差异大
+            if not t_day_type or not h_day_type:
+                diff_day_type = 1.0
+            else:
+                diff_day_type = 0.0 if t_day_type == h_day_type else 1.0
+            
             # 总差异得分 (越小越好)
             # 各项 diff 都在 [0, 1] 左右 (MAPE可能大于1，但通常在0-0.5)
             total_score = (
@@ -314,11 +327,12 @@ async def find_similar_days(request: SimilarDayRequest):
                 w_temp * diff_temp_norm +
                 w_b_ratio * diff_b_ratio +
                 w_ne * diff_ne +
-                w_price * diff_price +
+                # w_price * diff_price + # 移除
                 w_weather * diff_weather +
                 w_date * date_penalty +
                 w_month * diff_month +
-                w_weekday * diff_weekday
+                w_weekday * diff_weekday +
+                w_day_type * diff_day_type # 新增
             )
             
             results.append({
@@ -327,18 +341,19 @@ async def find_similar_days(request: SimilarDayRequest):
                 "details": {
                     "diff_load": float(diff_load),
                     "diff_temp": float(diff_temp),
+                    "diff_temp_norm": float(diff_temp_norm),
                     "diff_temp_max": float(diff_temp_max),
                     "diff_temp_min": float(diff_temp_min),
                     "diff_weather": float(diff_weather),
-                    "diff_price": float(diff_price),
                     "diff_b_ratio": float(diff_b_ratio),
                     "diff_ne": float(diff_ne),
+                    "date_penalty": float(date_penalty),
                     "diff_month": float(diff_month),
-                    "diff_weekday": float(diff_weekday)
+                    "diff_weekday": float(diff_weekday),
+                    "diff_day_type": float(diff_day_type)
                 },
                 # 返回一些用于展示的数据
                 "load_curve": h_load.tolist(),
-                "price_curve": h_price.tolist(),
                 "temp_avg": float(np.mean(h_temp)),
                 "weather_type": h_weather[12] if len(h_weather) > 12 else "", # 取中午天气作为代表
                 "day_type": group['day_type'].iloc[0] if 'day_type' in group.columns else ""
@@ -359,12 +374,12 @@ async def find_similar_days(request: SimilarDayRequest):
             "target_stats": {
                 "avg_temp": target_avg_temp,
                 "avg_load": target_avg_load,
-                "avg_price": target_avg_price,
+                # "avg_price": target_avg_price, # 移除
                 "avg_b_ratio": target_avg_b_ratio,
                 "avg_ne": target_avg_ne
             },
             "target_load_curve": t_load.tolist(),
-            "target_price_curve": t_price.tolist(),
+            # "target_price_curve": t_price.tolist(), # 移除
             "matches": top_matches
         }
 
