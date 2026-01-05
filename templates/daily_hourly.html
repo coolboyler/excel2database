@@ -301,20 +301,33 @@
                 </div>
             </div>
 
-            <!-- 2. Charts Row -->
-            <div class="row g-3 mb-4">
-                <!-- Left: Price Analysis -->
-                <div class="col-lg-7">
-                    <div class="dashboard-card">
-                        <h5 class="mb-3"><i class="bi bi-graph-up text-primary"></i> 电价与负荷趋势</h5>
-                        <div id="chart-price" class="chart-container"></div>
-                    </div>
-                </div>
-                <!-- Right: Power Composition -->
-                <div class="col-lg-5">
-                    <div class="dashboard-card">
-                        <h5 class="mb-3"><i class="bi bi-pie-chart text-success"></i> 电源出力构成 (预测)</h5>
-                        <div id="chart-power" class="chart-container"></div>
+            <!-- 2. Charts Row - 三张图一行，支持左右滑动 -->
+            <div class="mb-4">
+                <div style="overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; padding-bottom: 10px;">
+                    <div style="display: flex; gap: 16px; min-width: max-content; padding: 0 4px;">
+                        <!-- Chart 1: Price & Load (宽20%) -->
+                        <div style="flex: 0 0 40%; min-width: 860px; max-width: 1200px;">
+                            <div class="dashboard-card">
+                                <h5 class="mb-3"><i class="bi bi-graph-up text-primary"></i> 电价与负荷趋势</h5>
+                                <div id="chart-price" class="chart-container" style="height: 420px;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Chart 2: Power Forecast -->
+                        <div style="flex: 0 0 30%; min-width: 720px; max-width: 1000px;">
+                            <div class="dashboard-card">
+                                <h5 class="mb-3"><i class="bi bi-pie-chart text-success"></i> 电源构成 (预测)</h5>
+                                <div id="chart-power-forecast" class="chart-container" style="height: 420px;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Chart 3: Power Actual -->
+                        <div style="flex: 0 0 30%; min-width: 720px; max-width: 1000px;">
+                            <div class="dashboard-card">
+                                <h5 class="mb-3"><i class="bi bi-pie-chart-fill text-warning"></i> 电源构成 (实际)</h5>
+                                <div id="chart-power-actual" class="chart-container" style="height: 420px;"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -480,7 +493,8 @@
 
             // 2. Render Charts
             renderPriceChart(hours, data);
-            renderPowerChart(hours, data);
+            renderPowerForecastChart(hours, data);
+            renderPowerActualChart(hours, data);
 
             // 3. Render Table
             renderTable(data);
@@ -494,12 +508,12 @@
 
             const option = {
                 tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-                legend: { bottom: 0 },
-                grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
-                xAxis: { type: 'category', data: hours, boundaryGap: false },
+                legend: { bottom: 0, textStyle: { fontSize: 11 } },
+                grid: { left: '6%', right: '4%', bottom: '14%', top: '10%', containLabel: true },
+                xAxis: { type: 'category', data: hours, boundaryGap: false, axisLabel: { fontSize: 10 } },
                 yAxis: [
-                    { type: 'value', name: '电价', position: 'left', splitLine: { show: false } },
-                    { type: 'value', name: '负荷', position: 'right', splitLine: { lineStyle: { type: 'dashed' } } }
+                    { type: 'value', name: '电价', position: 'left', splitLine: { show: false }, axisLabel: { fontSize: 10 } },
+                    { type: 'value', name: '负荷', position: 'right', splitLine: { lineStyle: { type: 'dashed' } }, axisLabel: { fontSize: 10 } }
                 ],
                 series: [
                     {
@@ -522,19 +536,19 @@
             chart.setOption(option);
         }
 
-        function renderPowerChart(hours, data) {
-            const dom = document.getElementById('chart-power');
+        function renderPowerForecastChart(hours, data) {
+            const dom = document.getElementById('chart-power-forecast');
             if (echarts.getInstanceByDom(dom)) echarts.dispose(dom);
             const chart = echarts.init(dom);
             charts.push(chart);
 
-            // Calculate stacked data
+            // Calculate stacked data - 与主图表保持一致的布局
             const option = {
                 tooltip: { trigger: 'axis' },
-                legend: { bottom: 0, type: 'scroll' },
-                grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
-                xAxis: { type: 'category', data: hours, boundaryGap: false },
-                yAxis: { type: 'value', name: 'MW' },
+                legend: { bottom: 0, textStyle: { fontSize: 11 } },
+                grid: { left: '6%', right: '4%', bottom: '14%', top: '10%', containLabel: true },
+                xAxis: { type: 'category', data: hours, boundaryGap: false, axisLabel: { fontSize: 10 } },
+                yAxis: { type: 'value', name: 'MW', axisLabel: { fontSize: 10 } },
                 series: [
                     {
                         name: '光伏', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
@@ -559,6 +573,45 @@
                     {
                         name: 'A类', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
                         data: data.map(d => d.class_a_forecast || 0), itemStyle: { color: '#f472b6' }
+                    },
+                    {
+                        name: '负荷(实)', type: 'line', data: data.map(d => d.load_actual),
+                        itemStyle: { color: '#374151' }, lineStyle: { width: 2, type: 'dotted' }
+                    }
+                ]
+            };
+            chart.setOption(option);
+        }
+
+        function renderPowerActualChart(hours, data) {
+            const dom = document.getElementById('chart-power-actual');
+            if (echarts.getInstanceByDom(dom)) echarts.dispose(dom);
+            const chart = echarts.init(dom);
+            charts.push(chart);
+
+            // Calculate stacked data for actual values - 使用新能源实际代替风、光、水电，与主图表保持一致的布局
+            const option = {
+                tooltip: { trigger: 'axis' },
+                legend: { bottom: 0, textStyle: { fontSize: 11 } },
+                grid: { left: '6%', right: '4%', bottom: '14%', top: '10%', containLabel: true },
+                xAxis: { type: 'category', data: hours, boundaryGap: false, axisLabel: { fontSize: 10 } },
+                yAxis: { type: 'value', name: 'MW', axisLabel: { fontSize: 10 } },
+                series: [
+                    {
+                        name: '新能源(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => (d.ne_total_actual || 0)), itemStyle: { color: '#10b981' }
+                    },
+                    {
+                        name: '西电(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.west_east_actual || 0), itemStyle: { color: '#818cf8' }
+                    },
+                    {
+                        name: 'B类(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.class_b_actual || 0), itemStyle: { color: '#a78bfa' }
+                    },
+                    {
+                        name: 'A类(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.class_a_actual || 0), itemStyle: { color: '#f472b6' }
                     },
                     {
                         name: '负荷(实)', type: 'line', data: data.map(d => d.load_actual),
