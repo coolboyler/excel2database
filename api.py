@@ -134,13 +134,13 @@ async def find_similar_days(request: SimilarDayRequest):
             # 获取全量数据
             # 我们需要以下字段: 
             # record_date, hour, load_forecast, weather, temperature, 
-            # class_b_forecast, spot_ne_d_forecast, price_da
+            # class_b_forecast, spot_ne_d_forecast, day_type, price_diff
             
             # 构建查询字段
             fields = [
                 "record_date", "hour", 
                 "load_forecast", "weather", "temperature",
-                "class_b_forecast", "spot_ne_d_forecast", "day_type" # 移除了 price_da
+                "class_b_forecast", "spot_ne_d_forecast", "day_type", "price_diff" # 新增 price_diff
             ]
             
             # 检查字段是否存在 (防止报错)
@@ -182,6 +182,21 @@ async def find_similar_days(request: SimilarDayRequest):
         valid_dates = valid_dates[valid_dates == 24].index.tolist()
         history_df = history_df[history_df['record_date'].isin(valid_dates)]
         print(f"[DEBUG] 历史数据天数（24小时过滤后）: {len(history_df['record_date'].unique())}")
+        
+        # 新增：排除没有价差数据的日期
+        # 检查每个日期是否有完整的价差数据（price_diff 不为 None 且不为 NaN）
+        if 'price_diff' in history_df.columns:
+            # 按日期分组，检查是否有完整的24小时价差数据
+            price_diff_counts = history_df.groupby('record_date')['price_diff'].apply(
+                lambda x: x.notna().sum()  # 统计非空值数量
+            )
+            # 只保留有24个非空价差数据的日期
+            dates_with_price_diff = price_diff_counts[price_diff_counts == 24].index.tolist()
+            history_df = history_df[history_df['record_date'].isin(dates_with_price_diff)]
+            print(f"[DEBUG] 历史数据天数（价差数据过滤后）: {len(history_df['record_date'].unique())}")
+            print(f"[DEBUG] 有完整价差数据的日期: {dates_with_price_diff}")
+        else:
+            print(f"[DEBUG] 警告：缓存表中没有 price_diff 字段，无法进行价差数据过滤")
         
         if history_df.empty:
             return {"error": "没有足够的历史数据进行匹配"}
