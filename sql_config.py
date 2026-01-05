@@ -156,14 +156,9 @@ SQL_RULES = {
         "where": "channel_name LIKE '%风电%' AND type LIKE '%预测%'"
     },
     "hydro_forecast": {
-        "name": "水电（含抽蓄）预测",
+        "name": "水电含抽蓄预测",
         "source": TABLE_SOURCE_POWER,
-        "where": "channel_name LIKE '%水电%' AND type LIKE '%预测%'"
-    },
-    "pumped_storage_forecast": {
-        "name": "抽蓄出力预测",
-        "source": TABLE_SOURCE_POWER,
-        "where": "channel_name LIKE '%抽蓄%' AND type LIKE '%预测%'"
+        "where": "channel_name LIKE '%水电（含抽蓄）%' AND type LIKE '%预测%'"
     },
 
     # ====================
@@ -207,7 +202,7 @@ SQL_RULES = {
     "hydro_actual": {
         "name": "水电含抽蓄实际",
         "source": TABLE_SOURCE_POWER,
-        "where": "channel_name LIKE '%水电%' AND type LIKE '%实际%'"
+        "where": "channel_name LIKE '%水电（含抽蓄）%' AND type LIKE '%实际%'"
     },
 
     # ====================

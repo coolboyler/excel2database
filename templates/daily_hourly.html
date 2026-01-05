@@ -98,7 +98,7 @@
             color: #0277bd;
         }
 
-        /* 自定义 7 列布局 Grid */
+        /* 自定义 9 列布局 Grid */
         .kpi-grid {
             display: grid;
             grid-template-columns: repeat(1, 1fr);
@@ -365,9 +365,8 @@
                                 <th class="text-center">光伏预测</th>
                                 <th class="text-center">风电预测</th>
                                 <th class="text-center">新能源总实</th>
-                                <th class="text-center">水电预测</th>
+                                <th class="text-center">水电含抽蓄预测</th>
                                 <th class="text-center">水电含抽蓄实际</th>
-                                <th class="text-center">抽蓄预测</th>
                                 <th class="text-center">现货新能源D日预测</th>
                                 
                                 <th class="text-center" style="background: #fffbeb;">温度</th>
@@ -559,7 +558,7 @@
                         data: data.map(d => d.ne_wind_forecast || 0), itemStyle: { color: '#34d399' }
                     },
                     {
-                        name: '水电', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        name: '水电含抽蓄', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
                         data: data.map(d => d.hydro_forecast || 0), itemStyle: { color: '#60a5fa' }
                     },
                     {
@@ -589,7 +588,7 @@
             const chart = echarts.init(dom);
             charts.push(chart);
 
-            // Calculate stacked data for actual values - 使用新能源实际代替风、光、水电，与主图表保持一致的布局
+            // Calculate stacked data for actual values - 添加水电含抽蓄实际数据
             const option = {
                 tooltip: { trigger: 'axis' },
                 legend: { bottom: 0, textStyle: { fontSize: 11 } },
@@ -600,6 +599,10 @@
                     {
                         name: '新能源(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
                         data: data.map(d => (d.ne_total_actual || 0)), itemStyle: { color: '#10b981' }
+                    },
+                    {
+                        name: '水电含抽蓄(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
+                        data: data.map(d => d.hydro_actual || 0), itemStyle: { color: '#60a5fa' }
                     },
                     {
                         name: '西电(实)', type: 'line', stack: 'Total', areaStyle: {}, showSymbol: false,
@@ -663,8 +666,7 @@
                     <td class="text-end">${fmt(d.ne_total_actual, 0)}</td>
                     <td class="text-end">${fmt(d.hydro_forecast, 0)}</td>
                     <td class="text-end">${fmt(d.hydro_actual, 0)}</td>
-                <td class="text-end">${fmt(d.pumped_storage_forecast, 0)}</td>
-                <td class="text-end">${fmt(d.spot_ne_d_forecast, 0)}</td>
+                    <td class="text-end">${fmt(d.spot_ne_d_forecast, 0)}</td>
                 
                 <td class="text-end">${fmt(d.temperature, 1)}</td>
                     <td class="text-end">${fmt(d.humidity, 0)}%</td>
