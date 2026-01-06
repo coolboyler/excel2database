@@ -409,11 +409,22 @@
             <div class="dashboard-card mb-4">
                 <div class="card-header-custom">
                     <h5 class="card-title"><i class="bi bi-list-ol"></i> 匹配结果详情 (Top 5)</h5>
+                    <div class="btn-group" role="group">
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="selectAll()">
+                            <i class="bi bi-check-all"></i> 全选
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearSelection()">
+                            <i class="bi bi-x-lg"></i> 清空
+                        </button>
+                    </div>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover table-custom align-middle">
                         <thead>
                             <tr>
+                                <th class="text-center" width="50">
+                                    <input type="checkbox" class="form-check-input" id="select-all-checkbox" onchange="toggleSelectAll(this)">
+                                </th>
                                 <th class="text-center" width="80">排名</th>
                                 <th>历史日期</th>
                                 <th>相似度得分</th>
@@ -436,11 +447,48 @@
                         <tbody id="result-body"></tbody>
                     </table>
                 </div>
+                <!-- Action Buttons -->
+                <div class="d-flex gap-2 mt-3">
+                    <button type="button" class="btn btn-primary" onclick="queryPriceDifference()" id="btn-query-diff" disabled>
+                        <i class="bi bi-currency-exchange"></i> 查询选中日期价差
+                    </button>
+                    <button type="button" class="btn btn-success" onclick="exportPriceDifference()" id="btn-export-diff" disabled>
+                        <i class="bi bi-download"></i> 导出价差数据
+                    </button>
+                </div>
+            </div>
+
+            <!-- Price Difference Result Section -->
+            <div id="price-diff-section" class="dashboard-card mb-4" style="display: none;">
+                <div class="card-header-custom">
+                    <h5 class="card-title"><i class="bi bi-graph-up"></i> 价差数据查询结果</h5>
+                    <div class="d-flex align-items-center gap-2">
+                        <span id="selected-dates-display" class="text-muted small"></span>
+                    </div>
+                </div>
+                <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                    <table class="table table-hover table-custom align-middle" id="price-diff-table">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th width="120">节点名称</th>
+                                <th width="100">日期</th>
+                                <th width="80">时间</th>
+                                <th width="100">价差(元/MWh)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="price-diff-body"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        // Store matched results globally
+        let matchedResults = [];
+        let selectedDates = new Set();
+        let priceDiffResult = null;
+
         // Init Date - Handled by Flatpickr (defaultDate: tomorrow)
 
         function updateVal(input, displayId) {
@@ -504,7 +552,15 @@
         function displayResults(data) {
             const resultSection = document.getElementById('result-section');
             resultSection.style.display = 'block';
-            
+
+            // Reset selection and results
+            matchedResults = data.matches || [];
+            selectedDates.clear();
+            priceDiffResult = null;
+            document.getElementById('price-diff-section').style.display = 'none';
+            document.getElementById('btn-query-diff').disabled = true;
+            document.getElementById('btn-export-diff').disabled = true;
+
             // Scroll smoothly to results
             resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -587,14 +643,17 @@
             tbody.innerHTML = '';
             
             if (!data.matches || data.matches.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="17" class="text-center py-5 text-muted">未找到符合条件的相似日</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="18" class="text-center py-5 text-muted">未找到符合条件的相似日</td></tr>';
             } else {
                 data.matches.forEach((item, index) => {
                     const rankClass = index < 3 ? `rank-${index + 1}` : 'rank-other';
                     const similarity = (item.similarity_score * 100).toFixed(1);
-                    
+
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
+                        <td class="text-center">
+                            <input type="checkbox" class="form-check-input date-checkbox" data-date="${item.date}" onchange="toggleDateSelection(this)">
+                        </td>
                         <td class="text-center"><span class="rank-badge ${rankClass}">${index + 1}</span></td>
                         <td><strong>${item.date}</strong></td>
                         <td>
@@ -720,6 +779,207 @@
         window.addEventListener('resize', () => {
             charts.forEach(c => c.resize());
         });
+
+        // Selection handling functions
+        function toggleDateSelection(checkbox) {
+            const date = checkbox.getAttribute('data-date');
+            if (checkbox.checked) {
+                selectedDates.add(date);
+            } else {
+                selectedDates.delete(date);
+            }
+            updateActionButtons();
+        }
+
+        function toggleSelectAll(checkbox) {
+            const checkboxes = document.querySelectorAll('.date-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = checkbox.checked;
+                const date = cb.getAttribute('data-date');
+                if (checkbox.checked) {
+                    selectedDates.add(date);
+                } else {
+                    selectedDates.delete(date);
+                }
+            });
+            updateActionButtons();
+        }
+
+        function selectAll() {
+            const checkboxes = document.querySelectorAll('.date-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = true;
+                selectedDates.add(cb.getAttribute('data-date'));
+            });
+            document.getElementById('select-all-checkbox').checked = true;
+            updateActionButtons();
+        }
+
+        function clearSelection() {
+            const checkboxes = document.querySelectorAll('.date-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = false;
+                selectedDates.delete(cb.getAttribute('data-date'));
+            });
+            document.getElementById('select-all-checkbox').checked = false;
+            updateActionButtons();
+        }
+
+        function updateActionButtons() {
+            const hasSelection = selectedDates.size > 0;
+            document.getElementById('btn-query-diff').disabled = !hasSelection;
+            // Enable export only if we have price diff results
+            document.getElementById('btn-export-diff').disabled = !hasSelection || !priceDiffResult;
+        }
+
+        // Price difference query function
+        function queryPriceDifference() {
+            if (selectedDates.size === 0) {
+                alert('请先选择要查询的日期');
+                return;
+            }
+
+            const dates = Array.from(selectedDates);
+            const btn = document.getElementById('btn-query-diff');
+            const originalContent = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 查询中...';
+
+            fetch('/price-difference', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `dates=${encodeURIComponent(JSON.stringify(dates))}`
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    alert('查询失败: ' + result.error);
+                    return;
+                }
+                if (result.message && !result.has_dayahead) {
+                    alert('未找到日前节点电价数据：' + result.message);
+                    return;
+                }
+                if (result.message && !result.has_realtime) {
+                    alert('未找到实时节点电价数据：' + result.message);
+                    return;
+                }
+                priceDiffResult = result.data || [];
+                displayPriceDifference(priceDiffResult, dates);
+                updateActionButtons();
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('查询失败，请检查网络或服务器状态');
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = originalContent;
+            });
+        }
+
+        function displayPriceDifference(data, dates) {
+            const section = document.getElementById('price-diff-section');
+            const tbody = document.getElementById('price-diff-body');
+            const display = document.getElementById('selected-dates-display');
+
+            section.style.display = 'block';
+            display.innerHTML = `已选择日期: ${dates.join(', ')}`;
+
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">未查询到价差数据</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = '';
+            data.forEach(item => {
+                const tr = document.createElement('tr');
+                const timeStr = formatTimeValue(item.record_time);
+                tr.innerHTML = `
+                    <td>${item.channel_name || '-'}</td>
+                    <td>${item.record_date || '-'}</td>
+                    <td>${timeStr}</td>
+                    <td class="${item.value > 0 ? 'text-success' : item.value < 0 ? 'text-danger' : ''}">
+                        ${item.value !== null && item.value !== undefined ? item.value.toFixed(2) : '-'}
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Scroll to result
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // Format time value like join_query.html
+        function formatTimeValue(timeVal) {
+            if (timeVal === null || timeVal === undefined) return '-';
+            if (typeof timeVal === 'object' && timeVal.seconds !== undefined) {
+                const h = Math.floor(timeVal.seconds / 3600);
+                const m = Math.floor((timeVal.seconds % 3600) / 60);
+                return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
+            }
+            if (typeof timeVal === 'number') {
+                const h = Math.floor(timeVal / 3600);
+                const m = Math.floor((timeVal % 3600) / 60);
+                return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
+            }
+            if (typeof timeVal === 'string') {
+                // 如果是 HH:MM 格式，直接返回
+                if (/^\d{1,2}:\d{2}$/.test(timeVal)) {
+                    const parts = timeVal.split(':');
+                    return `${parseInt(parts[0]).toString().padStart(2,'0')}:${parts[1]}`;
+                }
+                // 如果包含冒号但不是 HH:MM 格式，提取小时
+                if (timeVal.includes(':')) {
+                    const h = parseInt(timeVal.split(':')[0]);
+                    return `${h.toString().padStart(2,'0')}:00`;
+                }
+            }
+            return timeVal;
+        }
+
+        // Export price difference data
+        function exportPriceDifference() {
+            if (selectedDates.size === 0) {
+                alert('请先选择要导出的日期');
+                return;
+            }
+
+            if (!priceDiffResult || priceDiffResult.length === 0) {
+                alert('请先查询价差数据');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('query_result', JSON.stringify(priceDiffResult));
+            formData.append('region', '');
+
+            fetch('/price-difference/export-from-result', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Export failed');
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                // Create download link
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `价差查询_${new Date().toISOString().slice(0, 10)}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            })
+            .catch(error => {
+                console.error('Export error:', error);
+                alert('导出失败，请检查网络或服务器状态');
+            });
+        }
     </script>
 </body>
 </html>
