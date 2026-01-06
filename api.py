@@ -14,6 +14,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
+from openpyxl.styles import PatternFill
 import uvicorn
 import datetime
 from pred_reader import PowerDataImporter
@@ -92,7 +93,7 @@ async def upload_file(file: UploadFile = File(...)):
     return {"filename": file.filename, "status": "uploaded"}
 
 import re
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class SimilarDayRequest(BaseModel):
     target_date: str
@@ -1934,7 +1935,6 @@ async def export_price_difference_from_result(
             
             # 返回Excel文件流
             output = BytesIO()
-            from openpyxl.styles import PatternFill
             # from openpyxl.chart import BarChart, Reference, Series
             
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -2515,6 +2515,342 @@ def update_price_cache_for_date(target_date_str: str, only_weather: bool = False
         return len(clean_batch)
     
     return 0
+
+class PriceDiffCacheRequest(BaseModel):
+    dates: list[str] = Field(..., description="日期列表")
+    sort_by: Optional[str] = Field("avg_diff", description="排序字段: avg_diff-平均价差, max_diff-最大价差, min_diff-最小价差, total_abs-总绝对值")
+    sort_order: Optional[str] = Field("desc", description="排序方向: asc-升序, desc-降序")
+
+@app.post("/api/price-diff-cache", summary="直接从缓存表查询价差数据")
+async def query_price_diff_from_cache(request: PriceDiffCacheRequest):
+    """
+    直接从缓存表 cache_daily_hourly 中查询价差数据
+
+    参数:
+    - dates: 日期列表，JSON格式，例如: ["2023-09-18", "2023-09-19"]
+    - sort_by: 排序字段 (默认: avg_diff - 平均价差)
+    - sort_order: 排序方向 (默认: desc - 降序)
+
+    返回:
+    - 缓存表中的价差数据，包含每小时的价差值
+    """
+    try:
+        date_list = request.dates
+        sort_by = request.sort_by or "avg_diff"
+        sort_order = request.sort_order or "desc"
+
+        table_name = "cache_daily_hourly"
+
+        # 检查表是否存在
+        tables = db_manager.get_tables()
+        if table_name not in tables:
+            return JSONResponse(status_code=404, content={
+                "error": "缓存表不存在，请先生成缓存数据",
+                "table": table_name
+            })
+
+        # 验证日期格式
+        valid_dates = []
+        for d in date_list:
+            try:
+                pd.to_datetime(d)
+                valid_dates.append(d)
+            except:
+                pass
+
+        if not valid_dates:
+            return JSONResponse(status_code=400, content={"error": "日期格式错误"})
+
+        with db_manager.engine.connect() as conn:
+            # 构建查询 SQL
+            placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+            params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+            # 查询缓存表中的价差数据
+            sql = text(f"""
+                SELECT record_date, hour, price_diff, price_da, price_rt,
+                       load_forecast, temperature, day_type
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                  AND price_diff IS NOT NULL
+                ORDER BY record_date, hour
+            """)
+
+            result = conn.execute(sql, params).fetchall()
+
+            if not result:
+                return {
+                    "status": "success",
+                    "data": [],
+                    "message": "未找到符合条件的价差数据",
+                    "dates": valid_dates
+                }
+
+            # 转换为列表
+            data = []
+            for row in result:
+                d = dict(row._mapping)
+                if hasattr(d.get('record_date'), 'strftime'):
+                    d['record_date'] = str(d['record_date'])
+                data.append(d)
+
+            # 按日期分组统计
+            date_stats = {}
+            for row in data:
+                date = row['record_date']
+                if date not in date_stats:
+                    date_stats[date] = {
+                        "date": date,
+                        "hours": [],
+                        "avg_diff": 0,
+                        "max_diff": float('-inf'),
+                        "min_diff": float('inf'),
+                        "total_abs": 0,
+                        "positive_count": 0,
+                        "negative_count": 0
+                    }
+                stats = date_stats[date]
+                diff = row['price_diff']
+                stats["hours"].append({
+                    "hour": row["hour"],
+                    "price_diff": diff
+                })
+                if diff is not None:
+                    stats["avg_diff"] += diff
+                    stats["max_diff"] = max(stats["max_diff"], diff)
+                    stats["min_diff"] = min(stats["min_diff"], diff)
+                    stats["total_abs"] += abs(diff)
+                    if diff > 0:
+                        stats["positive_count"] += 1
+                    else:
+                        stats["negative_count"] += 1
+
+            # 计算平均值
+            for date, stats in date_stats.items():
+                hour_count = len([h for h in stats["hours"] if h["price_diff"] is not None])
+                if hour_count > 0:
+                    stats["avg_diff"] = round(stats["avg_diff"] / hour_count, 2)
+                    stats["total_abs"] = round(stats["total_abs"], 2)
+                stats["hour_count"] = hour_count
+                del stats["hours"]  # 移除详细小时数据，只保留统计
+
+            # 转换为列表并排序
+            stats_list = list(date_stats.values())
+
+            # 排序
+            reverse = sort_order == "desc"
+            sort_field = sort_by if sort_by in ["avg_diff", "max_diff", "min_diff", "total_abs"] else "avg_diff"
+            stats_list.sort(key=lambda x: x.get(sort_field, 0) or 0, reverse=reverse)
+
+            return {
+                "status": "success",
+                "data": data,
+                "date_stats": stats_list,
+                "total_records": len(data),
+                "total_dates": len(stats_list),
+                "sort_by": sort_by,
+                "sort_order": sort_order
+            }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/price-diff-cache/export")
+async def export_price_diff_from_cache(request: PriceDiffCacheRequest):
+    """
+    导出缓存表中的价差数据为Excel文件（透视表格式）
+    """
+    try:
+        date_list = request.dates
+
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+
+        if table_name not in tables:
+            df = pd.DataFrame()
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            output.seek(0)
+
+            from fastapi.responses import StreamingResponse
+            import urllib.parse
+            filename = f"价差数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            encoded_filename = urllib.parse.quote(filename)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+            )
+
+        # 验证日期格式
+        valid_dates = []
+        for d in date_list:
+            try:
+                pd.to_datetime(d)
+                valid_dates.append(d)
+            except:
+                pass
+
+        with db_manager.engine.connect() as conn:
+            placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+            params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+            sql = text(f"""
+                SELECT record_date, hour, price_diff
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                  AND price_diff IS NOT NULL
+                ORDER BY record_date, hour
+            """)
+
+            result = conn.execute(sql, params).fetchall()
+
+            if not result:
+                df = pd.DataFrame()
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                output.seek(0)
+
+                from fastapi.responses import StreamingResponse
+                import urllib.parse
+                now = datetime.datetime.now()
+                filename = f"价差数据_{now.strftime('%Y%m%d_%H%M%S')}.xlsx"
+                encoded_filename = urllib.parse.quote(filename)
+                return StreamingResponse(
+                    iter([output.getvalue()]),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+                )
+
+            # 转换为DataFrame
+            data = []
+            for row in result:
+                d = dict(row._mapping)
+                if hasattr(d.get('record_date'), 'strftime'):
+                    d['record_date'] = str(d['record_date'])
+                data.append(d)
+
+            df = pd.DataFrame(data)
+
+            # 透视表格式导出
+            if len(df) > 0:
+                pivot_df = pd.pivot_table(
+                    df,
+                    index=['record_date'],
+                    columns='hour',
+                    values='price_diff',
+                    aggfunc='mean'
+                )
+                pivot_df = pivot_df.reindex(columns=range(24), fill_value=np.nan)
+                pivot_df.columns = [f'{int(h):02d}:00' for h in pivot_df.columns]
+                pivot_df = pivot_df.reset_index()
+
+                # 添加节点名称和单位列在最前面
+                pivot_df.insert(0, '节点名称', '价差')
+                pivot_df.insert(2, '单位', '价差(元/MWh)')
+
+                # 重命名日期列
+                pivot_df = pivot_df.rename(columns={'record_date': '日期'})
+
+                # 重新排列列顺序: 节点名称, 日期, 单位, 00:00...23:00
+                cols = ['节点名称', '日期', '单位'] + [f'{h:02d}:00' for h in range(24)]
+                for col in cols:
+                    if col not in pivot_df.columns:
+                        pivot_df[col] = np.nan
+                pivot_df = pivot_df[cols]
+
+                final_df = pivot_df
+            else:
+                columns = ['节点名称', '日期', '单位'] + [f'{h:02d}:00' for h in range(24)]
+                final_df = pd.DataFrame(columns=columns)
+
+            # 生成Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                final_df.to_excel(writer, index=False, sheet_name='价差数据')
+
+                # 获取工作表
+                worksheet = writer.sheets['价差数据']
+
+                # 应用条件格式：大于0显示绿色渐变，小于0显示红色渐变
+                hour_columns = [f'{h:02d}:00' for h in range(24)]
+
+                # 找到所有数值中的最大绝对值，用于确定颜色深度
+                max_abs_value = 0
+                for col in hour_columns:
+                    if col in final_df.columns:
+                        max_abs_value = max(max_abs_value, final_df[col].abs().max())
+
+                # 如果最大绝对值为0，则设为1避免除零错误
+                if max_abs_value == 0:
+                    max_abs_value = 1
+
+                # 定义颜色填充函数
+                def get_fill_color(value):
+                    if pd.isna(value):
+                        return None
+
+                    # 计算颜色强度，基于绝对值比例
+                    intensity = abs(value) / max_abs_value
+
+                    # 确保最小亮度，避免颜色过深
+                    min_brightness = 150  # 最亮为255
+                    brightness_range = 255 - min_brightness
+                    brightness = int(min_brightness + (1 - intensity) * brightness_range)
+
+                    if value > 0:
+                        # 正数：绿色系，强度越高颜色越深
+                        red = brightness
+                        green = 255
+                        blue = brightness
+                    elif value < 0:
+                        # 负数：红色系，强度越高颜色越深
+                        red = 255
+                        green = brightness
+                        blue = brightness
+                    else:
+                        # 零值：白色
+                        return None
+
+                    # 转换为十六进制颜色代码
+                    color_code = f"{red:02X}{green:02X}{blue:02X}"
+                    return PatternFill(start_color=color_code, end_color=color_code, fill_type='solid')
+
+                # 找到小时列的列索引并应用条件格式
+                for col_idx, col in enumerate(final_df.columns, start=1):
+                    if col in hour_columns:
+                        for row_idx in range(2, len(final_df) + 2):  # 从第2行开始（第1行是表头）
+                            cell = worksheet.cell(row=row_idx, column=col_idx)
+                            if cell.value is not None:
+                                try:
+                                    value = float(cell.value)
+                                    fill = get_fill_color(value)
+                                    if fill:
+                                        cell.fill = fill
+                                except (ValueError, TypeError):
+                                    pass
+
+            output.seek(0)
+
+            from fastapi.responses import StreamingResponse
+            import urllib.parse
+            now = datetime.datetime.now()
+            filename = f"价差数据_{now.strftime('%Y%m%d_%H%M%S')}.xlsx"
+            encoded_filename = urllib.parse.quote(filename)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+            )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 def normalize_record_time(val, date_str):
     """标准化时间字段，处理 timedelta 和 datetime"""

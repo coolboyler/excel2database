@@ -470,10 +470,9 @@
                     <table class="table table-hover table-custom align-middle" id="price-diff-table">
                         <thead class="table-light sticky-top">
                             <tr>
-                                <th width="120">节点名称</th>
-                                <th width="100">日期</th>
-                                <th width="80">时间</th>
-                                <th width="100">价差(元/MWh)</th>
+                                <th width="120">日期</th>
+                                <th width="80">小时</th>
+                                <th width="120">价差(元/MWh)</th>
                             </tr>
                         </thead>
                         <tbody id="price-diff-body"></tbody>
@@ -832,7 +831,7 @@
             document.getElementById('btn-export-diff').disabled = !hasSelection || !priceDiffResult;
         }
 
-        // Price difference query function
+        // Price difference query function - 从缓存表查询
         function queryPriceDifference() {
             if (selectedDates.size === 0) {
                 alert('请先选择要查询的日期');
@@ -845,10 +844,15 @@
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 查询中...';
 
-            fetch('/price-difference', {
+            // 直接从缓存表查询价差数据
+            fetch('/api/price-diff-cache', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `dates=${encodeURIComponent(JSON.stringify(dates))}`
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    dates: dates,
+                    sort_by: 'avg_diff',
+                    sort_order: 'desc'
+                })
             })
             .then(response => response.json())
             .then(result => {
@@ -856,12 +860,8 @@
                     alert('查询失败: ' + result.error);
                     return;
                 }
-                if (result.message && !result.has_dayahead) {
-                    alert('未找到日前节点电价数据：' + result.message);
-                    return;
-                }
-                if (result.message && !result.has_realtime) {
-                    alert('未找到实时节点电价数据：' + result.message);
+                if (!result.data || result.data.length === 0) {
+                    alert('未找到缓存表中的价差数据，请确保已生成缓存');
                     return;
                 }
                 priceDiffResult = result.data || [];
@@ -884,23 +884,22 @@
             const display = document.getElementById('selected-dates-display');
 
             section.style.display = 'block';
-            display.innerHTML = `已选择日期: ${dates.join(', ')}`;
+            display.innerHTML = `已选择日期: ${dates.join(', ')} (从缓存表查询)`;
 
             if (!data || data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">未查询到价差数据</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-muted">未查询到价差数据</td></tr>';
                 return;
             }
 
             tbody.innerHTML = '';
             data.forEach(item => {
+                const diff = item.price_diff;
                 const tr = document.createElement('tr');
-                const timeStr = formatTimeValue(item.record_time);
                 tr.innerHTML = `
-                    <td>${item.channel_name || '-'}</td>
                     <td>${item.record_date || '-'}</td>
-                    <td>${timeStr}</td>
-                    <td class="${item.value > 0 ? 'text-success' : item.value < 0 ? 'text-danger' : ''}">
-                        ${item.value !== null && item.value !== undefined ? item.value.toFixed(2) : '-'}
+                    <td>${item.hour}:00</td>
+                    <td class="${diff > 0 ? 'text-success' : diff < 0 ? 'text-danger' : ''}">
+                        ${diff !== null && diff !== undefined ? diff.toFixed(2) : '-'}
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -938,46 +937,49 @@
             return timeVal;
         }
 
-        // Export price difference data
+        // Export price difference data - 使用缓存表导出接口
         function exportPriceDifference() {
             if (selectedDates.size === 0) {
                 alert('请先选择要导出的日期');
                 return;
             }
 
-            if (!priceDiffResult || priceDiffResult.length === 0) {
-                alert('请先查询价差数据');
-                return;
-            }
+            const dates = Array.from(selectedDates);
+            const btn = document.getElementById('btn-export-diff');
+            const originalContent = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 导出中...';
 
-            const formData = new FormData();
-            formData.append('query_result', JSON.stringify(priceDiffResult));
-            formData.append('region', '');
-
-            fetch('/price-difference/export-from-result', {
+            fetch('/api/price-diff-cache/export', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    dates: dates,
+                    sort_by: 'avg_diff',
+                    sort_order: 'desc'
+                })
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('Export failed');
-                }
-                return response.blob();
+            .then(res => {
+                if (!res.ok) throw new Error('导出失败');
+                return res.blob();
             })
             .then(blob => {
-                // Create download link
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `价差查询_${new Date().toISOString().slice(0, 10)}.xlsx`;
+                a.download = `价差数据_${new Date().getTime()}.xlsx`;
                 document.body.appendChild(a);
                 a.click();
-                window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
             })
             .catch(error => {
                 console.error('Export error:', error);
                 alert('导出失败，请检查网络或服务器状态');
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = originalContent;
             });
         }
     </script>
