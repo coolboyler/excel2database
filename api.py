@@ -2893,3 +2893,167 @@ def normalize_record_time(val, date_str):
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+
+
+@app.post("/api/daily-hourly-cache/export", summary="导出缓存表的日前/实时/价差数据")
+async def export_daily_hourly_from_cache(request: Request):
+    """
+    从缓存表导出日前、实时、价差数据
+
+    导出格式（每个日期占4行，空一行隔开）:
+    - 第1行: 日前节点电价 (00:00 - 23:00)
+    - 第2行: 实时节点电价 (00:00 - 23:00)
+    - 第3行: 价差 (00:00 - 23:00)
+    - 第4行: 空行
+    """
+    try:
+        # 从 FormData 获取 dates
+        form_data = await request.form()
+        dates_str = form_data.get("dates")
+        if not dates_str:
+            return JSONResponse(status_code=400, content={"error": "缺少 dates 参数"})
+
+        try:
+            date_list = json.loads(dates_str)
+        except:
+            return JSONResponse(status_code=400, content={"error": "dates 格式错误"})
+
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+
+        if table_name not in tables:
+            df = pd.DataFrame()
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            output.seek(0)
+
+            from fastapi.responses import StreamingResponse
+            import urllib.parse
+            filename = f"日前实时价差数据_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            encoded_filename = urllib.parse.quote(filename)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+            )
+
+        # 验证日期格式
+        valid_dates = []
+        for d in date_list:
+            try:
+                pd.to_datetime(d)
+                valid_dates.append(d)
+            except:
+                pass
+
+        if not valid_dates:
+            return JSONResponse(status_code=400, content={"error": "日期格式错误"})
+
+        with db_manager.engine.connect() as conn:
+            placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+            params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+            # 查询日前、实时、价差数据
+            sql = text(f"""
+                SELECT record_date, hour, price_da, price_rt, price_diff
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                ORDER BY record_date, hour
+            """)
+
+            result = conn.execute(sql, params).fetchall()
+
+            if not result:
+                df = pd.DataFrame()
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                output.seek(0)
+
+                from fastapi.responses import StreamingResponse
+                import urllib.parse
+                filename = f"日前实时价差数据_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                encoded_filename = urllib.parse.quote(filename)
+                return StreamingResponse(
+                    iter([output.getvalue()]),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+                )
+
+            # 转换为DataFrame
+            data = []
+            for row in result:
+                d = dict(row._mapping)
+                if hasattr(d.get('record_date'), 'strftime'):
+                    d['record_date'] = str(d['record_date'])
+                data.append(d)
+
+            df = pd.DataFrame(data)
+
+            # 构建导出格式：每个日期4行（日前、实时、价差、空行）
+            export_rows = []
+            hour_cols = [f'{h:02d}:00' for h in range(24)]
+
+            # 按日期分组
+            dates = df['record_date'].unique()
+
+            for date in dates:
+                day_data = df[df['record_date'] == date]
+
+                # 初始化24小时的日前、实时、价差数据
+                price_da_row = [np.nan] * 24
+                price_rt_row = [np.nan] * 24
+                price_diff_row = [np.nan] * 24
+
+                for _, row in day_data.iterrows():
+                    hour = int(row['hour'])
+                    if 0 <= hour < 24:
+                        price_da_row[hour] = row['price_da']
+                        price_rt_row[hour] = row['price_rt']
+                        price_diff_row[hour] = row['price_diff']
+
+                # 添加日前行
+                export_rows.append([date, '日前节点电价'] + price_da_row)
+                # 添加实时行
+                export_rows.append(['', '实时节点电价'] + price_rt_row)
+                # 添加价差行
+                export_rows.append(['', '价差'] + price_diff_row)
+                # 添加空行
+                export_rows.append([''] * 26)
+
+            # 创建DataFrame
+            header_cols = ['日期', '类型'] + hour_cols
+            export_df = pd.DataFrame(export_rows, columns=header_cols)
+
+            # 生成Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                export_df.to_excel(writer, index=False, sheet_name='日前实时价差')
+
+                # 获取工作表
+                worksheet = writer.sheets['日前实时价差']
+
+                # 设置列宽
+                worksheet.column_dimensions['A'].width = 12
+                worksheet.column_dimensions['B'].width = 12
+                for h in range(24):
+                    col_letter = chr(67 + h)  # C=67
+                    worksheet.column_dimensions[col_letter].width = 8
+
+            output.seek(0)
+
+            from fastapi.responses import StreamingResponse
+            import urllib.parse
+            filename = f"日前实时价差数据_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            encoded_filename = urllib.parse.quote(filename)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+            )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})

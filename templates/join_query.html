@@ -529,6 +529,9 @@
            <button type="button" class="btn btn-success btn-sm shadow-sm hidden px-3" id="export-btn" onclick="exportDailyAveragesData()">
              <i class="bi bi-file-earmark-excel"></i> 导出Excel
            </button>
+           <button type="button" class="btn btn-info btn-sm shadow-sm hidden px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时、价差数据">
+             <i class="bi bi-database-export"></i> 导出日前-实时-价差数据
+           </button>
         </div>
         <div class="vr opacity-25"></div>
         <div id="selected-count-info" class="text-secondary small fw-bold">已选择 0 个日期</div>
@@ -1032,6 +1035,7 @@
         toggleLoading(false);
         showAlert(err.message, "error");
         document.getElementById("export-btn").classList.add("hidden");
+        document.getElementById("export-cache-btn").classList.add("hidden");
       });
     }
 
@@ -1044,6 +1048,7 @@
         document.getElementById("chart-wrapper").classList.add("hidden");
         document.getElementById("result-section").classList.add("hidden");
         document.getElementById("export-btn").classList.add("hidden");
+        document.getElementById("export-cache-btn").classList.add("hidden");
         document.getElementById("empty-state").classList.remove("hidden");
         return;
       }
@@ -1055,6 +1060,7 @@
       document.getElementById("chart-wrapper").classList.remove("hidden");
       document.getElementById("result-section").classList.remove("hidden");
       document.getElementById("export-btn").classList.remove("hidden");
+      document.getElementById("export-cache-btn").classList.remove("hidden");
       document.getElementById("empty-state").classList.add("hidden"); // Ensure empty state is hidden
       
       // 渲染
@@ -1363,6 +1369,48 @@
             const a = document.createElement("a");
             a.href = url;
             a.download = `多天均值数据_${new Date().getTime()}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            showAlert("导出成功", "success");
+         })
+         .catch(err => showAlert(err.message, "error"))
+         .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+         });
+    }
+
+    // 导出缓存数据（日前、实时、价差）
+    function exportCacheData() {
+       const btn = document.getElementById("export-cache-btn");
+       const originalText = btn.innerHTML;
+       btn.disabled = true;
+       btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 导出中...';
+
+       // 获取选中的日期
+       const dates = Array.from(manuallySelectedDates);
+       if (dates.length === 0) {
+         showAlert("请先选择日期", "warning");
+         btn.disabled = false;
+         btn.innerHTML = originalText;
+         return;
+       }
+
+       const formData = new FormData();
+       formData.append("dates", JSON.stringify(dates));
+
+       fetch("/api/daily-hourly-cache/export", { method: "POST", body: formData })
+         .then(res => {
+            if (res.ok) return res.blob();
+            throw new Error("导出失败");
+         })
+         .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `日前实时价差数据_${new Date().getTime()}.xlsx`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
