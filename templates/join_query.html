@@ -529,7 +529,7 @@
            <button type="button" class="btn btn-success btn-sm shadow-sm hidden px-3" id="export-btn" onclick="exportDailyAveragesData()">
              <i class="bi bi-file-earmark-excel"></i> 导出Excel
            </button>
-           <button type="button" class="btn btn-info btn-sm shadow-sm hidden px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时、价差数据">
+           <button type="button" class="btn btn-info btn-sm shadow-sm px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时、价差数据">
              <i class="bi bi-database-export"></i> 导出日前-实时-价差数据
            </button>
         </div>
@@ -1035,7 +1035,6 @@
         toggleLoading(false);
         showAlert(err.message, "error");
         document.getElementById("export-btn").classList.add("hidden");
-        document.getElementById("export-cache-btn").classList.add("hidden");
       });
     }
 
@@ -1048,7 +1047,6 @@
         document.getElementById("chart-wrapper").classList.add("hidden");
         document.getElementById("result-section").classList.add("hidden");
         document.getElementById("export-btn").classList.add("hidden");
-        document.getElementById("export-cache-btn").classList.add("hidden");
         document.getElementById("empty-state").classList.remove("hidden");
         return;
       }
@@ -1060,7 +1058,6 @@
       document.getElementById("chart-wrapper").classList.remove("hidden");
       document.getElementById("result-section").classList.remove("hidden");
       document.getElementById("export-btn").classList.remove("hidden");
-      document.getElementById("export-cache-btn").classList.remove("hidden");
       document.getElementById("empty-state").classList.add("hidden"); // Ensure empty state is hidden
       
       // 渲染
