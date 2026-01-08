@@ -945,6 +945,17 @@
             }
 
             const dates = Array.from(selectedDates);
+
+            // 按排名倒序排列：排名#1的最后，排名#5的最前
+            const sortedDates = [];
+            // matchedResults 已经是按排名（1-5）排序的
+            for (let i = matchedResults.length - 1; i >= 0; i--) {
+                const item = matchedResults[i];
+                if (selectedDates.has(item.date)) {
+                    sortedDates.push(item.date);
+                }
+            }
+
             const btn = document.getElementById('btn-export-diff');
             const originalContent = btn.innerHTML;
             btn.disabled = true;
@@ -954,7 +965,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    dates: dates,
+                    dates: sortedDates,
                     sort_by: 'avg_diff',
                     sort_order: 'desc'
                 })

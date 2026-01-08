@@ -1331,12 +1331,12 @@ async def query_daily_averages(
 ):
     """
     查询多天的均值数据
-    
+
     参数:
     - dates: 日期列表，JSON格式
     - data_type_keyword: 数据类型关键字
     - station_name: 站点名称（可选）
-    
+
     返回:
     - 查询结果
     """
@@ -1345,13 +1345,87 @@ async def query_daily_averages(
         date_list = json.loads(dates)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
-    
-    result = importer.query_daily_averages(date_list, data_type_keyword, station_name)
-    
-    if result["total"] == 0:
-        return {"total": 0, "data": []}
-    
-    return result
+
+    # 如果有具体站点名称，查询数据库
+    if station_name and station_name.strip():
+        result = importer.query_daily_averages(date_list, data_type_keyword, station_name)
+        if result["total"] == 0:
+            return {"total": 0, "data": []}
+        return result
+
+    # 没有指定站点名称时，从缓存表查询
+    try:
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+
+        if table_name not in tables:
+            return JSONResponse(status_code=404, content={
+                "error": "缓存表不存在，请先生成缓存数据",
+                "table": table_name
+            })
+
+        # 根据 data_type_keyword 确定查询哪个字段
+        if "日前" in data_type_keyword:
+            price_field = "price_da"
+        elif "实时" in data_type_keyword:
+            price_field = "price_rt"
+        else:
+            # 默认查日前
+            price_field = "price_da"
+
+        with db_manager.engine.connect() as conn:
+            # 构建查询 SQL
+            placeholders = ", ".join([f":d{i}" for i in range(len(date_list))])
+            params = {f"d{i}": d for i, d in enumerate(date_list)}
+
+            # 查询缓存表
+            sql = text(f"""
+                SELECT record_date, hour, {price_field} as value
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                  AND {price_field} IS NOT NULL
+                ORDER BY record_date DESC, hour
+            """)
+
+            result = conn.execute(sql, params).fetchall()
+
+            if not result:
+                return {"total": 0, "data": [], "message": "未找到符合条件的数据"}
+
+            # 转换为与原接口兼容的格式
+            data = []
+            for row in result:
+                d = dict(row._mapping)
+                hour = d['hour']
+                # 将小时数格式化为 "HH:00" 字符串
+                record_time_str = f"{hour:02d}:00"
+
+                # 格式化为与原接口一致
+                formatted_row = {
+                    "record_date": str(d['record_date']),
+                    "record_time": record_time_str,  # "HH:00" 格式
+                    "value": d['value'],
+                    "channel_name": "均值",  # 缓存表中的是均值数据
+                    "type": data_type_keyword,
+                    "sheet_name": data_type_keyword
+                }
+                data.append(formatted_row)
+
+            return {
+                "total": len(data),
+                "data": data,
+                "source": "cache"
+            }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # 如果缓存表查询失败，回退到原有方法
+        print(f"缓存表查询失败，回退到原有方法: {e}")
+        result = importer.query_daily_averages(date_list, data_type_keyword, station_name)
+        if result["total"] == 0:
+            return {"total": 0, "data": []}
+        return result
 
 @app.get("/daily-averages/export")
 async def export_daily_averages(
@@ -1768,12 +1842,12 @@ async def query_price_difference(
 ):
     """
     查询价差数据（日前节点电价 - 实时节点电价）
-    
+
     参数:
     - dates: 日期列表，JSON格式
     - region: 地区前缀，如"云南_"，默认为空
     - station_name: 站点名称（可选）
-    
+
     返回:
     - 价差查询结果
     """
@@ -1782,10 +1856,80 @@ async def query_price_difference(
         date_list = json.loads(dates)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
-    
-    result = importer.query_price_difference(date_list, region, station_name)
-    
-    return result
+
+    # 如果有具体站点名称，查询数据库
+    if station_name and station_name.strip():
+        result = importer.query_price_difference(date_list, region, station_name)
+        return result
+
+    # 没有指定站点名称时，从缓存表查询
+    try:
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+
+        if table_name not in tables:
+            return JSONResponse(status_code=404, content={
+                "error": "缓存表不存在，请先生成缓存数据",
+                "table": table_name
+            })
+
+        with db_manager.engine.connect() as conn:
+            # 构建查询 SQL
+            placeholders = ", ".join([f":d{i}" for i in range(len(date_list))])
+            params = {f"d{i}": d for i, d in enumerate(date_list)}
+
+            # 查询缓存表中的价差数据
+            sql = text(f"""
+                SELECT record_date, hour, price_diff as value, price_da, price_rt
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                  AND price_diff IS NOT NULL
+                ORDER BY record_date DESC, hour
+            """)
+
+            result = conn.execute(sql, params).fetchall()
+
+            if not result:
+                return {
+                    "total": 0,
+                    "data": [],
+                    "message": "未找到符合条件的价差数据"
+                }
+
+            # 转换为与原接口兼容的格式
+            data = []
+            for row in result:
+                d = dict(row._mapping)
+                hour = d['hour']
+                # 将小时数格式化为 "HH:00" 字符串
+                record_time_str = f"{hour:02d}:00"
+
+                # 格式化为与原接口一致
+                formatted_row = {
+                    "record_date": str(d['record_date']),
+                    "record_time": record_time_str,  # "HH:00" 格式
+                    "value": d['value'],  # 价差
+                    "price_da": d.get('price_da'),
+                    "price_rt": d.get('price_rt'),
+                    "channel_name": "均值",  # 缓存表中的是均值数据
+                    "type": "价差",
+                    "sheet_name": "价差"
+                }
+                data.append(formatted_row)
+
+            return {
+                "total": len(data),
+                "data": data,
+                "source": "cache"
+            }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # 如果缓存表查询失败，回退到原有方法
+        print(f"缓存表查询失败，回退到原有方法: {e}")
+        result = importer.query_price_difference(date_list, region, station_name)
+        return result
 
 @app.post("/price-difference/export-from-result")
 async def export_price_difference_from_result(
@@ -2698,12 +2842,15 @@ async def export_price_diff_from_cache(request: PriceDiffCacheRequest):
             placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
             params = {f"d{i}": d for i, d in enumerate(valid_dates)}
 
+            # 构建 FIELD 子句来保持日期顺序（按排名倒序传入的顺序）
+            field_order = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+
             sql = text(f"""
                 SELECT record_date, hour, price_diff
                 FROM {table_name}
                 WHERE record_date IN ({placeholders})
                   AND price_diff IS NOT NULL
-                ORDER BY record_date, hour
+                ORDER BY FIELD(record_date, {field_order}), hour
             """)
 
             result = conn.execute(sql, params).fetchall()
@@ -2748,6 +2895,12 @@ async def export_price_diff_from_cache(request: PriceDiffCacheRequest):
                 pivot_df = pivot_df.reindex(columns=range(24), fill_value=np.nan)
                 pivot_df.columns = [f'{int(h):02d}:00' for h in pivot_df.columns]
                 pivot_df = pivot_df.reset_index()
+
+                # 按传入的日期顺序（排名倒序）重新排序
+                # valid_dates 已经是按排名倒序排列的
+                pivot_df['sort_key'] = pivot_df['record_date'].apply(lambda x: valid_dates.index(x) if x in valid_dates else len(valid_dates))
+                pivot_df = pivot_df.sort_values('sort_key').drop('sort_key', axis=1)
+                pivot_df = pivot_df.reset_index(drop=True)
 
                 # 添加节点名称和单位列在最前面
                 pivot_df.insert(0, '节点名称', '价差')
