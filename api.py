@@ -14,7 +14,9 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 import uvicorn
 import datetime
 from pred_reader import PowerDataImporter
@@ -3205,6 +3207,276 @@ async def export_daily_hourly_from_cache(request: Request):
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
             )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/daily-averages/export-dr-compare", summary="导出日前-实时-均值对比表（带颜色样式）")
+async def export_dr_compare(request: Request):
+    """
+    导出日前-实时-均值对比表
+
+    表格格式：
+    - 行：时刻（0:00 - 23:00）
+    - 列：每个日期包含日前、实时两个子列
+    - 颜色：实时>日前红色，实时<日前绿色
+    - 背景色：重点时段(18:00-20:00)黄色，算数均价行黄色
+    """
+    try:
+        def weekday_cn(d: datetime.date) -> str:
+            mapping = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            return mapping[d.weekday()]
+
+        # 从 FormData 获取 dates
+        form_data = await request.form()
+        dates_str = form_data.get("dates")
+        if not dates_str:
+            return JSONResponse(status_code=400, content={"error": "缺少 dates 参数"})
+
+        try:
+            date_list = json.loads(dates_str)
+        except:
+            return JSONResponse(status_code=400, content={"error": "dates 格式错误"})
+
+        # 验证日期格式
+        valid_dates = []
+        for d in date_list:
+            try:
+                pd.to_datetime(d)
+                valid_dates.append(d)
+            except:
+                pass
+
+        if not valid_dates:
+            return JSONResponse(status_code=400, content={"error": "日期格式错误"})
+
+        # 按日期升序，保证导出列顺序稳定
+        valid_dates = sorted(valid_dates, key=lambda x: pd.to_datetime(x))
+
+        # 直接从缓存表查询
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+
+        if table_name not in tables:
+            df = pd.DataFrame()
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            output.seek(0)
+
+            from fastapi.responses import StreamingResponse
+            import urllib.parse
+            filename = f"日前实时均值对比_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            encoded_filename = urllib.parse.quote(filename)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+            )
+
+        with db_manager.engine.connect() as conn:
+            placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+            params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+            # 查询日前、实时数据
+            sql = text(f"""
+                SELECT record_date, hour, price_da, price_rt
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                ORDER BY record_date, hour
+            """)
+
+            result = conn.execute(sql, params).fetchall()
+
+            if not result:
+                df = pd.DataFrame()
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False)
+                output.seek(0)
+
+                from fastapi.responses import StreamingResponse
+                import urllib.parse
+                filename = f"日前实时均值对比_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                encoded_filename = urllib.parse.quote(filename)
+                return StreamingResponse(
+                    iter([output.getvalue()]),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+                )
+
+            # 构建映射：data_map[date][hour] = (da, rt)
+            data_map = {}
+            for record_date, hour, price_da, price_rt in result:
+                date_key = str(record_date)
+                try:
+                    hour_int = int(hour)
+                except (TypeError, ValueError):
+                    continue
+                if hour_int < 0 or hour_int > 23:
+                    continue
+                if date_key not in data_map:
+                    data_map[date_key] = {}
+                da_val = None if pd.isna(price_da) else float(price_da)
+                rt_val = None if pd.isna(price_rt) else float(price_rt)
+                data_map[date_key][hour_int] = (da_val, rt_val)
+
+            # 标题：同月则用“YYYY年M月价格合计”，否则用“价格合计”
+            parsed_dates = [pd.to_datetime(d).date() for d in valid_dates]
+            year_months = {(d.year, d.month) for d in parsed_dates}
+            if len(year_months) == 1:
+                only_year, only_month = next(iter(year_months))
+                title_text = f"{only_year}年{only_month}月价格合计"
+            else:
+                title_text = "价格合计"
+
+        # 生成Excel并应用样式
+        output = BytesIO()
+
+        # 定义颜色样式（深色字体 + 浅色底）
+        red_font = Font(color="9C0006")
+        green_font = Font(color="006100")
+        red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")  # 算数均价行背景
+        header_font = Font(bold=True)
+        title_font = Font(bold=True, size=16)
+        center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_side = Side(style="thin", color="D0D0D0")
+        thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title_text[:31]
+
+        total_cols = 1 + len(valid_dates) * 2
+
+        # 第一行：标题（合并单元格）
+        title_cell = ws.cell(row=1, column=1, value=title_text)
+        title_cell.font = title_font
+        title_cell.alignment = center
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+
+        # 第二、三行：多级表头（日期 + 子列）
+        ws.cell(row=2, column=1, value="时刻").font = header_font
+        ws.cell(row=2, column=1).alignment = center
+        ws.merge_cells(start_row=2, start_column=1, end_row=3, end_column=1)
+
+        for i, date_str in enumerate(valid_dates):
+            date_obj = pd.to_datetime(date_str).date()
+            header_text = f"{date_obj.month}月{date_obj.day}日({weekday_cn(date_obj)})"
+            start_col = 2 + i * 2
+
+            ws.cell(row=2, column=start_col, value=header_text).font = header_font
+            ws.cell(row=2, column=start_col).alignment = center
+            ws.merge_cells(start_row=2, start_column=start_col, end_row=2, end_column=start_col + 1)
+
+            ws.cell(row=3, column=start_col, value="日前").font = header_font
+            ws.cell(row=3, column=start_col).alignment = center
+            ws.cell(row=3, column=start_col + 1, value="实时").font = header_font
+            ws.cell(row=3, column=start_col + 1).alignment = center
+
+        # 数据：第4行开始，0:00 - 23:00 共 24 行
+        data_start_row = 4
+        # 逐列统计算数均价（按列独立、24 时刻简单平均）
+        col_values: dict[tuple[str, str], list[float]] = {}
+        for date_str in valid_dates:
+            col_values[(date_str, "da")] = []
+            col_values[(date_str, "rt")] = []
+
+        for hour in range(24):
+            row_idx = data_start_row + hour
+            ws.cell(row=row_idx, column=1, value=f"{hour}:00").alignment = center
+
+            for i, date_str in enumerate(valid_dates):
+                start_col = 2 + i * 2
+                da, rt = data_map.get(date_str, {}).get(hour, (None, None))
+
+                da_cell = ws.cell(row=row_idx, column=start_col, value=da)
+                rt_cell = ws.cell(row=row_idx, column=start_col + 1, value=rt)
+                da_cell.number_format = "0.00"
+                rt_cell.number_format = "0.00"
+
+                if da is not None:
+                    col_values[(date_str, "da")].append(da)
+                    da_cell.font = green_font
+                    da_cell.fill = green_fill
+                if rt is not None:
+                    col_values[(date_str, "rt")].append(rt)
+                    rt_cell.font = green_font
+                    rt_cell.fill = green_fill
+
+                # 颜色语义：对同一时刻的一组“日前/实时”进行对比
+                # - 较大：红色字体 + 红色底
+                # - 较小：绿色字体 + 绿色底
+                # - 无对比（相等）：默认绿色
+                if da is not None and rt is not None:
+                    if da > rt:
+                        da_cell.font = red_font
+                        da_cell.fill = red_fill
+                    elif rt > da:
+                        rt_cell.font = red_font
+                        rt_cell.fill = red_fill
+
+        # 最后一行：算数均价（整行黄色背景）
+        avg_row_idx = data_start_row + 24
+        ws.cell(row=avg_row_idx, column=1, value="算数均价").alignment = center
+        for i, date_str in enumerate(valid_dates):
+            start_col = 2 + i * 2
+            da_vals = col_values[(date_str, "da")]
+            rt_vals = col_values[(date_str, "rt")]
+            da_mean = float(np.mean(da_vals)) if da_vals else None
+            rt_mean = float(np.mean(rt_vals)) if rt_vals else None
+
+            da_cell = ws.cell(row=avg_row_idx, column=start_col, value=da_mean)
+            rt_cell = ws.cell(row=avg_row_idx, column=start_col + 1, value=rt_mean)
+            da_cell.number_format = "0.00"
+            rt_cell.number_format = "0.00"
+
+            # 算数均价行：背景固定黄色，字体仍按对比红/绿（无对比默认绿）
+            if da_mean is not None:
+                da_cell.font = green_font
+            if rt_mean is not None:
+                rt_cell.font = green_font
+            if da_mean is not None and rt_mean is not None:
+                if da_mean > rt_mean:
+                    da_cell.font = red_font
+                elif rt_mean > da_mean:
+                    rt_cell.font = red_font
+
+        for col in range(1, total_cols + 1):
+            ws.cell(row=avg_row_idx, column=col).fill = yellow_fill
+
+        # 列宽/边框/对齐
+        ws.column_dimensions["A"].width = 10
+        for col in range(2, total_cols + 1):
+            ws.column_dimensions[get_column_letter(col)].width = 12
+
+        for row in range(2, avg_row_idx + 1):
+            for col in range(1, total_cols + 1):
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+                cell.alignment = center
+
+        # 冻结窗格：保留标题/表头与时刻列
+        ws.freeze_panes = ws["B4"]
+
+        wb.save(output)
+
+        output.seek(0)
+
+        from fastapi.responses import StreamingResponse
+        import urllib.parse
+        filename = f"{title_text}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        encoded_filename = urllib.parse.quote(filename)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
 
     except Exception as e:
         import traceback

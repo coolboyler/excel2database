@@ -529,8 +529,8 @@
            <button type="button" class="btn btn-success btn-sm shadow-sm hidden px-3" id="export-btn" onclick="exportDailyAveragesData()">
              <i class="bi bi-file-earmark-excel"></i> 导出Excel
            </button>
-           <button type="button" class="btn btn-info btn-sm shadow-sm px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时、价差数据">
-             <i class="bi bi-database-export"></i> 导出日前-实时-价差数据
+           <button type="button" class="btn btn-info btn-sm shadow-sm px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时对比数据（带颜色样式）">
+             <i class="bi bi-database-export"></i> 导出日前-实时对比
            </button>
         </div>
         <div class="vr opacity-25"></div>
@@ -1379,7 +1379,7 @@
          });
     }
 
-    // 导出缓存数据（日前、实时、价差）
+    // 导出缓存数据（日前、实时、均值对比）
     function exportCacheData() {
        const btn = document.getElementById("export-cache-btn");
        const originalText = btn.innerHTML;
@@ -1398,7 +1398,8 @@
        const formData = new FormData();
        formData.append("dates", JSON.stringify(dates));
 
-       fetch("/api/daily-hourly-cache/export", { method: "POST", body: formData })
+       // 调用新的日前实时均值对比导出接口
+       fetch("/api/daily-averages/export-dr-compare", { method: "POST", body: formData })
          .then(res => {
             if (res.ok) return res.blob();
             throw new Error("导出失败");
@@ -1407,7 +1408,7 @@
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = `日前实时价差数据_${new Date().getTime()}.xlsx`;
+            a.download = `日前实时对比_${new Date().getTime()}.xlsx`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
