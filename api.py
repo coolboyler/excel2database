@@ -11,6 +11,7 @@ import os
 import glob
 import shutil
 from typing import List, Optional
+import warnings
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -22,10 +23,20 @@ import datetime
 from pred_reader import PowerDataImporter
 from database import DatabaseManager
 
+# Suppress noisy LibreSSL warning when urllib3 v2 is installed.
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+)
+
+# 初始化导入器和数据库管理器
+importer = PowerDataImporter()
+db_manager = DatabaseManager()
+
 app = FastAPI(
     title="Excel2SQL API",
     description="API for importing Excel data to SQL database",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # 挂载静态文件
@@ -33,10 +44,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 设置模板
 templates = Jinja2Templates(directory="templates")
-
-# 初始化导入器和数据库管理器
-importer = PowerDataImporter()
-db_manager = DatabaseManager()
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -3482,3 +3489,4 @@ async def export_dr_compare(request: Request):
         import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
+

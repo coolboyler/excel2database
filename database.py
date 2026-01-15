@@ -1,11 +1,26 @@
 # database.py
 from sqlalchemy import create_engine, text
+from datetime import datetime, date
 from config import DB_CONFIG
 
 class DatabaseManager:
     def __init__(self):
         self.engine = self.create_engine()
-    
+
+    def _normalize_datetime(self, value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time())
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                return None
+        return None
+
     def create_engine(self):
         """创建数据库引擎"""
         connection_string = (

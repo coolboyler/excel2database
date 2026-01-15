@@ -106,7 +106,9 @@ class PowerDataImporter:
             "电厂名称": "power_plant_name", "机组名称": "generator_name",
             "最小技术出力": "min_technical_output", "最小技术出力(MW)": "min_technical_output",
             "额定出力": "rated_output", "额定出力(MW)": "rated_output",
-            "日期": "maintenance_date", "时间": "record_time", "类型": "type",
+            "日期": "maintenance_date", "时间": "record_time",
+            # 避免与系统字段 `type` 冲突：Excel 表头“类型”映射为其它列名
+            "类型": "category",
             "备注": "remarks", "序号": "seq_no", "元件名称": "component_name",
             "设备名称": "device_name", "电压等级": "voltage_level", "电压等级(Kv)": "voltage_level",
             "停电范围": "outage_scope", "停电时间": "outage_time", "送电时间": "restore_time",
@@ -141,14 +143,46 @@ class PowerDataImporter:
             "新能源总实际": "actual_total_new_energy", "水电含抽蓄实际": "actual_hydro_power_incl_pumped",
             "统调负荷偏差": "dispatch_load_deviation",
         }
-        
-        def translate(name):
+
+        reserved_cols = {"id", "record_date", "sheet_name", "type", "created_at"}
+
+        def _sanitize_identifier(name):
+            # SQLAlchemy 的命名参数需要“安全”的 key（不能有 `:` 等字符），同时要避免列名过长。
+            s = str(name).strip().lower()
+            s = re.sub(r"[^0-9a-zA-Z_]+", "_", s)
+            s = re.sub(r"_+", "_", s).strip("_")
+            if not s:
+                s = "col"
+            if s[0].isdigit():
+                s = f"c_{s}"
+            # MySQL 列名最大 64 字符
+            return s[:64]
+
+        def translate(name, used=None):
             clean = str(name).strip()
-            if clean in translation_map: return translation_map[clean]
-            for k, v in translation_map.items():
-                if k in clean: return v
-            # 简单的拼音/英文处理 fallback
-            return clean.replace("(", "_").replace(")", "_").replace(" ", "_").replace("（", "_").replace("）", "_")
+            mapped = translation_map.get(clean)
+            if mapped is None:
+                for k, v in translation_map.items():
+                    if k in clean:
+                        mapped = v
+                        break
+            if mapped is None:
+                mapped = clean
+
+            safe = _sanitize_identifier(mapped)
+            if safe in reserved_cols:
+                safe = f"col_{safe}"
+
+            if used is not None:
+                base = safe
+                n = 1
+                while safe in used or safe in reserved_cols:
+                    suffix = f"_{n}"
+                    safe = (base[: (64 - len(suffix))] + suffix) if len(base) + len(suffix) > 64 else base + suffix
+                    n += 1
+                used.add(safe)
+
+            return safe
 
         # 按 sheet 分组
         sheet_groups = {}
@@ -165,7 +199,7 @@ class PowerDataImporter:
                 for sheet_name, sheet_records in sheet_groups.items():
                     # 确定表名
                     base_sheet = re.sub(r'\d{4}[-/]?\d{1,2}[-/]?\d{1,2}', '', sheet_name).replace('()', '').strip()
-                    table_suffix = translate(base_sheet)
+                    table_suffix = translate(base_sheet) or "unknown"
                     table_name = f"imformation_pred_{table_suffix}".lower()
                     
                     # 确定所有列
@@ -177,25 +211,31 @@ class PowerDataImporter:
                     if 'record_date' in all_keys: all_keys.remove('record_date')
                     if 'sheet_name' in all_keys: all_keys.remove('sheet_name')
                     if 'type' in all_keys: all_keys.remove('type')
+                    if 'data_type' in all_keys: all_keys.remove('data_type')
                     if 'created_at' in all_keys: all_keys.remove('created_at')
                     
                     # 构建列定义
                     col_defs = []
                     col_map = {} # 原始列 -> 安全列
+                    used_cols = set()
+                    dynamic_cols = []
                     
                     for k in sorted(list(all_keys)):
-                        safe_col = translate(k)
+                        safe_col = translate(k, used=used_cols)
                         col_map[k] = safe_col
-                        col_defs.append(f"`{safe_col}` text COMMENT '{k}'")
+                        comment = str(k).replace("'", "''")
+                        col_defs.append(f"`{safe_col}` text COMMENT '{comment}'")
+                        dynamic_cols.append(safe_col)
                         
                     # 创建表 SQL
+                    dynamic_section = (",".join(col_defs) + ",") if col_defs else ""
                     create_sql = f"""
                     CREATE TABLE IF NOT EXISTS `{table_name}` (
                         `id` bigint(20) NOT NULL AUTO_INCREMENT,
                         `record_date` date DEFAULT NULL,
                         `sheet_name` varchar(255) DEFAULT NULL,
                         `type` varchar(100) DEFAULT NULL,
-                        {','.join(col_defs)},
+                        {dynamic_section}
                         `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (`id`),
                         KEY `idx_record_date` (`record_date`)
@@ -208,20 +248,20 @@ class PowerDataImporter:
                     
                     # 准备插入数据
                     insert_records = []
+                    insert_cols = ['record_date', 'sheet_name', 'type'] + dynamic_cols
                     for r in sheet_records:
-                        new_r = {
-                            'record_date': r['record_date'],
-                            'sheet_name': r['sheet_name'],
-                            'type': r.get('type', r.get('data_type')),
-                        }
-                        for k, v in r.items():
-                            if k in col_map:
-                                new_r[col_map[k]] = v
+                        new_r = {c: None for c in insert_cols}
+                        new_r['record_date'] = r.get('record_date', data_date)
+                        new_r['sheet_name'] = r.get('sheet_name', sheet_name)
+                        new_r['type'] = r.get('type') or r.get('data_type')
+                        for orig_key, safe_key in col_map.items():
+                            if orig_key in r:
+                                new_r[safe_key] = r.get(orig_key)
                         insert_records.append(new_r)
                         
                     # 插入
                     if insert_records:
-                        keys = list(insert_records[0].keys())
+                        keys = insert_cols
                         values_clause = ", ".join([f":{k}" for k in keys])
                         columns_clause = ", ".join([f"`{k}`" for k in keys])
                         
@@ -334,8 +374,24 @@ class PowerDataImporter:
             print(f"❌ records 类型错误: {type(records)}，应为 list[dict]")
             return False, None, 0, []
 
-        # 🧩 2. 过滤无效记录
+        def _coerce_numeric(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return None
+            if isinstance(v, (int, float, np.number)) and not isinstance(v, bool):
+                return float(v)
+            if isinstance(v, str):
+                s = v.strip().replace(",", "")
+                if not s:
+                    return None
+                try:
+                    return float(s)
+                except Exception:
+                    return None
+            return None
+
+        # 🧩 2. 过滤无效记录（并保证 value 可写入 DECIMAL）
         valid_records = []
+        dropped_non_numeric = 0
         for i, r in enumerate(records):
             if not isinstance(r, dict):
                 continue
@@ -345,11 +401,18 @@ class PowerDataImporter:
             # 转 record_date
             if isinstance(r["record_date"], str):
                 r["record_date"] = pd.to_datetime(r["record_date"]).date()
+            coerced = _coerce_numeric(r.get("value"))
+            if coerced is None:
+                dropped_non_numeric += 1
+                continue
+            r["value"] = coerced
             valid_records.append(r)
 
         if not valid_records:
             print("❌ 没有可保存的有效记录")
             return False, None, 0, []
+        if dropped_non_numeric:
+            print(f"⚠️ 已跳过 {dropped_non_numeric} 条非数值 value 记录（避免写入 power_data 失败）")
 
         # --- 生成按天表名 ---
         table_name = f"power_data_{data_date.strftime('%Y%m%d')}"
@@ -3148,54 +3211,92 @@ class PowerDataImporter:
 
         sheet_names = list(sheet_dict.keys())
 
-        # 动态处理所有 Sheet，根据内容模式分发
-        for i, sheet_name in enumerate(sheet_names):
-            # 基础Sheet名 (去除日期)，用于匹配
-            base_sheet_name = re.sub(r'\(\d{4}[-/]?\d{1,2}[-/]?\d{1,2}\)', '', str(sheet_name))
-            base_sheet_name = re.sub(r'\d{4}[-/]?\d{1,2}[-/]?\d{1,2}', '', base_sheet_name).strip()
-            
-            # 使用模糊匹配分发到具体的处理函数
-            # 这里为了保持原有逻辑的兼容性，我们仍然按顺序调用，或者按名称分发
-            # 但最好的方式是像 AutoImporter 那样，统一收集 records 然后在 save 方法里分发
-            # 不过这里我们已经有了现成的 _process_sheet_N 方法，它们返回 records 列表
-            
-            # 优化：不依赖硬编码的顺序，而是尝试根据 Sheet 名称特征调用对应的处理逻辑
-            # 但目前的实现是 _process__sheet_1 对应第一个 sheet。
-            # 只要 Excel 文件的 Sheet 顺序不变，这没问题。
-            # 如果顺序变了，我们需要根据 sheet_name 来判断。
-            
-            # 既然是自动生成的代码，我们假设用户重新生成会覆盖。
-            # 但用户现在问的是 "检查import_imformation_pred里的代码...看能否符合直接导入我所需文件"
-            # 现有的代码是按索引 0, 1, 2... 处理的。如果用户上传的文件 sheet 顺序一致，那就没问题。
-            
-            # 继续使用索引处理
+        # 通过处理函数 docstring 反向解析 sheet 名称，避免依赖 Excel 的 sheet 顺序。
+        handlers_by_sheet = {}
+        for attr in dir(self):
+            if not attr.startswith("_process_imformation_pred_sheet_"):
+                continue
+            func = getattr(self, attr, None)
+            if not callable(func):
+                continue
+            doc = (getattr(func, "__doc__", "") or "").strip()
+            m = re.search(r"自动生成的处理函数:\s*(.*?)\(", doc)
+            if not m:
+                continue
+            handlers_by_sheet[m.group(1).strip()] = func
+
+        def resolve_handler(base_sheet_name, i):
+            # 1) 精确匹配
+            if base_sheet_name in handlers_by_sheet:
+                return handlers_by_sheet[base_sheet_name], f"doc:{base_sheet_name}"
+            # 2) 模糊匹配：取最长匹配的 key
+            best_func, best_key = None, None
+            for k, f in handlers_by_sheet.items():
+                if k and (k in base_sheet_name or base_sheet_name in k):
+                    if best_key is None or len(k) > len(best_key):
+                        best_key, best_func = k, f
+            if best_func:
+                return best_func, f"fuzzy:{best_key}"
+            # 3) 回退：仍然按索引调用（兼容旧生成逻辑）
             func_name = f"_process_imformation_pred_sheet_{i+1}"
             if hasattr(self, func_name):
-                func = getattr(self, func_name)
-                try:
-                    records = func(sheet_dict[sheet_name], data_date, sheet_name, data_type)
-                    
-                    # 智能分发逻辑
-                    if records:
-                        # 检查第一条记录的特征
-                        first_record = records[0]
-                        # 判定为时序数据的条件：有 record_time 且 value
-                        is_time_series = False
-                        if 'record_time' in first_record and 'value' in first_record:
-                            # 进一步检查 record_time 是否像时间
-                            rt = first_record.get('record_time')
-                            if rt and isinstance(rt, str) and ':' in rt:
-                                is_time_series = True
-                        
-                        if is_time_series:
-                            power_data_records.extend(records)
-                        else:
-                            custom_table_records.extend(records)
-                            
-                except Exception as e:
-                    print(f"⚠️ 处理 Sheet '{sheet_name}' (索引 {i+1}) 时出错: {e}")
-            else:
-                print(f"⚠️ 未找到处理 Sheet '{sheet_name}' (索引 {i+1}) 的函数 {func_name}")
+                return getattr(self, func_name), f"index:{i+1}"
+            return None, None
+
+        def _looks_like_time_series_numeric(records):
+            # 时序数据必须满足：有 record_time/value，且 value 大概率为数值（避免把文本型时序塞进 power_data.value DECIMAL）。
+            if not records:
+                return False
+            first = records[0]
+            if 'record_time' not in first or 'value' not in first:
+                return False
+            rt = first.get('record_time')
+            if not (rt and isinstance(rt, str) and ':' in rt):
+                return False
+
+            sample = records[:50]
+            ok = 0
+            total = 0
+            for r in sample:
+                v = r.get('value')
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    continue
+                total += 1
+                if isinstance(v, (int, float, np.number)) and not isinstance(v, bool):
+                    ok += 1
+                    continue
+                if isinstance(v, str):
+                    s = v.strip().replace(",", "")
+                    try:
+                        float(s)
+                        ok += 1
+                    except Exception:
+                        pass
+            # 如果采样里大部分非空 value 可转成数值，则按时序写入 power_data
+            return total > 0 and (ok / total) >= 0.9
+
+        # 动态处理所有 Sheet，根据内容模式分发
+        for i, sheet_name in enumerate(sheet_names):
+            base_sheet_name = re.sub(r'\(\d{4}[-/]?\d{1,2}[-/]?\d{1,2}\)', '', str(sheet_name))
+            base_sheet_name = re.sub(r'\d{4}[-/]?\d{1,2}[-/]?\d{1,2}', '', base_sheet_name).strip()
+
+            func, match_reason = resolve_handler(base_sheet_name, i)
+            if not func:
+                print(f"⚠️ 未找到处理 Sheet '{sheet_name}' (基础名 '{base_sheet_name}') 的函数")
+                continue
+
+            try:
+                records = func(sheet_dict[sheet_name], data_date, sheet_name, data_type)
+
+                # 智能分发逻辑
+                if records:
+                    if _looks_like_time_series_numeric(records):
+                        power_data_records.extend(records)
+                    else:
+                        custom_table_records.extend(records)
+
+            except Exception as e:
+                print(f"⚠️ 处理 Sheet '{sheet_name}' (匹配 {match_reason}) 时出错: {e}")
 
         if not power_data_records and not custom_table_records:
             print("❌ 没有生成任何有效记录")
@@ -3557,61 +3658,81 @@ class PowerDataImporter:
                 })
         return records
 
-    # def _process_imformation_pred_sheet_14(self, df, data_date, sheet_name, data_type):
-    #     """自动生成的处理函数: 必开必停机组（群）约束预测信息(2025-12-23) (模式: time_series_matrix)"""
-    #     records = []
-    #     df = df.dropna(how='all')
-    #     df.columns = [str(c).strip() for c in df.columns]
-        
-    #     # 识别时间列
-    #     time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
-        
-    #     for _, row in df.iterrows():
-    #         # 假设 '机组群名' 列是指标名称
-    #         channel_name = str(row.get('机组群名', 'Unknown')).strip()
-            
-    #         for t in time_cols:
-    #             val = row[t]
-    #             if pd.isna(val): continue
-                
-    #             records.append({
-    #                 'record_date': data_date,
-    #                 'record_time': t,
-    #                 'channel_name': channel_name,
-    #                 'value': val,
-    #                 'sheet_name': sheet_name,
-    #                 'type': data_type,
-    #                 'created_at': datetime.datetime.now()
-    #             })
-    #     return records
+    def _process_imformation_pred_sheet_14(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 必开必停机组（群）约束预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
 
-    # def _process_imformation_pred_sheet_15(self, df, data_date, sheet_name, data_type):
-    #     """自动生成的处理函数: 必开必停机组信息预测信息(2025-12-23) (模式: time_series_matrix)"""
-    #     records = []
-    #     df = df.dropna(how='all')
-    #     df.columns = [str(c).strip() for c in df.columns]
-        
-    #     # 识别时间列
-    #     time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
-        
-    #     for _, row in df.iterrows():
-    #         # 假设 '电厂名称' 列是指标名称
-    #         channel_name = str(row.get('电厂名称', 'Unknown')).strip() +str(row.get('机组名称', 'Unknown')).strip() +str(row.get('数据类型', 'Unknown')).strip()
-            
-    #         for t in time_cols:
-    #             val = row[t]
-    #             if pd.isna(val): continue
-                
-    #             records.append({
-    #                 'record_date': data_date,
-    #                 'record_time': t,
-    #                 'channel_name': channel_name,
-    #                 'value': val,
-    #                 'sheet_name': sheet_name,
-    #                 'type': data_type,
-    #                 'created_at': datetime.datetime.now()
-    #             })
-    #     return records
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        for _, row in df.iterrows():
+            channel_name = str(row.get('机组群名', 'Unknown')).strip()
+
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val):
+                    continue
+                # 该表常见为文本约束值（如“必开/必停/自由优化”），为写入 power_data.value(DECIMAL) 做数值化。
+                if isinstance(val, str):
+                    s = val.strip()
+                    if s in {"必开", "必须开机", "开机"}:
+                        val = 1
+                    elif s in {"必停", "必须停机", "停机"}:
+                        val = -1
+                    elif s in {"自由优化", "无约束", "正常"}:
+                        val = 0
+                    else:
+                        # 兜底：尝试把字符串数值化
+                        try:
+                            val = float(s.replace(",", ""))
+                        except Exception:
+                            # 保留原值（若仍为字符串，将被 import_imformation_pred 分流到自定义表）
+                            val = s
+
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
+
+    def _process_imformation_pred_sheet_15(self, df, data_date, sheet_name, data_type):
+        """自动生成的处理函数: 必开必停机组信息预测信息(2025-12-23) (模式: time_series_matrix)"""
+        records = []
+        df = df.dropna(how='all')
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # 识别时间列
+        time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        for _, row in df.iterrows():
+            channel_name = (
+                str(row.get('电厂名称', 'Unknown')).strip()
+                + str(row.get('机组名称', 'Unknown')).strip()
+                + str(row.get('数据类型', 'Unknown')).strip()
+            )
+
+            for t in time_cols:
+                val = row[t]
+                if pd.isna(val):
+                    continue
+
+                records.append({
+                    'record_date': data_date,
+                    'record_time': t,
+                    'channel_name': channel_name,
+                    'value': val,
+                    'sheet_name': sheet_name,
+                    'type': data_type,
+                    'created_at': datetime.datetime.now()
+                })
+        return records
 
     def _process_imformation_pred_sheet_16(self, df, data_date, sheet_name, data_type):
         """自动生成的处理函数: 开停机不满足最小约束时间机组信息(2025-12-23) (模式: time_series_matrix)"""
@@ -3653,14 +3774,18 @@ class PowerDataImporter:
         
         # 标准列表处理
         for _, row in df.iterrows():
-            # 解析日期
-            r_date = pd.to_datetime(row['日期']).date() if pd.notna(row['日期']) else data_date
-            channel = str(row['类型']).strip()
+            # 解析日期（部分文件可能没有“日期”列）
+            date_val = row.get('日期')
+            r_date = pd.to_datetime(date_val).date() if pd.notna(date_val) else data_date
+            channel_val = row.get('类型')
+            channel = str(channel_val).strip() if pd.notna(channel_val) else "Unknown"
             
             # 遍历可能的数值列
             value_cols = ['序号', '必开机组容量(MW)', '必停机组容量(MW)']
             for col in value_cols:
-                val = row[col]
+                if col not in df.columns:
+                    continue
+                val = row.get(col)
                 if pd.isna(val): continue
                 
                 # 如果有多列数值，将列名拼接到 channel_name
@@ -3776,4 +3901,3 @@ class PowerDataImporter:
                     'created_at': datetime.datetime.now()
                 })
         return records
-
