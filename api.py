@@ -2199,6 +2199,292 @@ async def similar_day_page(request: Request):
     """返回类比日匹配页面"""
     return templates.TemplateResponse("similar_day.html", {"request": request})
 
+@app.get("/multi_day_compare", response_class=HTMLResponse)
+async def multi_day_compare_page(request: Request):
+    """返回多日对比看板页面"""
+    return templates.TemplateResponse("multi_day_compare.html", {"request": request})
+
+@app.get("/api/cache-available-dates")
+async def cache_available_dates(
+    limit: int = Query(400, ge=1, le=2000),
+    require_load: bool = Query(False, description="仅返回负荷预测(load_forecast)有值的日期"),
+):
+    """返回缓存表 cache_daily_hourly 中可用的日期列表（倒序）"""
+    try:
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+        if table_name not in tables:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "message": "缓存表不存在，请先生成缓存数据", "table": table_name},
+            )
+
+        limit_int = max(1, min(int(limit), 2000))
+        with db_manager.engine.connect() as conn:
+            if require_load:
+                sql = text(
+                    f"""
+                    SELECT record_date
+                    FROM {table_name}
+                    GROUP BY record_date
+                    HAVING SUM(CASE WHEN load_forecast IS NOT NULL AND load_forecast <> 0 THEN 1 ELSE 0 END) > 0
+                    ORDER BY record_date DESC
+                    LIMIT {limit_int}
+                    """
+                )
+            else:
+                sql = text(
+                    f"""
+                    SELECT DISTINCT record_date
+                    FROM {table_name}
+                    ORDER BY record_date DESC
+                    LIMIT {limit_int}
+                    """
+                )
+            result = conn.execute(sql).fetchall()
+
+        dates = []
+        for row in result:
+            d = row[0]
+            if hasattr(d, "strftime"):
+                dates.append(d.strftime("%Y-%m-%d"))
+            else:
+                dates.append(str(d))
+
+        return {
+            "status": "success",
+            "dates": dates,
+            "total": len(dates),
+            "table": table_name,
+            "require_load": require_load,
+        }
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+
+class MultiDayCompareDatesRequest(BaseModel):
+    dates: list[str] = Field(..., description="日期列表(YYYY-MM-DD)，建议按倒序传入：目标日 + 往前N天")
+
+@app.post("/api/multi-day-compare-data-by-dates")
+async def get_multi_day_compare_data_by_dates(request: MultiDayCompareDatesRequest):
+    """按指定日期列表获取分时对比数据（来自缓存表 cache_daily_hourly）"""
+    try:
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+        if table_name not in tables:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "message": "缓存表不存在，请先生成缓存数据", "table": table_name},
+            )
+
+        # 验证日期格式 + 去重
+        valid_dates = []
+        seen = set()
+        for d in request.dates or []:
+            try:
+                ds = pd.to_datetime(d).date().strftime("%Y-%m-%d")
+            except Exception:
+                continue
+            if ds in seen:
+                continue
+            seen.add(ds)
+            valid_dates.append(ds)
+
+        if not valid_dates:
+            return JSONResponse(status_code=400, content={"status": "error", "message": "日期列表为空或格式错误"})
+
+        required_cols = [
+            "record_date",
+            "hour",
+            "temperature",
+            "load_forecast",
+            "class_b_forecast",
+            "spot_ne_d_forecast",
+            "ne_pv_forecast",
+            "ne_wind_forecast",
+            "day_type",
+            "weather",
+        ]
+
+        placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+        params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+        data = []
+        with db_manager.engine.connect() as conn:
+            try:
+                sql = text(
+                    f"""
+                    SELECT {', '.join(required_cols)}
+                    FROM {table_name}
+                    WHERE record_date IN ({placeholders})
+                    ORDER BY record_date DESC, hour ASC
+                    """
+                )
+                result = conn.execute(sql, params).fetchall()
+                for row in result:
+                    d = dict(row._mapping)
+                    if hasattr(d.get("record_date"), "strftime"):
+                        d["record_date"] = d["record_date"].strftime("%Y-%m-%d")
+                    data.append(d)
+            except Exception:
+                sql = text(
+                    f"""
+                    SELECT *
+                    FROM {table_name}
+                    WHERE record_date IN ({placeholders})
+                    ORDER BY record_date DESC, hour ASC
+                    """
+                )
+                result = conn.execute(sql, params).fetchall()
+                for row in result:
+                    r = dict(row._mapping)
+                    out = {k: r.get(k) for k in required_cols if k in r}
+                    for k in required_cols:
+                        out.setdefault(k, None)
+                    if hasattr(out.get("record_date"), "strftime"):
+                        out["record_date"] = out["record_date"].strftime("%Y-%m-%d")
+                    data.append(out)
+
+        # 计算 B 类占比（按小时）
+        for d in data:
+            lf = d.get("load_forecast") or 0.0
+            b = d.get("class_b_forecast") or 0.0
+            d["b_ratio"] = (float(b) / float(lf)) if lf not in (0, 0.0, None) else None
+
+        unique_dates = sorted({d["record_date"] for d in data if d.get("record_date")})
+
+        segments = [
+            {"key": "morning_peak", "name": "早高峰", "start": 7, "end": 10},
+            {"key": "pv_midday", "name": "中午光伏大发", "start": 11, "end": 14},
+            {"key": "evening_peak", "name": "晚高峰", "start": 18, "end": 21},
+        ]
+
+        return {
+            "status": "success",
+            "table": table_name,
+            "total_records": len(data),
+            "total_dates": len(unique_dates),
+            "dates": unique_dates,
+            "segments": segments,
+            "data": data,
+            "requested_dates": valid_dates,
+        }
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+
+@app.get("/api/multi-day-compare-data")
+async def get_multi_day_compare_data(start: str = Query(...), end: str = Query(...)):
+    """
+    获取指定日期范围内的分时对比数据（来自缓存表 cache_daily_hourly）
+
+    返回字段（尽量齐全，缺失则为 null）：
+    - temperature, load_forecast, class_b_forecast, b_ratio, spot_ne_d_forecast, ne_pv_forecast, ne_wind_forecast
+    - day_type, weather
+    """
+    try:
+        table_name = "cache_daily_hourly"
+        tables = db_manager.get_tables()
+        if table_name not in tables:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "message": "缓存表不存在，请先生成缓存数据", "table": table_name},
+            )
+
+        start_dt = pd.to_datetime(start).date()
+        end_dt = pd.to_datetime(end).date()
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        start_str = start_dt.strftime("%Y-%m-%d")
+        end_str = end_dt.strftime("%Y-%m-%d")
+
+        required_cols = [
+            "record_date",
+            "hour",
+            "temperature",
+            "load_forecast",
+            "class_b_forecast",
+            "spot_ne_d_forecast",
+            "ne_pv_forecast",
+            "ne_wind_forecast",
+            "day_type",
+            "weather",
+        ]
+
+        data = []
+        with db_manager.engine.connect() as conn:
+            try:
+                sql = text(
+                    f"""
+                    SELECT {', '.join(required_cols)}
+                    FROM {table_name}
+                    WHERE record_date BETWEEN :start AND :end
+                    ORDER BY record_date DESC, hour ASC
+                    """
+                )
+                result = conn.execute(sql, {"start": start_str, "end": end_str}).fetchall()
+                for row in result:
+                    d = dict(row._mapping)
+                    if hasattr(d.get("record_date"), "strftime"):
+                        d["record_date"] = d["record_date"].strftime("%Y-%m-%d")
+                    data.append(d)
+            except Exception:
+                # 兼容旧缓存表字段不全：退化为 SELECT *，再挑选需要的字段
+                sql = text(
+                    f"""
+                    SELECT *
+                    FROM {table_name}
+                    WHERE record_date BETWEEN :start AND :end
+                    ORDER BY record_date DESC, hour ASC
+                    """
+                )
+                result = conn.execute(sql, {"start": start_str, "end": end_str}).fetchall()
+                for row in result:
+                    r = dict(row._mapping)
+                    out = {k: r.get(k) for k in required_cols if k in r}
+                    # 缺失字段补齐
+                    for k in required_cols:
+                        out.setdefault(k, None)
+                    if hasattr(out.get("record_date"), "strftime"):
+                        out["record_date"] = out["record_date"].strftime("%Y-%m-%d")
+                    data.append(out)
+
+        # 计算 B 类占比（按小时）
+        for d in data:
+            lf = d.get("load_forecast") or 0.0
+            b = d.get("class_b_forecast") or 0.0
+            d["b_ratio"] = (float(b) / float(lf)) if lf not in (0, 0.0, None) else None
+
+        unique_dates = sorted({d["record_date"] for d in data if d.get("record_date")})
+
+        segments = [
+            {"key": "morning_peak", "name": "早高峰", "start": 7, "end": 10},
+            {"key": "pv_midday", "name": "中午光伏大发", "start": 11, "end": 14},
+            {"key": "evening_peak", "name": "晚高峰", "start": 18, "end": 21},
+        ]
+
+        return {
+            "status": "success",
+            "table": table_name,
+            "start": start_str,
+            "end": end_str,
+            "total_records": len(data),
+            "total_dates": len(unique_dates),
+            "dates": unique_dates,
+            "segments": segments,
+            "data": data,
+        }
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+
 @app.get("/api/daily-hourly-data")
 async def get_daily_hourly_data(date: str):
     """获取指定日期的24小时数据 (优先查缓存)"""

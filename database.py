@@ -27,7 +27,15 @@ class DatabaseManager:
             f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
             f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
         )
-        return create_engine(connection_string)
+        # Keep long-running API processes stable:
+        # - pool_pre_ping: validate pooled connections before using them (avoids "MySQL server has gone away" after idle)
+        # - pool_recycle: proactively recycle connections before server-side idle timeouts
+        return create_engine(
+            connection_string,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+            connect_args={"connect_timeout": 10},
+        )
     
     def get_engine(self):
         """获取数据库引擎"""
@@ -122,16 +130,29 @@ class DatabaseManager:
     
     def get_tables(self):
         """获取所有数据表"""
-        try:
+        def _fetch():
             with self.engine.connect() as conn:
                 result = conn.execute(text("SHOW TABLES"))
                 tables = [row[0] for row in result]
                 # 按表名倒序排列（通常表名包含日期，如 power_data_20230918，倒序即最新日期在前）
                 tables.sort(reverse=True)
                 return tables
+
+        try:
+            return _fetch()
         except Exception as e:
-            print(f"❌ 获取数据表失败: {str(e)}")
-            return []
+            # After a long idle, pooled connections can be stale; retry once with a fresh engine.
+            print(f"❌ 获取数据表失败(将重试): {str(e)}")
+            try:
+                self.engine.dispose()
+            except Exception:
+                pass
+            try:
+                self.engine = self.create_engine()
+                return _fetch()
+            except Exception as e2:
+                print(f"❌ 获取数据表失败(重试仍失败): {str(e2)}")
+                return []
             
     def get_table_data(self, table_name, limit=5):
         """获取指定表的数据"""

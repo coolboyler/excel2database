@@ -31,6 +31,84 @@
             color: var(--text-primary);
         }
 
+        /* 图表区横向滚动：让“下方滑动 bar”更明显（对鼠标用户更友好） */
+        .chart-scroll {
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 12px; /* 给系统滚动条留空间（非 overlay 时） */
+            scrollbar-gutter: stable both-edges; /* 支持的浏览器会稳定预留滚动条空间 */
+        }
+        .chart-scroll {
+            scrollbar-width: auto; /* Firefox */
+            scrollbar-color: rgba(59, 130, 246, 0.75) rgba(15, 23, 42, 0.10);
+        }
+        .chart-scroll::-webkit-scrollbar {
+            height: 12px;
+        }
+        .chart-scroll::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.10);
+            border-radius: 999px;
+        }
+        .chart-scroll::-webkit-scrollbar-thumb {
+            background: rgba(59, 130, 246, 0.75);
+            border-radius: 999px;
+            border: 2px solid rgba(255, 255, 255, 0.85);
+        }
+        .chart-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(59, 130, 246, 0.90);
+        }
+
+        /* 额外提供一个“可见的滚动滑块”作为下方 bar（避免系统滚动条被 OS 隐藏） */
+        .chart-scrollbar-controls {
+            display: none; /* JS 在需要滚动时打开 */
+            align-items: center;
+            gap: 0.5rem;
+            padding: 6px 8px;
+            background: rgba(15, 23, 42, 0.04);
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            border-radius: 10px;
+        }
+        .chart-scrollbar-controls .btn {
+            width: 34px;
+            height: 30px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .chart-scrollbar {
+            flex: 1;
+            min-width: 200px;
+        }
+        .chart-scrollbar.form-range::-webkit-slider-runnable-track {
+            height: 10px;
+            background: rgba(59, 130, 246, 0.18);
+            border-radius: 999px;
+        }
+        .chart-scrollbar.form-range::-webkit-slider-thumb {
+            width: 18px;
+            height: 18px;
+            margin-top: -4px;
+            background: rgba(59, 130, 246, 0.95);
+            border: 2px solid rgba(255, 255, 255, 0.95);
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+        }
+        .chart-scrollbar.form-range::-moz-range-track {
+            height: 10px;
+            background: rgba(59, 130, 246, 0.18);
+            border-radius: 999px;
+        }
+        .chart-scrollbar.form-range::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            background: rgba(59, 130, 246, 0.95);
+            border: 2px solid rgba(255, 255, 255, 0.95);
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+        }
+
         .navbar {
             background: var(--card-bg);
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -222,6 +300,7 @@
                     <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
                     <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
                     <li class="nav-item"><a class="nav-link" href="/similar_day">类比日匹配</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/multi_day_compare">多日对比</a></li>
                     <li class="nav-item"><a class="nav-link active fw-bold" href="/daily_hourly">分时看板</a></li>
                 </ul>
                 <div class="d-flex align-items-center">
@@ -303,7 +382,7 @@
 
             <!-- 2. Charts Row - 三张图一行，支持左右滑动 -->
             <div class="mb-4">
-                <div style="overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; padding-bottom: 10px;">
+                <div class="chart-scroll" id="chartScroll" aria-label="图表横向滚动区域">
                     <div style="display: flex; gap: 16px; min-width: max-content; padding: 0 4px;">
                         <!-- Chart 1: Price & Load (宽20%) -->
                         <div style="flex: 0 0 40%; min-width: 860px; max-width: 1200px;">
@@ -329,6 +408,15 @@
                             </div>
                         </div>
                     </div>
+                </div>
+                <div class="chart-scrollbar-controls mt-2" id="chartScrollControls" aria-label="图表横向滚动控制条">
+                    <button class="btn btn-light btn-sm" id="chartScrollLeft" type="button" title="向左滚动">
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    <input type="range" class="form-range chart-scrollbar" id="chartScrollBar" min="0" max="0" value="0" step="1" aria-label="拖动滑块左右滚动图表">
+                    <button class="btn btn-light btn-sm" id="chartScrollRight" type="button" title="向右滚动">
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
                 </div>
             </div>
 
@@ -422,7 +510,10 @@
                 document.getElementById('dashboard').style.display = 'block';
                 
                 // Resize charts
-                setTimeout(() => charts.forEach(c => c.resize()), 100);
+                setTimeout(() => {
+                    charts.forEach(c => c.resize());
+                    if (window.__syncChartScrollBar) window.__syncChartScrollBar();
+                }, 100);
 
             } catch (e) {
                 console.error(e);
@@ -710,6 +801,51 @@
 
         // Quick date dropdown items (Removed as per requirement)
         // document.querySelectorAll('.quick-date').forEach(...)
+
+        // Chart horizontal scroll helper: show a visible slider bar for mouse users.
+        (function initChartScrollBar() {
+            const scroller = document.getElementById('chartScroll');
+            const controls = document.getElementById('chartScrollControls');
+            const range = document.getElementById('chartScrollBar');
+            const btnLeft = document.getElementById('chartScrollLeft');
+            const btnRight = document.getElementById('chartScrollRight');
+            if (!scroller || !controls || !range || !btnLeft || !btnRight) return;
+
+            let rafId = 0;
+            const sync = () => {
+                const max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+                range.max = String(max);
+                range.value = String(Math.min(max, Math.max(0, scroller.scrollLeft)));
+                const shouldShow = max > 0;
+                controls.style.display = shouldShow ? 'flex' : 'none';
+                range.disabled = !shouldShow;
+            };
+            // Expose for async dashboard rendering (container starts as display:none).
+            window.__syncChartScrollBar = sync;
+
+            const scheduleSync = () => {
+                if (rafId) cancelAnimationFrame(rafId);
+                rafId = requestAnimationFrame(() => {
+                    rafId = 0;
+                    sync();
+                });
+            };
+
+            scroller.addEventListener('scroll', scheduleSync, { passive: true });
+            window.addEventListener('resize', scheduleSync);
+            range.addEventListener('input', () => {
+                scroller.scrollLeft = Number(range.value);
+            });
+            btnLeft.addEventListener('click', () => {
+                scroller.scrollBy({ left: -Math.max(200, scroller.clientWidth * 0.8), behavior: 'smooth' });
+            });
+            btnRight.addEventListener('click', () => {
+                scroller.scrollBy({ left: Math.max(200, scroller.clientWidth * 0.8), behavior: 'smooth' });
+            });
+
+            // Initial sync after first paint.
+            setTimeout(sync, 0);
+        })();
 
         window.addEventListener('resize', () => charts.forEach(c => c.resize()));
         

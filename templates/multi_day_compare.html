@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>多日对比看板 - Excel2SQL</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+
+  <!-- Flatpickr Date Picker -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css">
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
+
+  <style>
+    :root {
+      --bg-color: #f3f4f6;
+      --card-bg: #ffffff;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --accent-color: #3b82f6;
+      --success-color: #10b981;
+      --warning-color: #f59e0b;
+      --danger-color: #ef4444;
+      --purple-color: #8b5cf6;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--text-primary);
+    }
+
+    .navbar {
+      background: var(--card-bg);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    }
+
+    .navbar-brand,
+    .navbar-brand:hover {
+      color: var(--text-primary);
+      font-weight: 800;
+      font-size: 1.4rem;
+      letter-spacing: -0.025em;
+    }
+
+    .navbar-nav {
+      gap: 0.75rem;
+    }
+
+    .navbar-nav .nav-link {
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 1.05rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+
+    .navbar-nav .nav-link:hover,
+    .navbar-nav .nav-link:focus {
+      color: var(--text-primary);
+      background-color: rgba(0, 0, 0, 0.08);
+    }
+
+    .navbar-nav .nav-link.active {
+      color: var(--accent-color);
+      font-weight: 700;
+      background-color: rgba(59, 130, 246, 0.12);
+      border-bottom: 2px solid var(--accent-color);
+    }
+
+    .dashboard-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      border: none;
+      margin-bottom: 24px;
+    }
+
+    .card-header-custom {
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 15px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .muted-help {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    .legend-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.08);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    @media (min-width: 1400px) {
+      .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    .chart-container {
+      width: 100%;
+      height: 340px;
+    }
+
+    .loading-wrap {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(255,255,255,0.75);
+      z-index: 2000;
+      display: none;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      backdrop-filter: blur(2px);
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-light mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav me-auto">
+          <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
+          <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
+          <li class="nav-item"><a class="nav-link" href="/similar_day">类比日匹配</a></li>
+          <li class="nav-item"><a class="nav-link active fw-bold" href="/multi_day_compare">多日对比</a></li>
+          <li class="nav-item"><a class="nav-link" href="/daily_hourly">分时看板</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="loading-wrap" id="loadingOverlay">
+    <div class="spinner-border text-primary" role="status"></div>
+    <div class="mt-2 text-muted">正在加载对比数据...</div>
+  </div>
+
+  <div class="container-fluid px-4">
+    <div id="alerts"></div>
+
+    <div class="dashboard-card">
+      <div class="card-header-custom">
+        <h5 class="card-title"><i class="bi bi-columns-gap"></i> 多日对比（目标日 vs 历史范围）</h5>
+        <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+          <span class="legend-chip"><span class="legend-dot" style="background: rgba(99,102,241,0.28)"></span>早高峰 07-10</span>
+          <span class="legend-chip"><span class="legend-dot" style="background: rgba(20,184,166,0.26)"></span>光伏大发 11-14</span>
+          <span class="legend-chip"><span class="legend-dot" style="background: rgba(249,115,22,0.28)"></span>晚高峰 18-21</span>
+        </div>
+      </div>
+
+      <div class="row g-3 align-items-end">
+        <div class="col-lg-5">
+          <label class="form-label fw-bold mb-1">目标日（默认：负荷预测有值的最新日期）</label>
+          <div class="input-group">
+            <span class="input-group-text bg-white"><i class="bi bi-calendar-event text-primary"></i></span>
+            <input id="anchorDate" class="form-control" placeholder="选择目标日期" readonly style="cursor:pointer;">
+            <button class="btn btn-primary" id="btnQuery" type="button"><i class="bi bi-search"></i> 更新</button>
+          </div>
+          <div class="muted-help mt-2">
+            默认对比：目标日 + 往前15个“负荷预测有值”的日期（如显示过密，可切换为10天）。
+          </div>
+        </div>
+
+        <div class="col-lg-2">
+          <label class="form-label fw-bold mb-1">统计方式</label>
+          <select id="aggMethod" class="form-select">
+            <option value="avg" selected>分段平均值</option>
+            <option value="max">分段最大值</option>
+          </select>
+          <div class="muted-help mt-2">对早/午/晚三个时段分别计算</div>
+        </div>
+
+        <div class="col-lg-4">
+          <label class="form-label fw-bold mb-1">对比天数（含目标日）</label>
+          <div class="btn-group w-100" role="group" aria-label="compare-count">
+            <input type="radio" class="btn-check" name="cmpCount" id="cmp5" value="5" checked>
+            <label class="btn btn-outline-primary" for="cmp5">5天（推荐）</label>
+            <input type="radio" class="btn-check" name="cmpCount" id="cmp10" value="10">
+            <label class="btn btn-outline-primary" for="cmp10">10天</label>
+          </div>
+        </div>
+
+        <div class="col-lg-3">
+          <label class="form-label fw-bold mb-1">本次对比</label>
+          <div class="d-flex flex-wrap gap-2">
+            <span class="badge bg-light text-dark border" id="badgeAnchor">目标日：-</span>
+            <span class="badge bg-light text-dark border" id="badgeRange">范围：-</span>
+            <span class="badge bg-light text-dark border" id="badgeDays">天数：-</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="noData" class="dashboard-card" style="display:none;">
+      <div class="text-center py-4">
+        <div class="display-6 text-muted"><i class="bi bi-inbox"></i></div>
+        <div class="mt-2 text-muted" id="noDataText">暂无可用缓存数据</div>
+      </div>
+    </div>
+
+    <div id="dashboard" style="display:none;">
+      <div class="chart-grid">
+        <div class="dashboard-card">
+          <div class="card-header-custom">
+            <h6 class="card-title"><i class="bi bi-thermometer-sun text-warning"></i> 温度</h6>
+            <div class="muted-help">按时段对比（日期为横轴）</div>
+          </div>
+          <div id="chart-temperature" class="chart-container"></div>
+        </div>
+
+        <div class="dashboard-card">
+          <div class="card-header-custom">
+            <h6 class="card-title"><i class="bi bi-activity text-primary"></i> 负荷预测</h6>
+            <div class="muted-help">按时段对比（日期为横轴）</div>
+          </div>
+          <div id="chart-load" class="chart-container"></div>
+        </div>
+
+        <div class="dashboard-card">
+          <div class="card-header-custom">
+            <h6 class="card-title"><i class="bi bi-percent" style="color: var(--purple-color)"></i> B类占比</h6>
+            <div class="muted-help">B类预测 / 统调预测（按时段汇总）</div>
+          </div>
+          <div id="chart-b-ratio" class="chart-container"></div>
+        </div>
+
+        <div class="dashboard-card">
+          <div class="card-header-custom">
+            <h6 class="card-title"><i class="bi bi-lightning-charge-fill text-success"></i> 新能源D日预测</h6>
+            <div class="muted-help">字段：spot_ne_d_forecast（按时段汇总）</div>
+          </div>
+          <div id="chart-ne-d" class="chart-container"></div>
+        </div>
+
+        <div class="dashboard-card">
+          <div class="card-header-custom">
+            <h6 class="card-title"><i class="bi bi-sun-fill text-warning"></i> 光伏预测</h6>
+            <div class="muted-help">字段：ne_pv_forecast（午间时段重点）</div>
+          </div>
+          <div id="chart-pv" class="chart-container"></div>
+        </div>
+
+        <div class="dashboard-card">
+          <div class="card-header-custom">
+            <h6 class="card-title"><i class="bi bi-wind text-info"></i> 风电预测</h6>
+            <div class="muted-help">字段：ne_wind_forecast</div>
+          </div>
+          <div id="chart-wind" class="chart-container"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SEGMENTS = [
+      { key: "morning_peak", name: "早高峰", start: 7, end: 10, color: "rgba(99,102,241,0.12)" },
+      { key: "pv_midday", name: "中午光伏大发", start: 11, end: 14, color: "rgba(20,184,166,0.12)" },
+      { key: "evening_peak", name: "晚高峰", start: 18, end: 21, color: "rgba(249,115,22,0.12)" },
+    ];
+
+    const HOURS = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
+    const chartIds = ["chart-temperature", "chart-load", "chart-b-ratio", "chart-ne-d", "chart-pv", "chart-wind"];
+
+    let availableDatesDesc = []; // dates with load_forecast values, DESC
+    let anchorPicker = null;
+    let inFlightController = null;
+    let requestSeq = 0;
+
+    function setLoading(on) {
+      document.getElementById('loadingOverlay').style.display = on ? 'flex' : 'none';
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function showAlert(message, type = "info", timeoutMs = 4500) {
+      const map = { success: "success", warning: "warning", error: "danger", info: "info" };
+      const bsType = map[type] || "info";
+      const el = document.createElement("div");
+      el.className = `alert alert-${bsType} alert-dismissible fade show shadow-sm`;
+      el.role = "alert";
+      el.innerHTML = `
+        <div>${escapeHtml(message)}</div>
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+      `;
+      document.getElementById("alerts").appendChild(el);
+      if (timeoutMs) setTimeout(() => el.remove(), timeoutMs);
+    }
+
+    function fmtNumber(v, digits = 2) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return "-";
+      return Number(v).toFixed(digits);
+    }
+
+    function getCompareCount() {
+      const el = document.querySelector('input[name="cmpCount"]:checked');
+      return el ? Number(el.value) : 5;
+    }
+
+    function getOrInitChart(domId) {
+      const dom = document.getElementById(domId);
+      if (!dom) return null;
+      return echarts.getInstanceByDom(dom) || echarts.init(dom);
+    }
+
+    function getChartInstance(domId) {
+      const dom = document.getElementById(domId);
+      if (!dom) return null;
+      return echarts.getInstanceByDom(dom);
+    }
+
+    function hexToRgba(hex, alpha) {
+      const h = String(hex || "").trim().replace(/^#/, "");
+      if (h.length !== 6) return hex;
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      if ([r, g, b].some(n => Number.isNaN(n))) return hex;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function renderSegmentCompareChart(domId, title, unit, datesAsc, anchorDate, seriesBySeg, yAxisCfg, valueFormatter, style = {}) {
+      const chart = getOrInitChart(domId);
+      if (!chart) return;
+      const anchorIdx = datesAsc.indexOf(anchorDate);
+
+      const seriesType = style.seriesType || "bar"; // "bar" | "line"
+      const xLabelRotate = style.xLabelRotate ?? 0;
+      const paletteArr = Array.isArray(style.colors) ? style.colors : null;
+      const paletteObj = (!paletteArr && style.colors && typeof style.colors === "object") ? style.colors : null;
+      const seriesColors = {
+        morning: (paletteArr && paletteArr[0]) || paletteObj?.morning || "#6366f1",
+        midday: (paletteArr && paletteArr[1]) || paletteObj?.midday || "#14b8a6",
+        evening: (paletteArr && paletteArr[2]) || paletteObj?.evening || "#f97316",
+      };
+
+      function withAnchorHighlight(arr, color, idx) {
+        return arr.map((v, i) => {
+          if (i !== anchorIdx) return v;
+          const item = { value: v };
+          if (seriesType === "bar") {
+            item.itemStyle = { color, borderColor: "#111827", borderWidth: 2 };
+          } else {
+            item.itemStyle = { color, borderColor: "#111827", borderWidth: 2 };
+            item.symbolSize = style.anchorSymbolSize ?? 10;
+          }
+          if (style.labelAnchorOnly) {
+            item.label = {
+              show: true,
+              position: seriesType === "bar" ? "top" : "right",
+              fontWeight: 700,
+              color: "#111827",
+              formatter: () => valueFormatter(v)
+            };
+          }
+          return item;
+        });
+      }
+
+      function mkSeries(name, color, dataArr, idx) {
+        const base = {
+          name,
+          type: seriesType,
+          data: withAnchorHighlight(dataArr, color, idx),
+          emphasis: { focus: "series" }
+        };
+
+        if (seriesType === "bar") {
+          base.barMaxWidth = style.barMaxWidth ?? 18;
+          base.itemStyle = {
+            color: style.gradient
+              ? new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                  { offset: 0, color: hexToRgba(color, 0.95) },
+                  { offset: 1, color: hexToRgba(color, 0.55) },
+                ])
+              : color,
+            borderRadius: style.barRadius ?? 6,
+            borderColor: style.barBorderColor,
+            borderWidth: style.barBorderWidth ?? 0
+          };
+          if (!style.labelAnchorOnly && style.showLabels) {
+            base.label = {
+              show: true,
+              position: "top",
+              fontSize: 10,
+              color: "#374151",
+              formatter: (p) => valueFormatter(p?.value)
+            };
+          }
+        } else {
+          base.smooth = style.smooth ?? true;
+          base.symbol = (Array.isArray(style.symbols) && style.symbols[idx]) || style.symbol || "circle";
+          base.symbolSize = style.symbolSize ?? 6;
+          base.step = style.step;
+          base.lineStyle = { width: style.lineWidth ?? 2, color, type: style.lineType || "solid" };
+          base.itemStyle = { color };
+          if (style.area) {
+            base.areaStyle = {
+              opacity: style.areaOpacity ?? 0.10,
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: hexToRgba(color, 0.35) },
+                { offset: 1, color: hexToRgba(color, 0.03) },
+              ])
+            };
+          }
+        }
+
+        if (idx === 0 && style.anchorMarkLine && anchorDate) {
+          base.markLine = {
+            symbol: "none",
+            label: { show: false },
+            lineStyle: { type: "dashed", color: "#111827", opacity: 0.35, width: 1 },
+            data: [{ xAxis: anchorDate }]
+          };
+        }
+        return base;
+      }
+
+      chart.setOption({
+        animation: false,
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: style.axisPointerType || (seriesType === "line" ? "line" : "shadow") },
+          backgroundColor: "rgba(17,24,39,0.92)",
+          borderWidth: 0,
+          textStyle: { color: "#fff" },
+          formatter: (params) => {
+            const unitStr = unit ? ` ${unit}` : "";
+            const date = params?.[0]?.axisValue ?? "-";
+            const lines = [];
+            for (const p of params || []) {
+              lines.push(`${escapeHtml(p.seriesName)}：<span style="font-weight:700;">${escapeHtml(valueFormatter(p.data?.value ?? p.data))}</span>${escapeHtml(unitStr)}`);
+            }
+            return `
+              <div style="font-weight:700;margin-bottom:4px;">${escapeHtml(title)}</div>
+              <div>日期：${escapeHtml(date)}</div>
+              <div style="margin-top:6px;">${lines.join("<br>")}</div>
+            `;
+          }
+        },
+        grid: { left: 56, right: 18, top: style.gridTop ?? 18, bottom: 56 },
+        xAxis: {
+          type: "category",
+          data: datesAsc,
+          axisLabel: {
+            fontSize: 11,
+            rotate: xLabelRotate,
+            formatter: (v) => String(v).slice(5) // MM-DD
+          },
+          axisTick: { alignWithLabel: true }
+        },
+        yAxis: {
+          type: "value",
+          axisLabel: { color: "#6b7280" },
+          splitLine: { lineStyle: { color: "#eef2f7" } },
+          scale: style.yScale ?? false,
+          ...yAxisCfg
+        },
+        legend: {
+          top: 0,
+          right: 0,
+          itemWidth: 14,
+          itemHeight: 10,
+          textStyle: { color: "#6b7280" }
+        },
+        series: [
+          mkSeries("早高峰(07-10)", seriesColors.morning, seriesBySeg.morning, 0),
+          mkSeries("午间光伏(11-14)", seriesColors.midday, seriesBySeg.midday, 1),
+          mkSeries("晚高峰(18-21)", seriesColors.evening, seriesBySeg.evening, 2),
+        ]
+      }, { notMerge: true, lazyUpdate: true });
+    }
+
+    function updateBadges(anchor, earliest, count) {
+      document.getElementById("badgeAnchor").textContent = `目标日：${anchor || "-"}`;
+      document.getElementById("badgeRange").textContent = earliest ? `范围：${earliest} ~ ${anchor}` : "范围：-";
+      document.getElementById("badgeDays").textContent = `天数：${count} 天`;
+    }
+
+    async function loadAvailableDates() {
+      const res = await fetch("/api/cache-available-dates?limit=1200&require_load=1");
+      const json = await res.json();
+      if (json.status !== "success") throw new Error(json.message || json.error || "无法获取可用日期（请先生成缓存）");
+      availableDatesDesc = json.dates || [];
+      return availableDatesDesc;
+    }
+
+    function getSelectedAnchor() {
+      const v = document.getElementById("anchorDate").value;
+      return v && v.trim() ? v.trim() : null;
+    }
+
+    function buildSelectedDatesDesc(anchor, count) {
+      const idx = availableDatesDesc.indexOf(anchor);
+      if (idx < 0) return [];
+      return availableDatesDesc.slice(idx, idx + count);
+    }
+
+    async function queryAndRender() {
+      const anchor = getSelectedAnchor();
+      const count = getCompareCount();
+      const agg = document.getElementById("aggMethod").value || "avg";
+      if (!anchor) {
+        showAlert("请选择目标日期", "warning");
+        return;
+      }
+      const selectedDatesDesc = buildSelectedDatesDesc(anchor, count);
+      if (selectedDatesDesc.length < 2) {
+        showAlert("可对比日期不足", "warning");
+        return;
+      }
+
+      const earliest = selectedDatesDesc[selectedDatesDesc.length - 1];
+      updateBadges(anchor, earliest, selectedDatesDesc.length);
+
+      setLoading(true);
+      // Cancel any in-flight request when user changes filters quickly.
+      if (inFlightController) inFlightController.abort();
+      inFlightController = new AbortController();
+      const mySeq = ++requestSeq;
+      // ECharts will initialize with a wrong size if the container is `display:none`.
+      // Keep the dashboard in the layout while loading (the overlay hides it anyway).
+      const dashboardEl = document.getElementById("dashboard");
+      dashboardEl.style.display = "block";
+      dashboardEl.style.visibility = "hidden";
+      document.getElementById("noData").style.display = "none";
+
+      try {
+        const res = await fetch("/api/multi-day-compare-data-by-dates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dates: selectedDatesDesc }),
+          signal: inFlightController.signal
+        });
+        const json = await res.json();
+        if (json.status !== "success") throw new Error(json.message || json.error || "查询失败");
+        // Ignore stale responses.
+        if (mySeq !== requestSeq) return;
+
+        const rows = json.data || [];
+        if (!rows.length) {
+          dashboardEl.style.display = "none";
+          dashboardEl.style.visibility = "visible";
+          document.getElementById("noData").style.display = "block";
+          document.getElementById("noDataText").textContent = "所选日期暂无可用缓存数据";
+          return;
+        }
+
+        const datesAsc = selectedDatesDesc.slice().reverse();
+        if (datesAsc.length < count) {
+          showAlert(`对比范围不足 ${count} 天，实际使用 ${datesAsc.length} 天（已按“负荷预测有值”的日期自动回退）`, "warning");
+        }
+
+        const metrics = [
+          { key: "temperature", title: "温度", unit: "°C", fmt: (v) => fmtNumber(v, 1), y: {} , mapTo: (r) => r.temperature },
+          { key: "load_forecast", title: "负荷预测", unit: "", fmt: (v) => fmtNumber(v, 0), y: { min: 0 }, mapTo: (r) => r.load_forecast },
+          { key: "b_ratio", title: "B类占比", unit: "%", fmt: (v) => fmtNumber(v, 1), y: { min: 0, max: 100 }, mapTo: (r) => (r.b_ratio === null || r.b_ratio === undefined) ? null : (Number(r.b_ratio) * 100) },
+          { key: "spot_ne_d_forecast", title: "新能源D日预测", unit: "", fmt: (v) => fmtNumber(v, 0), y: { min: 0 }, mapTo: (r) => r.spot_ne_d_forecast },
+          { key: "ne_pv_forecast", title: "光伏预测", unit: "", fmt: (v) => fmtNumber(v, 0), y: { min: 0 }, mapTo: (r) => r.ne_pv_forecast },
+          { key: "ne_wind_forecast", title: "风电预测", unit: "", fmt: (v) => fmtNumber(v, 0), y: { min: 0 }, mapTo: (r) => r.ne_wind_forecast },
+        ];
+
+        // Build aggregations: metric -> segKey -> date -> {sum,count,max}
+        const selectedSet = new Set(datesAsc);
+        const aggMap = {};
+        for (const m of metrics) {
+          aggMap[m.key] = {};
+          for (const s of SEGMENTS) {
+            aggMap[m.key][s.key] = {};
+            for (const d of datesAsc) {
+              aggMap[m.key][s.key][d] = { sum: 0, count: 0, max: null };
+            }
+          }
+        }
+
+        for (const r of rows) {
+          const date = r.record_date;
+          if (!selectedSet.has(date)) continue;
+          const hour = (r.hour === null || r.hour === undefined) ? null : Number(r.hour);
+          if (hour === null || Number.isNaN(hour)) continue;
+
+          for (const s of SEGMENTS) {
+            if (hour < s.start || hour > s.end) continue;
+            for (const m of metrics) {
+              const v = m.mapTo(r);
+              if (v === null || v === undefined || Number.isNaN(Number(v))) continue;
+              const acc = aggMap[m.key][s.key][date];
+              acc.sum += Number(v);
+              acc.count += 1;
+              acc.max = (acc.max === null || acc.max === undefined) ? Number(v) : Math.max(acc.max, Number(v));
+            }
+          }
+        }
+
+        function finalizeSeries(metricKey) {
+          function getVal(segKey, date) {
+            const acc = aggMap[metricKey][segKey][date];
+            if (!acc || acc.count === 0) return null;
+            if (agg === "max") return acc.max;
+            return acc.sum / acc.count;
+          }
+          return {
+            morning: datesAsc.map(d => getVal("morning_peak", d)),
+            midday: datesAsc.map(d => getVal("pv_midday", d)),
+            evening: datesAsc.map(d => getVal("evening_peak", d))
+          };
+        }
+
+        renderSegmentCompareChart(
+          "chart-temperature",
+          "温度",
+          "°C",
+          datesAsc,
+          anchor,
+          finalizeSeries("temperature"),
+          {},
+          v => fmtNumber(v, 1),
+          { seriesType: "line", smooth: true, area: true, yScale: true, anchorMarkLine: true, gridTop: 26, symbols: ["circle", "diamond", "triangle"] }
+        );
+        renderSegmentCompareChart(
+          "chart-load",
+          "负荷预测",
+          "",
+          datesAsc,
+          anchor,
+          finalizeSeries("load_forecast"),
+          { min: 0 },
+          v => fmtNumber(v, 0),
+          { seriesType: "bar", gradient: true, barRadius: 10, anchorMarkLine: true }
+        );
+        renderSegmentCompareChart(
+          "chart-b-ratio",
+          "B类占比",
+          "%",
+          datesAsc,
+          anchor,
+          finalizeSeries("b_ratio"),
+          { min: 0, max: 100 },
+          v => fmtNumber(v, 0),
+          { seriesType: "bar", gradient: false, barRadius: 6, barBorderWidth: 1, barBorderColor: "rgba(17,24,39,0.18)", showLabels: true }
+        );
+        renderSegmentCompareChart(
+          "chart-ne-d",
+          "新能源D日预测",
+          "",
+          datesAsc,
+          anchor,
+          finalizeSeries("spot_ne_d_forecast"),
+          { min: 0 },
+          v => fmtNumber(v, 0),
+          { seriesType: "line", smooth: true, area: false, lineType: "dashed", yScale: true, anchorMarkLine: true, gridTop: 26, symbols: ["roundRect", "circle", "triangle"] }
+        );
+        renderSegmentCompareChart(
+          "chart-pv",
+          "光伏预测",
+          "",
+          datesAsc,
+          anchor,
+          finalizeSeries("ne_pv_forecast"),
+          { min: 0 },
+          v => fmtNumber(v, 0),
+          { seriesType: "line", smooth: false, area: true, areaOpacity: 0.08, yScale: false, anchorMarkLine: true, gridTop: 26, symbols: ["circle", "circle", "circle"] }
+        );
+        renderSegmentCompareChart(
+          "chart-wind",
+          "风电预测",
+          "",
+          datesAsc,
+          anchor,
+          finalizeSeries("ne_wind_forecast"),
+          { min: 0 },
+          v => fmtNumber(v, 0),
+          { seriesType: "bar", gradient: true, barRadius: 12, showLabels: false, labelAnchorOnly: true }
+        );
+
+        // Make sure charts get a correct final size after layout is ready.
+        dashboardEl.style.visibility = "visible";
+        requestAnimationFrame(() => {
+          for (const id of chartIds) {
+            const dom = document.getElementById(id);
+            const inst = dom ? echarts.getInstanceByDom(dom) : null;
+            if (inst) inst.resize();
+          }
+        });
+      } catch (e) {
+        if (e && (e.name === "AbortError" || String(e.message || "").includes("aborted"))) return;
+        console.error(e);
+        dashboardEl.style.display = "none";
+        dashboardEl.style.visibility = "visible";
+        document.getElementById("noData").style.display = "block";
+        document.getElementById("noDataText").textContent = e.message || "加载失败";
+        showAlert(e.message || "加载失败", "error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    async function init() {
+      setLoading(true);
+      try {
+        await loadAvailableDates();
+      } catch (e) {
+        setLoading(false);
+        document.getElementById("noData").style.display = "block";
+        document.getElementById("noDataText").textContent = e.message || "无法获取可用日期";
+        showAlert(e.message || "无法获取可用日期", "error", 0);
+        return;
+      }
+
+      if (!availableDatesDesc.length) {
+        setLoading(false);
+        document.getElementById("noData").style.display = "block";
+        document.getElementById("noDataText").textContent = "缓存表中暂无负荷预测有值的日期";
+        return;
+      }
+
+      anchorPicker = flatpickr("#anchorDate", {
+        locale: "zh",
+        dateFormat: "Y-m-d",
+        defaultDate: availableDatesDesc[0],
+        enable: availableDatesDesc.slice().reverse(), // enable expects asc-ish, but list works
+        allowInput: false,
+        clickOpens: true,
+        disableMobile: true,
+        onChange: () => queryAndRender()
+      });
+
+      document.getElementById("btnQuery").addEventListener("click", queryAndRender);
+      document.querySelectorAll('input[name="cmpCount"]').forEach(el => {
+        el.addEventListener("change", queryAndRender);
+      });
+      document.getElementById("aggMethod").addEventListener("change", queryAndRender);
+
+      await queryAndRender();
+      setLoading(false);
+
+      let resizeRaf = 0;
+      window.addEventListener("resize", () => {
+        if (resizeRaf) return;
+        resizeRaf = requestAnimationFrame(() => {
+          resizeRaf = 0;
+          for (const id of chartIds) {
+            const inst = getChartInstance(id);
+            if (inst) inst.resize();
+          }
+        });
+      });
+    }
+
+    init();
+  </script>
+</body>
+</html>
