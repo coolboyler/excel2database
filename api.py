@@ -4,7 +4,7 @@ from io import BytesIO
 import json
 import time
 from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, logger
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import os
@@ -3490,3 +3490,101 @@ async def export_dr_compare(request: Request):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
+@app.post("/api/daily-averages/export-new-energy-forecast", summary="导出新能源D日预测（从缓存表查询）")
+async def export_new_energy_forecast(request: Request):
+    """
+    导出新能源D日预测（缓存表 cache_daily_hourly）
+
+    - 输入：dates (JSON list)
+    - 输出：Excel，sheet: 现货新能源D日预测
+    """
+    try:
+        form_data = await request.form()
+        dates_str = form_data.get("dates")
+        if not dates_str:
+            return JSONResponse(status_code=400, content={"error": "缺少 dates 参数"})
+
+        try:
+            date_list = json.loads(dates_str)
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "dates 格式错误"})
+
+        # 验证日期格式并排序
+        valid_dates = []
+        for d in date_list:
+            try:
+                pd.to_datetime(d)
+                valid_dates.append(d)
+            except Exception:
+                pass
+
+        if not valid_dates:
+            return JSONResponse(status_code=400, content={"error": "日期格式错误"})
+
+        valid_dates = sorted(valid_dates, key=lambda x: pd.to_datetime(x))
+
+        table_name = "cache_daily_hourly"
+        if table_name not in db_manager.get_tables():
+            return JSONResponse(status_code=404, content={"error": "缓存表不存在，请先生成缓存数据", "table": table_name})
+
+        with db_manager.engine.connect() as conn:
+            placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+            params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+            sql = text(f"""
+                SELECT record_date, hour, spot_ne_d_forecast
+                FROM {table_name}
+                WHERE record_date IN ({placeholders})
+                ORDER BY record_date, hour
+            """)
+            rows = conn.execute(sql, params).fetchall()
+
+        if not rows:
+            df_empty = pd.DataFrame()
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_empty.to_excel(writer, index=False, sheet_name="现货新能源D日预测")
+            output.seek(0)
+
+            filename = f"新能源D日预测_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            import urllib.parse
+            encoded_filename = urllib.parse.quote(filename)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+            )
+
+        df = pd.DataFrame([dict(r._mapping) for r in rows])
+        # 统一 hour 为 int，方便 pivot；无效 hour 行直接丢弃
+        df["hour"] = pd.to_numeric(df["hour"], errors="coerce")
+        df = df.dropna(subset=["hour"])
+        df["hour"] = df["hour"].astype(int)
+        df = df[(df["hour"] >= 0) & (df["hour"] <= 23)]
+
+        def build_pivot(value_col: str) -> pd.DataFrame:
+            p = df.pivot_table(index="hour", columns="record_date", values=value_col, aggfunc="first")
+            p = p.reindex(range(24))  # 确保 0-23 全量行
+            p.insert(0, "时刻", [f"{h:02d}:00" for h in range(24)])
+            p = p.reset_index(drop=True)
+            # 列名统一转为字符串日期，避免 Excel 显示成 Timestamp
+            p.columns = [str(c) for c in p.columns]
+            return p
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            build_pivot("spot_ne_d_forecast").to_excel(writer, index=False, sheet_name="现货新能源D日预测")
+        output.seek(0)
+
+        filename = f"新能源D日预测_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        import urllib.parse
+        encoded_filename = urllib.parse.quote(filename)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
