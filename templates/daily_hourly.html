@@ -41,74 +41,119 @@
         }
         .chart-scroll {
             scrollbar-width: auto; /* Firefox */
-            scrollbar-color: rgba(59, 130, 246, 0.75) rgba(15, 23, 42, 0.10);
+            scrollbar-color: rgba(107, 114, 128, 0.55) rgba(15, 23, 42, 0.08);
         }
         .chart-scroll::-webkit-scrollbar {
             height: 12px;
         }
         .chart-scroll::-webkit-scrollbar-track {
-            background: rgba(15, 23, 42, 0.10);
+            background: rgba(15, 23, 42, 0.08);
             border-radius: 999px;
         }
         .chart-scroll::-webkit-scrollbar-thumb {
-            background: rgba(59, 130, 246, 0.75);
+            background: rgba(107, 114, 128, 0.55);
             border-radius: 999px;
             border: 2px solid rgba(255, 255, 255, 0.85);
         }
         .chart-scroll::-webkit-scrollbar-thumb:hover {
-            background: rgba(59, 130, 246, 0.90);
+            background: rgba(107, 114, 128, 0.70);
+        }
+
+        /* 详细表格区横向滚动：同样给出“明显的滚动条 + 下方滑动 bar”提示 */
+        .table-scroll {
+            overflow: auto; /* 纵向+横向都允许滚动，配合 sticky 表头/首列 */
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 12px; /* 给系统横向滚动条留空间（非 overlay 时） */
+            scrollbar-gutter: stable both-edges;
+            position: relative;
+        }
+        .table-scroll {
+            scrollbar-width: auto; /* Firefox */
+            scrollbar-color: rgba(107, 114, 128, 0.75) rgba(15, 23, 42, 0.10);
+        }
+        .table-scroll::-webkit-scrollbar {
+            height: 12px;
+            width: 12px;
+        }
+        .table-scroll::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.10);
+            border-radius: 999px;
+        }
+        .table-scroll::-webkit-scrollbar-thumb {
+            background: rgba(107, 114, 128, 0.75);
+            border-radius: 999px;
+            border: 2px solid rgba(255, 255, 255, 0.85);
+        }
+        .table-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(107, 114, 128, 0.90);
         }
 
         /* 额外提供一个“可见的滚动滑块”作为下方 bar（避免系统滚动条被 OS 隐藏） */
-        .chart-scrollbar-controls {
+        .chart-scrollbar-controls,
+        .table-scrollbar-controls {
             display: none; /* JS 在需要滚动时打开 */
             align-items: center;
             gap: 0.5rem;
             padding: 6px 8px;
-            background: rgba(15, 23, 42, 0.04);
-            border: 1px solid rgba(15, 23, 42, 0.10);
+            background: rgba(15, 23, 42, 0.03); /* very light gray */
+            border: 1px solid rgba(15, 23, 42, 0.08);
             border-radius: 10px;
+            flex-wrap: wrap;
         }
-        .chart-scrollbar-controls .btn {
+        .chart-scrollbar-controls .btn,
+        .table-scrollbar-controls .btn {
             width: 34px;
             height: 30px;
             padding: 0;
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            color: var(--text-primary); /* arrows */
         }
-        .chart-scrollbar {
+        .chart-scrollbar-controls .btn:hover,
+        .table-scrollbar-controls .btn:hover {
+            background: #f8fafc;
+            border-color: rgba(15, 23, 42, 0.18);
+            color: var(--text-primary);
+        }
+        .chart-scrollbar,
+        .table-scrollbar {
             flex: 1;
             min-width: 200px;
         }
-        .chart-scrollbar.form-range::-webkit-slider-runnable-track {
+        .chart-scrollbar.form-range::-webkit-slider-runnable-track,
+        .table-scrollbar.form-range::-webkit-slider-runnable-track {
             height: 10px;
-            background: rgba(59, 130, 246, 0.18);
+            background: rgba(15, 23, 42, 0.08); /* light gray */
             border-radius: 999px;
         }
-        .chart-scrollbar.form-range::-webkit-slider-thumb {
+        .chart-scrollbar.form-range::-webkit-slider-thumb,
+        .table-scrollbar.form-range::-webkit-slider-thumb {
             width: 18px;
             height: 18px;
             margin-top: -4px;
-            background: rgba(59, 130, 246, 0.95);
+            background: rgba(107, 114, 128, 0.55); /* light gray thumb */
             border: 2px solid rgba(255, 255, 255, 0.95);
             border-radius: 50%;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
         }
-        .chart-scrollbar.form-range::-moz-range-track {
+        .chart-scrollbar.form-range::-moz-range-track,
+        .table-scrollbar.form-range::-moz-range-track {
             height: 10px;
-            background: rgba(59, 130, 246, 0.18);
+            background: rgba(15, 23, 42, 0.08); /* light gray */
             border-radius: 999px;
         }
-        .chart-scrollbar.form-range::-moz-range-thumb {
+        .chart-scrollbar.form-range::-moz-range-thumb,
+        .table-scrollbar.form-range::-moz-range-thumb {
             width: 18px;
             height: 18px;
-            background: rgba(59, 130, 246, 0.95);
+            background: rgba(107, 114, 128, 0.55); /* light gray thumb */
             border: 2px solid rgba(255, 255, 255, 0.95);
             border-radius: 50%;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
         }
-
         .navbar {
             background: var(--card-bg);
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -423,7 +468,7 @@
             <!-- 3. Detail Table -->
             <div class="dashboard-card mb-4">
                 <h5 class="mb-3"><i class="bi bi-table text-secondary"></i> 详细分时数据</h5>
-                <div class="table-responsive" style="max-height: 600px; border: 1px solid #e5e7eb; border-radius: 8px;">
+                <div class="table-responsive table-scroll" id="tableScroll" style="max-height: 600px; border: 1px solid #e5e7eb; border-radius: 8px;">
                     <table class="table table-hover table-custom mb-0">
                         <thead style="position: sticky; top: 0; z-index: 20;">
                             <tr>
@@ -470,6 +515,15 @@
                         <tbody id="table-body"></tbody>
                     </table>
                 </div>
+                <div class="table-scrollbar-controls mt-2" id="tableScrollControls" aria-label="表格横向滚动控制条">
+                    <button class="btn btn-light btn-sm" id="tableScrollLeft" type="button" title="向左滚动">
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    <input type="range" class="form-range table-scrollbar" id="tableScrollBar" min="0" max="0" value="0" step="1" aria-label="拖动滑块左右滚动表格">
+                    <button class="btn btn-light btn-sm" id="tableScrollRight" type="button" title="向右滚动">
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -513,6 +567,7 @@
                 setTimeout(() => {
                     charts.forEach(c => c.resize());
                     if (window.__syncChartScrollBar) window.__syncChartScrollBar();
+                    if (window.__syncTableScrollBar) window.__syncTableScrollBar();
                 }, 100);
 
             } catch (e) {
@@ -588,6 +643,7 @@
 
             // 3. Render Table
             renderTable(data);
+            if (window.__syncTableScrollBar) window.__syncTableScrollBar();
         }
 
         function renderPriceChart(hours, data) {
@@ -844,6 +900,49 @@
             });
 
             // Initial sync after first paint.
+            setTimeout(sync, 0);
+        })();
+
+        // Table horizontal scroll helper: match the chart's visible slider bar prompt.
+        (function initTableScrollBar() {
+            const scroller = document.getElementById('tableScroll');
+            const controls = document.getElementById('tableScrollControls');
+            const range = document.getElementById('tableScrollBar');
+            const btnLeft = document.getElementById('tableScrollLeft');
+            const btnRight = document.getElementById('tableScrollRight');
+            if (!scroller || !controls || !range || !btnLeft || !btnRight) return;
+
+            let rafId = 0;
+            const sync = () => {
+                const max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+                range.max = String(max);
+                range.value = String(Math.min(max, Math.max(0, scroller.scrollLeft)));
+                const shouldShow = max > 0;
+                controls.style.display = shouldShow ? 'flex' : 'none';
+                range.disabled = !shouldShow;
+            };
+            window.__syncTableScrollBar = sync;
+
+            const scheduleSync = () => {
+                if (rafId) cancelAnimationFrame(rafId);
+                rafId = requestAnimationFrame(() => {
+                    rafId = 0;
+                    sync();
+                });
+            };
+
+            scroller.addEventListener('scroll', scheduleSync, { passive: true });
+            window.addEventListener('resize', scheduleSync);
+            range.addEventListener('input', () => {
+                scroller.scrollLeft = Number(range.value);
+            });
+            btnLeft.addEventListener('click', () => {
+                scroller.scrollBy({ left: -Math.max(240, scroller.clientWidth * 0.8), behavior: 'smooth' });
+            });
+            btnRight.addEventListener('click', () => {
+                scroller.scrollBy({ left: Math.max(240, scroller.clientWidth * 0.8), behavior: 'smooth' });
+            });
+
             setTimeout(sync, 0);
         })();
 
