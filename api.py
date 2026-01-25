@@ -3,6 +3,7 @@
 from io import BytesIO
 import json
 import time
+import threading
 from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, logger
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 import os
 import glob
 import shutil
-from typing import List, Optional
+from typing import List, Optional, Literal
 import warnings
 import numpy as np
 import pandas as pd
@@ -103,6 +104,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 import re
 from pydantic import BaseModel, Field
+from datetime import date as Date, timedelta
 
 class SimilarDayRequest(BaseModel):
     target_date: str
@@ -412,6 +414,2726 @@ async def find_similar_days(request: SimilarDayRequest):
         import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# =========================
+# 策略报价/复盘（申报电量 + 胜率/收益）
+# =========================
+
+class StrategyDaySettingsIn(BaseModel):
+    date: str = Field(..., description="目标日期 YYYY-MM-DD")
+    # 策略系数为 24 个时刻分别报；保留 strategy_coeff 作为兼容/快速填充（可选）。
+    strategy_coeff: Optional[float] = Field(None, description="策略系数(可选：统一系数/兼容旧数据)")
+    strategy_coeff_hourly: Optional[List[float]] = Field(
+        None, description="24个时刻策略系数(00-23)，长度必须为24"
+    )
+    revenue_transfer: float = Field(0.0, description="收益转移（元，可正可负）")
+    note: Optional[str] = Field(None, description="备注/策略说明")
+
+
+class StrategyActualHourlyIn(BaseModel):
+    date: str = Field(..., description="日期 YYYY-MM-DD")
+    hourly: List[float] = Field(..., description="24小时实际分时电量(00-23)，长度必须为24")
+    source: Literal["actual", "settlement", "both"] = Field(
+        "both",
+        description="写入目标表：actual=strategy_actual_hourly, settlement=strategy_settlement_actual_hourly, both=两者都写",
+    )
+
+
+def _parse_iso_date(value: str) -> Date:
+    try:
+        return Date.fromisoformat(value)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"日期格式错误: {value}") from e
+
+
+def _hour_label_to_hour(label) -> Optional[int]:
+    """Accept '00:00', '00:00:00', datetime.time(0,0) etc -> 0..23"""
+    if label is None or (isinstance(label, float) and np.isnan(label)):
+        return None
+    if isinstance(label, datetime.time):
+        return int(label.hour)
+    s = str(label).strip()
+    if not s:
+        return None
+    # Normalize common formats
+    if s.endswith(":00") and len(s) == 5 and s[0:2].isdigit():
+        return int(s[0:2])
+    if s.endswith(":00:00") and len(s) >= 8 and s[0:2].isdigit():
+        return int(s[0:2])
+    # Fallback: try split
+    parts = s.split(":")
+    if parts and parts[0].isdigit():
+        h = int(parts[0])
+        if 0 <= h <= 23:
+            return h
+    return None
+
+
+_STRATEGY_TABLES_READY = False
+_STRATEGY_TABLES_LOCK = threading.Lock()
+
+
+def _ensure_strategy_tables():
+    """Create tables on-demand (safe to call per request)."""
+    # Table creation is idempotent, but repeatedly running these DDL statements is slow on remote DBs.
+    global _STRATEGY_TABLES_READY
+    if _STRATEGY_TABLES_READY:
+        return
+    with _STRATEGY_TABLES_LOCK:
+        if _STRATEGY_TABLES_READY:
+            return
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_actual_hourly (
+                        record_date DATE NOT NULL,
+                        hour TINYINT NOT NULL,
+                        actual_energy DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date, hour)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_settlement_actual_hourly (
+                        record_date DATE NOT NULL,
+                        hour TINYINT NOT NULL,
+                        actual_energy DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date, hour)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_day_settings (
+                        record_date DATE NOT NULL,
+                        strategy_coeff DOUBLE NULL,
+                        revenue_transfer DOUBLE NOT NULL DEFAULT 0,
+                        note TEXT NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_hourly_coeff (
+                        record_date DATE NOT NULL,
+                        hour TINYINT NOT NULL,
+                        coeff DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date, hour)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_price_hourly (
+                        record_date DATE NOT NULL,
+                        hour TINYINT NOT NULL,
+                        price_da DOUBLE NULL,
+                        price_rt DOUBLE NULL,
+                        price_diff DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date, hour)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_forecast_hourly (
+                        record_date DATE NOT NULL,
+                        hour TINYINT NOT NULL,
+                        forecast_energy DOUBLE NULL,
+                        source VARCHAR(32) NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date, hour)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_declared_hourly (
+                        record_date DATE NOT NULL,
+                        hour TINYINT NOT NULL,
+                        declared_energy DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date, hour)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_daily_profit (
+                        record_date DATE NOT NULL,
+                        profit_real DOUBLE NULL,
+                        profit_expected DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_daily_metrics (
+                        record_date DATE NOT NULL,
+                        actual_total DOUBLE NULL,
+                        forecast_total DOUBLE NULL,
+                        declared_total DOUBLE NULL,
+                        forecast_accuracy DOUBLE NULL,
+                        declared_accuracy DOUBLE NULL,
+                        forecast_bias DOUBLE NULL,
+                        declared_bias DOUBLE NULL,
+                        strategy_correct INT NULL,
+                        strategy_total INT NULL,
+                        strategy_correct_active INT NULL,
+                        strategy_total_active INT NULL,
+                        forecast_correct INT NULL,
+                        forecast_total_hours INT NULL,
+                        assessment_recovery DOUBLE NULL,
+                        profit_real DOUBLE NULL,
+                        profit_expected DOUBLE NULL,
+                        coeff_total DOUBLE NULL,
+                        coeff_avg DOUBLE NULL,
+                        coeff_min DOUBLE NULL,
+                        coeff_max DOUBLE NULL,
+                        updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (record_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    """
+                )
+            )
+
+    _STRATEGY_TABLES_READY = True
+
+
+def _upsert_actual_hourly(records: List[dict]) -> int:
+    if not records:
+        return 0
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_actual_hourly (record_date, hour, actual_energy)
+        VALUES (:record_date, :hour, :actual_energy)
+        ON DUPLICATE KEY UPDATE actual_energy=VALUES(actual_energy)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, records)
+
+    # Metrics may depend on this actual date as well as future dates that use it as D-7/14/21.
+    try:
+        touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
+        refresh = set()
+        for d in touched_dates:
+            refresh.add(d)
+            refresh.add(d + timedelta(days=7))
+            refresh.add(d + timedelta(days=14))
+            refresh.add(d + timedelta(days=21))
+        _refresh_daily_metrics_for_dates(list(refresh))
+    except Exception:
+        pass
+    return len(records)
+
+
+def _upsert_settlement_actual_hourly(records: List[dict]) -> int:
+    if not records:
+        return 0
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_settlement_actual_hourly (record_date, hour, actual_energy)
+        VALUES (:record_date, :hour, :actual_energy)
+        ON DUPLICATE KEY UPDATE actual_energy=VALUES(actual_energy)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, records)
+
+    # Metrics are evaluated against settlement actuals when available.
+    try:
+        touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
+        _refresh_daily_metrics_for_dates(touched_dates)
+    except Exception:
+        pass
+    return len(records)
+
+
+def _read_settlement_actual_hourly(d: Date) -> dict:
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, actual_energy FROM strategy_settlement_actual_hourly WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    out = {}
+    for h, v in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            out[hh] = None if v is None else float(v)
+    return out
+
+
+def _upsert_day_settings(
+    d: Date,
+    strategy_coeff: Optional[float] = None,
+    revenue_transfer: float = 0.0,
+    note: Optional[str] = None,
+):
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_day_settings (record_date, strategy_coeff, revenue_transfer, note)
+        VALUES (:record_date, :strategy_coeff, :revenue_transfer, :note)
+        ON DUPLICATE KEY UPDATE
+            strategy_coeff=VALUES(strategy_coeff),
+            revenue_transfer=VALUES(revenue_transfer),
+            note=VALUES(note)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(
+                sql,
+                {
+                    "record_date": d,
+                    "strategy_coeff": None if strategy_coeff is None else float(strategy_coeff),
+                    "revenue_transfer": float(revenue_transfer or 0.0),
+                    "note": note,
+                },
+            )
+
+    # Keep cached daily metrics in sync.
+    try:
+        _refresh_daily_metrics_for_dates([d])
+    except Exception:
+        pass
+
+
+def _upsert_hourly_coeff(d: Date, coeff_hourly: List[float]) -> None:
+    if coeff_hourly is None:
+        return
+    if len(coeff_hourly) != 24:
+        raise HTTPException(status_code=400, detail="strategy_coeff_hourly 长度必须为24")
+    _ensure_strategy_tables()
+    rows = []
+    for h in range(24):
+        v = coeff_hourly[h]
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            rows.append({"record_date": d, "hour": h, "coeff": None})
+        else:
+            rows.append({"record_date": d, "hour": h, "coeff": float(v)})
+    sql = text(
+        """
+        INSERT INTO strategy_hourly_coeff (record_date, hour, coeff)
+        VALUES (:record_date, :hour, :coeff)
+        ON DUPLICATE KEY UPDATE coeff=VALUES(coeff)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, rows)
+
+    # Keep cached daily metrics in sync.
+    try:
+        _refresh_daily_metrics_for_dates([d])
+    except Exception:
+        pass
+
+
+def _read_hourly_coeff(d: Date) -> dict:
+    """Return hour->coeff (only existing rows)."""
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, coeff FROM strategy_hourly_coeff WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    out = {}
+    for h, v in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            out[hh] = None if v is None else float(v)
+    return out
+
+
+def _upsert_price_hourly(records: List[dict]) -> int:
+    if not records:
+        return 0
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_price_hourly (record_date, hour, price_da, price_rt, price_diff)
+        VALUES (:record_date, :hour, :price_da, :price_rt, :price_diff)
+        ON DUPLICATE KEY UPDATE
+            price_da=VALUES(price_da),
+            price_rt=VALUES(price_rt),
+            price_diff=VALUES(price_diff)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, records)
+
+    # Keep cached daily metrics in sync (win rates & assessment depend on price_diff).
+    try:
+        touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
+        _refresh_daily_metrics_for_dates(touched_dates)
+    except Exception:
+        pass
+    return len(records)
+
+
+def _upsert_forecast_hourly(records: List[dict]) -> int:
+    """
+    Upsert forecast hourly energy.
+    This is used to decouple monthly forecasts from the D-7/14/21 weighted forecast when needed.
+    """
+    if not records:
+        return 0
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_forecast_hourly (record_date, hour, forecast_energy, source)
+        VALUES (:record_date, :hour, :forecast_energy, :source)
+        ON DUPLICATE KEY UPDATE
+            forecast_energy=VALUES(forecast_energy),
+            source=COALESCE(VALUES(source), source)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, records)
+    # Forecast impacts daily metrics for the target date.
+    try:
+        touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
+        _refresh_daily_metrics_for_dates(touched_dates)
+    except Exception:
+        pass
+    return len(records)
+
+
+def _read_forecast_hourly(d: Date) -> dict:
+    """Return hour->forecast_energy (only existing rows)."""
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, forecast_energy FROM strategy_forecast_hourly WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    out = {}
+    for h, v in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            out[hh] = None if v is None else float(v)
+    return out
+
+
+def _upsert_declared_hourly(records: List[dict]) -> int:
+    """
+    Upsert day-ahead declared hourly energy (actual submitted).
+    This is used for settlement-based assessment recovery.
+    """
+    if not records:
+        return 0
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_declared_hourly (record_date, hour, declared_energy)
+        VALUES (:record_date, :hour, :declared_energy)
+        ON DUPLICATE KEY UPDATE declared_energy=VALUES(declared_energy)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, records)
+
+    try:
+        touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
+        _refresh_daily_metrics_for_dates(touched_dates)
+    except Exception:
+        pass
+    return len(records)
+
+
+def _read_declared_hourly(d: Date) -> dict:
+    """Return hour->declared_energy (only existing rows)."""
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, declared_energy FROM strategy_declared_hourly WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    out = {}
+    for h, v in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            out[hh] = None if v is None else float(v)
+    return out
+
+
+def _read_price_diff(d: Date) -> dict:
+    """
+    Return hour -> price_diff (DA-RT).
+    Prefer cache_daily_hourly (system cache), then fallback to strategy_price_hourly (workbook import).
+    """
+    _ensure_strategy_tables()
+    out = {}
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, price_diff, price_da, price_rt FROM cache_daily_hourly WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    for h, diff, pda, prt in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            if diff is not None:
+                out[hh] = float(diff)
+            elif pda is not None and prt is not None:
+                out[hh] = float(pda) - float(prt)
+
+    # Fallback if cache is empty for this date.
+    if out:
+        return out
+
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, price_diff, price_da, price_rt FROM strategy_price_hourly WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    for h, diff, pda, prt in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            if diff is not None:
+                out[hh] = float(diff)
+            elif pda is not None and prt is not None:
+                out[hh] = float(pda) - float(prt)
+    return out
+
+
+def _upsert_daily_profit(d: Date, profit_real: Optional[float] = None, profit_expected: Optional[float] = None):
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_daily_profit (record_date, profit_real, profit_expected)
+        VALUES (:record_date, :profit_real, :profit_expected)
+        ON DUPLICATE KEY UPDATE
+            profit_real=COALESCE(VALUES(profit_real), profit_real),
+            profit_expected=COALESCE(VALUES(profit_expected), profit_expected)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(
+                sql,
+                {
+                    "record_date": d,
+                    "profit_real": None if profit_real is None else float(profit_real),
+                    "profit_expected": None if profit_expected is None else float(profit_expected),
+                },
+            )
+
+    # Keep cached daily metrics in sync.
+    try:
+        _refresh_daily_metrics_for_dates([d])
+    except Exception:
+        pass
+
+
+def _read_daily_profit(d: Date) -> dict:
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT profit_real, profit_expected FROM strategy_daily_profit WHERE record_date=:d"),
+            {"d": d},
+        ).fetchone()
+    if not row:
+        return {"profit_real": None, "profit_expected": None}
+    return {
+        "profit_real": None if row[0] is None else float(row[0]),
+        "profit_expected": None if row[1] is None else float(row[1]),
+    }
+
+
+def _read_actual_hourly(d: Date) -> dict:
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT hour, actual_energy FROM strategy_actual_hourly WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+    out = {}
+    for h, v in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            out[hh] = None if v is None else float(v)
+    return out
+
+
+def _read_actual_hourly_multi(dates: List[Date]) -> dict:
+    """
+    Read multiple days' actual hourly in a single query to reduce round-trips.
+    Return: { record_date (Date) -> {hour -> actual_energy} }
+    """
+    if not dates:
+        return {}
+    _ensure_strategy_tables()
+    params = {f"d{i}": d for i, d in enumerate(dates)}
+    in_list = ", ".join([f":d{i}" for i in range(len(dates))])
+    q = text(
+        f"""
+        SELECT record_date, hour, actual_energy
+        FROM strategy_actual_hourly
+        WHERE record_date IN ({in_list})
+        """
+    )
+    out = {d: {} for d in dates}
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    for dd, h, v in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            try:
+                d = dd if isinstance(dd, Date) else Date.fromisoformat(str(dd))
+            except Exception:
+                continue
+            if d not in out:
+                out[d] = {}
+            out[d][hh] = None if v is None else float(v)
+    return out
+
+
+def _count_actual_hourly(d: Date) -> int:
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        return int(
+            conn.execute(
+                text("SELECT COUNT(*) FROM strategy_actual_hourly WHERE record_date=:d"),
+                {"d": d},
+            ).scalar()
+            or 0
+        )
+
+
+def _read_day_settings(d: Date) -> dict:
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT strategy_coeff, revenue_transfer, note FROM strategy_day_settings WHERE record_date=:d"),
+            {"d": d},
+        ).fetchone()
+    if not row:
+        return {"strategy_coeff": None, "revenue_transfer": 0.0, "note": None}
+    return {
+        "strategy_coeff": None if row[0] is None else float(row[0]),
+        "revenue_transfer": 0.0 if row[1] is None else float(row[1]),
+        "note": row[2],
+    }
+
+
+def _read_prices(d: Date) -> dict:
+    """Return hour -> (price_da, price_rt)."""
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT hour, price_da, price_rt
+                FROM cache_daily_hourly
+                WHERE record_date=:d
+                """
+            ),
+            {"d": d},
+        ).fetchall()
+    out = {}
+    for h, pda, prt in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            out[hh] = (
+                None if pda is None else float(pda),
+                None if prt is None else float(prt),
+            )
+    return out
+
+
+def _compute_weighted_forecast(target: Date) -> dict:
+    """
+    月度预测电量（分时）：
+    forecast(h) = 0.5 * actual(D-7,h) + 0.3 * actual(D-14,h) + 0.2 * actual(D-21,h)
+    """
+    # If an explicit forecast exists (e.g., a month-specific forecast after portfolio/user changes),
+    # prefer it to avoid mixing with historical series that no longer represent the same load.
+    try:
+        explicit = _read_forecast_hourly(target)
+        if len(explicit) >= 24 and all(explicit.get(h) is not None for h in range(24)):
+            hourly = [float(explicit[h]) for h in range(24)]
+            return {
+                "target_date": target.isoformat(),
+                "source": "explicit",
+                "source_dates": [{"date": "explicit_forecast", "weight": 1.0}],
+                "source_status": [{"date": "explicit_forecast", "weight": 1.0, "count": 24, "has_24": True}],
+                "hourly": hourly,
+                "total": float(sum(hourly)),
+            }
+    except Exception:
+        pass
+
+    sources = [
+        (target - timedelta(days=7), 0.5),
+        (target - timedelta(days=14), 0.3),
+        (target - timedelta(days=21), 0.2),
+    ]
+    src_maps = []
+    sources_status = []
+    missing = []
+    actual_maps = _read_actual_hourly_multi([d for d, _w in sources])
+    for d, w in sources:
+        m = actual_maps.get(d) or {}
+        if len(m) < 24:
+            missing.append(d.isoformat())
+        sources_status.append({"date": d.isoformat(), "weight": w, "count": len(m), "has_24": len(m) >= 24})
+        src_maps.append((m, w, d))
+    if missing:
+        raise HTTPException(status_code=400, detail=f"缺少用于预测的历史实际分时电量: {', '.join(missing)}")
+
+    hourly = []
+    for h in range(24):
+        v = 0.0
+        for m, w, _d in src_maps:
+            v += float(m.get(h) or 0.0) * float(w)
+        hourly.append(v)
+
+    return {
+        "target_date": target.isoformat(),
+        "source": "weighted",
+        "source_dates": [{"date": d.isoformat(), "weight": w} for d, w in sources],
+        "source_status": sources_status,
+        "hourly": hourly,
+        "total": float(sum(hourly)),
+    }
+
+
+def _hourly_win_stats_for_date(d: Date) -> dict:
+    """
+    Strategy win-rate computed per-hour:
+    - based on coeff vs 1 and price_diff sign
+      * coeff < 1 and price_diff > 0 => correct
+      * coeff >= 1 and price_diff < 0 => correct
+
+    price_diff == 0 is excluded.
+    """
+    price_diff = _read_price_diff(d)
+    coeff = _read_hourly_coeff(d)
+
+    s_total = 0
+    s_correct = 0
+    s_total_active = 0
+    s_correct_active = 0
+
+    for h in range(24):
+        diff = price_diff.get(h)
+        if diff is None:
+            continue
+        diff = float(diff)
+        if diff == 0:
+            continue
+
+        ch = coeff.get(h)
+        if ch is not None:
+            s_total += 1
+            c = float(ch)
+            # Correct rule:
+            # - coeff < 1  => bias to more real-time, correct when DA>RT (diff>0)
+            # - coeff >= 1 => bias to more day-ahead, correct when DA<RT (diff<0)
+            ok = (c < 1 and diff > 0) or (c >= 1 and diff < 0)
+            if ok:
+                s_correct += 1
+            # "Active strategy" excludes neutral coeff==1
+            if abs(c - 1.0) > 1e-9:
+                s_total_active += 1
+                if ok:
+                    s_correct_active += 1
+
+    return {
+        "strategy_correct": s_correct,
+        "strategy_total": s_total,
+        "strategy_win_rate": (s_correct / s_total) if s_total else None,
+        "strategy_correct_active": s_correct_active,
+        "strategy_total_active": s_total_active,
+        "strategy_win_rate_active": (s_correct_active / s_total_active) if s_total_active else None,
+    }
+
+
+def _ratio_accuracy(a: float, b: float) -> Optional[float]:
+    """Return symmetric accuracy in [0,1] based on two totals."""
+    try:
+        a = float(a)
+        b = float(b)
+    except Exception:
+        return None
+    denom = max(a, b)
+    if denom <= 0:
+        return None
+    return min(a, b) / denom
+
+
+def _compute_declared_from_forecast(d: Date, forecast_hourly: List[float], coeff_fallback: Optional[float]) -> dict:
+    """
+    Compute declared hourly using stored hourly coeff if available.
+    Fallback order per hour:
+      - hourly coeff
+      - coeff_fallback (legacy scalar from day_settings)
+      - 1.0
+    """
+    coeff_hourly_map = _read_hourly_coeff(d)
+    out_coeff = []
+    declared = []
+    for h in range(24):
+        base = float(forecast_hourly[h] or 0.0)
+        ch = coeff_hourly_map.get(h)
+        if ch is None:
+            ch = 1.0 if coeff_fallback is None else float(coeff_fallback)
+        out_coeff.append(float(ch))
+        # Treat declared energy as a submitted value: keep it consistent with typical sheet rounding (0.001).
+        declared.append(round(base * float(ch), 3))
+    return {"coeff_hourly": out_coeff, "declared_hourly": declared, "declared_total": float(sum(declared))}
+
+
+def _compute_assessment_recovery(actual_hourly: dict, declared_hourly: List[float], price_diff: dict) -> dict:
+    """
+    Compute deviation assessment recovery under rule:
+      - declared must be within [0.8*actual, 1.2*actual]
+      - profit from exceeding that band is recovered if positive; losses are not recovered.
+    Uses incremental-profit representation: (A - D) * (DA-RT).
+    """
+    recovered = 0.0
+    used_hours = 0
+    for h in range(24):
+        a = actual_hourly.get(h)
+        diff = price_diff.get(h)
+        if a is None or diff is None:
+            continue
+        # Align with reference sheet rounding:
+        # - actual: 0.0001
+        # - declared (submitted): 0.001
+        a = round(float(a), 4)
+        d = round(float(declared_hourly[h]), 3)
+        diff = float(diff)
+        if a < 0:
+            continue
+        lo = 0.8 * a
+        hi = 1.2 * a
+        d_clamp = d
+        if d < lo:
+            d_clamp = lo
+        elif d > hi:
+            d_clamp = hi
+
+        inc = (a - d) * diff
+        inc_clamp = (a - d_clamp) * diff
+        recovered += max(0.0, inc - inc_clamp)
+        used_hours += 1
+    return {"assessment_recovery": float(recovered), "hours": used_hours}
+
+
+def _compute_profit_raw_expected(
+    actual_hourly: dict, declared_hourly: List[float], coeff_hourly: List[float], price_diff: dict
+) -> dict:
+    """
+    Compute per-day profit using incremental-profit representation:
+      profit_raw(h)      = (A - D) * (DA-RT)
+      profit_expected(h) = (A - clamp(A*coeff, [0.8A, 1.2A])) * (DA-RT)
+
+    These align with the reference workbook sheets:
+      - “每日收益测算” -> profit_raw, and net profit after recovery
+      - “预期收益（负荷无偏差）” -> profit_expected
+    """
+    raw = 0.0
+    expected = 0.0
+    used_hours = 0
+    for h in range(24):
+        a = actual_hourly.get(h)
+        diff = price_diff.get(h)
+        if a is None or diff is None:
+            continue
+        try:
+            a = round(float(a), 4)
+            d = round(float(declared_hourly[h]), 3)
+            c = float(coeff_hourly[h])
+            diff = float(diff)
+        except Exception:
+            continue
+        if a < 0:
+            continue
+        lo = 0.8 * a
+        hi = 1.2 * a
+        # Expected declared removes monthly forecast error: use actual * coeff, then clamp to penalty band.
+        # Expected declared removes monthly forecast error: use actual * coeff (and keep sheet-like rounding).
+        d_exp = round(a * c, 5)
+        d_exp_clamp = d_exp
+        if d_exp < lo:
+            d_exp_clamp = lo
+        elif d_exp > hi:
+            d_exp_clamp = hi
+        d_exp_clamp = round(float(d_exp_clamp), 5)
+        raw += (a - d) * diff
+        expected += (a - d_exp_clamp) * diff
+        used_hours += 1
+    if used_hours <= 0:
+        return {"profit_raw": None, "profit_expected": None, "hours": 0}
+    return {"profit_raw": float(raw), "profit_expected": float(expected), "hours": used_hours}
+
+
+def _compute_daily_metrics(d: Date) -> dict:
+    """
+    Compute and return a single-row daily metrics dict for strategy review.
+    This is used to persist a fixed daily table and avoid recomputing on every page view.
+    """
+    _ensure_strategy_tables()
+
+    settings = _read_day_settings(d)
+    coeff_total = settings.get("strategy_coeff")
+
+    coeff_hourly_map = _read_hourly_coeff(d)
+    coeff_vals = [coeff_hourly_map.get(h) for h in range(24)]
+    coeff_present = [v for v in coeff_vals if v is not None]
+    coeff_avg = (sum(coeff_present) / len(coeff_present)) if coeff_present else None
+    coeff_min = min(coeff_present) if coeff_present else None
+    coeff_max = max(coeff_present) if coeff_present else None
+
+    # Forecast inputs use strategy_actual_hourly; settlement evaluation prefers settlement actuals if available.
+    actual_map_forecast = _read_actual_hourly(d)
+    actual_map_settlement = _read_settlement_actual_hourly(d)
+    actual_map = actual_map_settlement if len(actual_map_settlement) >= 24 else actual_map_forecast
+
+    actual_total = None
+    if len(actual_map) >= 24:
+        actual_total = float(sum(float(actual_map.get(h) or 0.0) for h in range(24)))
+
+    forecast_total = None
+    declared_total = None
+    forecast_accuracy = None
+    declared_accuracy = None
+    forecast_bias = None
+    declared_bias = None
+    assessment_recovery = None
+    profit_real = None
+    profit_expected = None
+
+    declared_hourly = None
+    if actual_total is not None:
+        try:
+            forecast = _compute_weighted_forecast(d)
+            forecast_total = float(forecast["total"])
+            forecast_accuracy = _ratio_accuracy(actual_total, forecast_total)
+            forecast_bias = float(forecast_total) - float(actual_total)
+
+            # Declared energy: prefer imported actual-submitted (from settlement sheet) if complete; otherwise compute.
+            computed = _compute_declared_from_forecast(d, forecast["hourly"], coeff_total)
+            coeff_hourly = computed["coeff_hourly"]
+            computed_declared_hourly = computed["declared_hourly"]
+
+            declared_override = _read_declared_hourly(d)
+            override_complete = sum(1 for h in range(24) if declared_override.get(h) is not None) >= 24
+            if override_complete:
+                declared_hourly = [round(float(declared_override[h]), 3) for h in range(24)]
+            else:
+                # Fill any provided overrides, fallback to computed values.
+                declared_hourly = []
+                for h in range(24):
+                    v = declared_override.get(h)
+                    declared_hourly.append(round(float(v), 3) if v is not None else float(computed_declared_hourly[h]))
+
+            declared_total = float(sum(float(v or 0.0) for v in declared_hourly))
+            declared_accuracy = _ratio_accuracy(actual_total, declared_total)
+            declared_bias = float(declared_total) - float(actual_total)
+
+            diff = _read_price_diff(d)
+            rec = _compute_assessment_recovery(actual_map, declared_hourly, diff)
+            assessment_recovery = rec["assessment_recovery"]
+
+            ps = _compute_profit_raw_expected(actual_map, declared_hourly, coeff_hourly, diff)
+            transfer = float(settings.get("revenue_transfer") or 0.0)
+            if ps["profit_raw"] is not None:
+                profit_real = float(ps["profit_raw"]) - float(assessment_recovery or 0.0) + transfer
+            if ps["profit_expected"] is not None:
+                profit_expected = float(ps["profit_expected"]) + transfer
+        except Exception:
+            pass
+
+    ws = _hourly_win_stats_for_date(d)
+
+    return {
+        "record_date": d,
+        "actual_total": actual_total,
+        "forecast_total": forecast_total,
+        "declared_total": declared_total,
+        "forecast_accuracy": forecast_accuracy,
+        "declared_accuracy": declared_accuracy,
+        "forecast_bias": forecast_bias,
+        "declared_bias": declared_bias,
+        "strategy_correct": ws["strategy_correct"],
+        "strategy_total": ws["strategy_total"],
+        "strategy_correct_active": ws["strategy_correct_active"],
+        "strategy_total_active": ws["strategy_total_active"],
+        "forecast_correct": None,
+        "forecast_total_hours": None,
+        "assessment_recovery": assessment_recovery,
+        "profit_real": profit_real,
+        "profit_expected": profit_expected,
+        "coeff_total": coeff_total,
+        "coeff_avg": coeff_avg,
+        "coeff_min": coeff_min,
+        "coeff_max": coeff_max,
+    }
+
+
+def _upsert_daily_metrics(rows: List[dict]) -> int:
+    if not rows:
+        return 0
+    _ensure_strategy_tables()
+    sql = text(
+        """
+        INSERT INTO strategy_daily_metrics (
+            record_date,
+            actual_total, forecast_total, declared_total,
+            forecast_accuracy, declared_accuracy,
+            forecast_bias, declared_bias,
+            strategy_correct, strategy_total,
+            strategy_correct_active, strategy_total_active,
+            forecast_correct, forecast_total_hours,
+            assessment_recovery,
+            profit_real, profit_expected,
+            coeff_total, coeff_avg, coeff_min, coeff_max
+        )
+        VALUES (
+            :record_date,
+            :actual_total, :forecast_total, :declared_total,
+            :forecast_accuracy, :declared_accuracy,
+            :forecast_bias, :declared_bias,
+            :strategy_correct, :strategy_total,
+            :strategy_correct_active, :strategy_total_active,
+            :forecast_correct, :forecast_total_hours,
+            :assessment_recovery,
+            :profit_real, :profit_expected,
+            :coeff_total, :coeff_avg, :coeff_min, :coeff_max
+        )
+        ON DUPLICATE KEY UPDATE
+            actual_total=VALUES(actual_total),
+            forecast_total=VALUES(forecast_total),
+            declared_total=VALUES(declared_total),
+            forecast_accuracy=VALUES(forecast_accuracy),
+            declared_accuracy=VALUES(declared_accuracy),
+            forecast_bias=VALUES(forecast_bias),
+            declared_bias=VALUES(declared_bias),
+            strategy_correct=VALUES(strategy_correct),
+            strategy_total=VALUES(strategy_total),
+            strategy_correct_active=VALUES(strategy_correct_active),
+            strategy_total_active=VALUES(strategy_total_active),
+            forecast_correct=VALUES(forecast_correct),
+            forecast_total_hours=VALUES(forecast_total_hours),
+            assessment_recovery=VALUES(assessment_recovery),
+            profit_real=VALUES(profit_real),
+            profit_expected=VALUES(profit_expected),
+            coeff_total=VALUES(coeff_total),
+            coeff_avg=VALUES(coeff_avg),
+            coeff_min=VALUES(coeff_min),
+            coeff_max=VALUES(coeff_max)
+        """
+    )
+    with db_manager.engine.connect() as conn:
+        with conn.begin():
+            conn.execute(sql, rows)
+    return len(rows)
+
+
+def _refresh_daily_metrics_for_dates(dates: List[Date]) -> int:
+    uniq = sorted({d for d in dates if d is not None})
+    rows = []
+    for d in uniq:
+        rows.append(_compute_daily_metrics(d))
+    return _upsert_daily_metrics(rows)
+
+
+def _clamp_declared(actual: float, declared: float) -> float:
+    lo = 0.8 * actual
+    hi = 1.2 * actual
+    if declared < lo:
+        return lo
+    if declared > hi:
+        return hi
+    return declared
+
+
+def _compute_incremental_profit(
+    actual_hourly: dict,
+    declared_hourly: List[float],
+    prices: dict,
+) -> dict:
+    """
+    增量收益（相对基准：日前申报=实际电量）：
+      inc = (A - D) * (P_DA - P_RT)
+    偏差考核：D 不能超出 [0.8A, 1.2A]，超出部分带来的“正收益”回收（负收益不回收）。
+    """
+    gross = 0.0
+    gross_clamped = 0.0
+    used_hours = 0
+    for h in range(24):
+        a = actual_hourly.get(h)
+        if a is None:
+            continue
+        pda, prt = prices.get(h, (None, None))
+        if pda is None or prt is None:
+            continue
+        d = float(declared_hourly[h])
+        diff_p = float(pda) - float(prt)
+        inc = (float(a) - d) * diff_p
+        d_clamp = _clamp_declared(float(a), d)
+        inc_clamp = (float(a) - float(d_clamp)) * diff_p
+        gross += inc
+        gross_clamped += inc_clamp
+        used_hours += 1
+
+    assessment_fee = max(0.0, gross - gross_clamped)
+    net = gross - assessment_fee
+    return {
+        "gross": float(gross),
+        "assessment_fee": float(assessment_fee),
+        "net": float(net),
+        "used_hours": used_hours,
+    }
+
+
+def _parse_actual_sheet_like_reference(df: pd.DataFrame) -> List[dict]:
+    """Parse a sheet shaped like '代理实际分时电量'."""
+    # Drop fully empty columns
+    df = df.loc[:, ~df.isna().all(axis=0)]
+
+    # Find date column
+    date_col = None
+    for c in df.columns:
+        if str(c).strip() == "日期":
+            date_col = c
+            break
+    if date_col is None:
+        # fallback: first datetime-like column
+        for c in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[c]):
+                date_col = c
+                break
+    if date_col is None:
+        raise HTTPException(status_code=400, detail="未找到“日期”列")
+
+    # Build hour columns map
+    hour_col = {}
+    for c in df.columns:
+        h = _hour_label_to_hour(c)
+        if h is None:
+            continue
+        if 0 <= h <= 23:
+            hour_col[h] = c
+    missing_hours = [h for h in range(24) if h not in hour_col]
+    if missing_hours:
+        raise HTTPException(status_code=400, detail=f"缺少分时列: {missing_hours}")
+
+    records = []
+    for _, row in df.iterrows():
+        raw_date = row.get(date_col)
+        if pd.isna(raw_date):
+            continue
+        try:
+            d = pd.to_datetime(raw_date).date()
+        except Exception:
+            # Some templates include summary rows like "均值" in the date column.
+            continue
+        for h in range(24):
+            v = row.get(hour_col[h])
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                continue
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+            records.append({"record_date": d, "hour": int(h), "actual_energy": fv})
+    return records
+
+
+def _parse_strategy_sheet_coeff(df: pd.DataFrame) -> List[dict]:
+    """
+    Parse a sheet shaped like '日前报价策略' and extract hourly strategy coefficients.
+
+    Returns list of:
+      {
+        "date": date,
+        "strategy_coeff": <optional total coeff from 总量列>,
+        "strategy_coeff_hourly": [24 floats],
+        "note": <报价策略文本(可选)>
+      }
+    """
+    df = df.loc[:, ~df.isna().all(axis=0)]
+    if df.shape[1] < 6:
+        return []
+
+    date_col = df.columns[0]
+    strategy_text_col = df.columns[1] if df.shape[1] >= 2 else None
+    label_col = df.columns[2] if df.shape[1] >= 3 else None
+
+    total_col = None
+    for c in df.columns:
+        if str(c).strip() == "总量":
+            total_col = c
+            break
+
+    hour_cols = {}
+    for c in df.columns:
+        h = _hour_label_to_hour(c)
+        if h is None:
+            continue
+        hour_cols[h] = c
+
+    if label_col is None or len(hour_cols) < 24:
+        return []
+
+    df = df.copy()
+    df[date_col] = df[date_col].ffill()
+    if strategy_text_col is not None:
+        df[strategy_text_col] = df[strategy_text_col].ffill()
+
+    out = []
+    for _, r in df.iterrows():
+        if str(r.get(label_col)).strip() != "策略系数":
+            continue
+        raw_date = r.get(date_col)
+        if pd.isna(raw_date):
+            continue
+        try:
+            d = pd.to_datetime(raw_date).date()
+        except Exception:
+            continue
+
+        coeff_total = None
+        if total_col is not None:
+            v = r.get(total_col)
+            if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                try:
+                    coeff_total = float(v)
+                except Exception:
+                    coeff_total = None
+
+        coeff_hourly = []
+        ok = True
+        for h in range(24):
+            v = r.get(hour_cols.get(h))
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                ok = False
+                coeff_hourly.append(None)
+                continue
+            try:
+                coeff_hourly.append(float(v))
+            except Exception:
+                ok = False
+                coeff_hourly.append(None)
+        if not ok:
+            # still keep, but UI/logic can decide; for import we accept and store None where missing.
+            pass
+
+        note = None
+        if strategy_text_col is not None:
+            v = r.get(strategy_text_col)
+            if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                note = str(v)
+
+        out.append(
+            {
+                "date": d,
+                "strategy_coeff": coeff_total,
+                "strategy_coeff_hourly": coeff_hourly,
+                "note": note,
+            }
+        )
+    return out
+
+
+def _parse_profit_total_sheet(df: pd.DataFrame) -> List[dict]:
+    """
+    Parse sheets like:
+      - 每日收益测算 (profit_real)
+      - 预期收益（负荷无偏差） (profit_expected)
+    We only extract per-day total profit from column 1 (盈利（元）) on the date row.
+    """
+    # Read as-is; template often includes blank rows and multi-row blocks.
+    df = df.copy()
+    if df.shape[1] < 2:
+        return []
+    out = []
+    for _, row in df.iterrows():
+        raw_date = row.iloc[0]
+        if pd.isna(raw_date):
+            continue
+        try:
+            d = pd.to_datetime(raw_date).date()
+        except Exception:
+            continue
+        v = row.iloc[1]
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        try:
+            out.append({"date": d, "profit": float(v)})
+        except Exception:
+            continue
+    return out
+
+
+def _parse_price_hourly_from_profit_sheet(df: pd.DataFrame) -> List[dict]:
+    """
+    Parse hourly prices from '每日收益测算' style sheet.
+
+    Expected columns (header=0):
+      - 日期
+      - 量价（元/MWh、万kWh）: contains '电价'
+      - Unnamed: 3: contains '日前'/'实时'/'差值'
+      - Hour columns 00:00..23:00
+    """
+    df = df.copy()
+    if df.empty:
+        return []
+
+    # Identify date column
+    date_col = None
+    for c in df.columns:
+        if str(c).strip() == "日期":
+            date_col = c
+            break
+    if date_col is None:
+        date_col = df.columns[0]
+
+    # Identify type/side columns by position (stable in your template)
+    type_col = df.columns[2] if len(df.columns) > 2 else None
+    side_col = df.columns[3] if len(df.columns) > 3 else None
+
+    hour_cols = {}
+    for c in df.columns:
+        h = _hour_label_to_hour(c)
+        if h is not None and 0 <= h <= 23:
+            hour_cols[h] = c
+    if len(hour_cols) < 24 or type_col is None or side_col is None:
+        return []
+
+    df[date_col] = df[date_col].ffill()
+    # Merged-cell templates only set "电价" on the first row of the block.
+    if type_col is not None:
+        df[type_col] = df[type_col].ffill()
+
+    # Collect rows per date
+    by_date = {}
+    for _, r in df.iterrows():
+        if str(r.get(type_col)).strip() != "电价":
+            continue
+        side = str(r.get(side_col)).strip()
+        if side not in ("日前", "实时", "差值"):
+            continue
+        raw_date = r.get(date_col)
+        if pd.isna(raw_date):
+            continue
+        try:
+            d = pd.to_datetime(raw_date).date()
+        except Exception:
+            continue
+
+        m = by_date.setdefault(d, {})
+        m[side] = {h: r.get(hour_cols[h]) for h in range(24)}
+
+    records = []
+    for d, m in by_date.items():
+        da = m.get("日前", {})
+        rt = m.get("实时", {})
+        diff = m.get("差值", {})
+        for h in range(24):
+            pda = da.get(h)
+            prt = rt.get(h)
+            pdiff = diff.get(h)
+            def _to_float(x):
+                if x is None or (isinstance(x, float) and np.isnan(x)):
+                    return None
+                try:
+                    return float(x)
+                except Exception:
+                    return None
+            f_da = _to_float(pda)
+            f_rt = _to_float(prt)
+            f_diff = _to_float(pdiff)
+            if f_diff is None and f_da is not None and f_rt is not None:
+                f_diff = f_da - f_rt
+            # Only insert rows where at least something exists (diff preferred)
+            if f_da is None and f_rt is None and f_diff is None:
+                continue
+            records.append(
+                {
+                    "record_date": d,
+                    "hour": int(h),
+                    "price_da": f_da,
+                    "price_rt": f_rt,
+                    "price_diff": f_diff,
+                }
+            )
+    return records
+
+
+def _parse_declared_hourly_from_profit_sheet(df: pd.DataFrame) -> List[dict]:
+    """
+    Parse declared (day-ahead submitted) hourly energy from '每日收益测算' style sheet.
+
+    Expected columns (header=0):
+      - 日期
+      - 量价（元/MWh、万kWh）: contains '电量'
+      - Unnamed: 3: contains '日前'
+      - Hour columns 00:00..23:00
+    """
+    df = df.copy()
+    if df.empty:
+        return []
+
+    date_col = None
+    for c in df.columns:
+        if str(c).strip() == "日期":
+            date_col = c
+            break
+    if date_col is None:
+        date_col = df.columns[0]
+
+    type_col = df.columns[2] if len(df.columns) > 2 else None
+    side_col = df.columns[3] if len(df.columns) > 3 else None
+
+    hour_cols = {}
+    for c in df.columns:
+        h = _hour_label_to_hour(c)
+        if h is not None and 0 <= h <= 23:
+            hour_cols[h] = c
+    if len(hour_cols) < 24 or type_col is None or side_col is None:
+        return []
+
+    df[date_col] = df[date_col].ffill()
+    if type_col is not None:
+        df[type_col] = df[type_col].ffill()
+
+    records = []
+    for _, r in df.iterrows():
+        if str(r.get(type_col)).strip() != "电量":
+            continue
+        if str(r.get(side_col)).strip() != "日前":
+            continue
+        raw_date = r.get(date_col)
+        if pd.isna(raw_date):
+            continue
+        try:
+            d = pd.to_datetime(raw_date).date()
+        except Exception:
+            continue
+
+        for h in range(24):
+            v = r.get(hour_cols[h])
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                continue
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+            records.append({"record_date": d, "hour": int(h), "declared_energy": round(float(fv), 3)})
+    return records
+
+
+def _parse_realtime_actual_hourly_from_profit_sheet(df: pd.DataFrame) -> List[dict]:
+    """
+    Parse settlement (real-time) actual hourly energy from '每日收益测算' style sheet.
+
+    Expected columns (header=0):
+      - 日期
+      - 量价（元/MWh、万kWh）: contains '电量'
+      - Unnamed: 3: contains '实时'
+      - Hour columns 00:00..23:00
+    """
+    df = df.copy()
+    if df.empty:
+        return []
+
+    date_col = None
+    for c in df.columns:
+        if str(c).strip() == "日期":
+            date_col = c
+            break
+    if date_col is None:
+        date_col = df.columns[0]
+
+    type_col = df.columns[2] if len(df.columns) > 2 else None
+    side_col = df.columns[3] if len(df.columns) > 3 else None
+
+    hour_cols = {}
+    for c in df.columns:
+        h = _hour_label_to_hour(c)
+        if h is not None and 0 <= h <= 23:
+            hour_cols[h] = c
+    if len(hour_cols) < 24 or type_col is None or side_col is None:
+        return []
+
+    df[date_col] = df[date_col].ffill()
+    if type_col is not None:
+        df[type_col] = df[type_col].ffill()
+
+    records = []
+    for _, r in df.iterrows():
+        if str(r.get(type_col)).strip() != "电量":
+            continue
+        if str(r.get(side_col)).strip() != "实时":
+            continue
+        raw_date = r.get(date_col)
+        if pd.isna(raw_date):
+            continue
+        try:
+            d = pd.to_datetime(raw_date).date()
+        except Exception:
+            continue
+
+        for h in range(24):
+            v = r.get(hour_cols[h])
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                continue
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+            records.append({"record_date": d, "hour": int(h), "actual_energy": round(float(fv), 4)})
+    return records
+
+
+@app.post("/api/strategy/import-workbook")
+async def import_strategy_workbook(file: UploadFile = File(...)):
+    """
+    导入复盘/报价Excel（参考“天朗25年12月复盘.xlsx”）：
+    - 实际分时电量：写入 strategy_actual_hourly
+    - 策略系数：写入 strategy_day_settings + strategy_hourly_coeff
+    - 小时电价/价差：从“每日收益测算”导入，写入 strategy_price_hourly
+    - 日前申报电量（历史实际提交）：从“每日收益测算”导入，写入 strategy_declared_hourly
+    - 实时实际电量（用于清算/考核口径）：从“每日收益测算”导入，写入 strategy_settlement_actual_hourly
+
+    注意：每日收益（真实/预期）不再从Excel导入，改为按规则在后端计算并缓存到 strategy_daily_metrics。
+    """
+    if not file.filename.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="只支持 .xlsx")
+    content = await file.read()
+    xl = pd.ExcelFile(BytesIO(content))
+
+    # Heuristics: pick first matching sheets, fallback to first/second sheet.
+    actual_sheet = None
+    strategy_sheet = None
+    for name in xl.sheet_names:
+        if actual_sheet is None and ("实际" in name and "分时" in name and "电量" in name):
+            actual_sheet = name
+        if strategy_sheet is None and ("报价" in name or "策略" in name):
+            strategy_sheet = name
+    if actual_sheet is None:
+        actual_sheet = xl.sheet_names[0]
+    if strategy_sheet is None and len(xl.sheet_names) >= 2:
+        strategy_sheet = xl.sheet_names[1]
+
+    profit_sheet_real = None
+    profit_sheet_expected = None
+    for name in xl.sheet_names:
+        if profit_sheet_real is None and ("收益测算" in name):
+            profit_sheet_real = name
+        if profit_sheet_expected is None and ("预期收益" in name or "无偏差" in name):
+            profit_sheet_expected = name
+
+    inserted_actual = 0
+    inserted_settings = 0
+    inserted_price_hourly = 0
+    inserted_declared_hourly = 0
+    inserted_settlement_actual_hourly = 0
+
+    # Actual hourly
+    try:
+        df_actual = pd.read_excel(BytesIO(content), sheet_name=actual_sheet, header=0, engine="openpyxl")
+        actual_records = _parse_actual_sheet_like_reference(df_actual)
+        inserted_actual = _upsert_actual_hourly(actual_records)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"解析实际分时电量失败: {e}") from e
+
+    # Strategy coeff
+    if strategy_sheet is not None:
+        try:
+            df_strategy = pd.read_excel(BytesIO(content), sheet_name=strategy_sheet, header=0, engine="openpyxl")
+            settings = _parse_strategy_sheet_coeff(df_strategy)
+            for s in settings:
+                _upsert_day_settings(s["date"], s.get("strategy_coeff"), 0.0, s.get("note"))
+                if s.get("strategy_coeff_hourly") is not None:
+                    _upsert_hourly_coeff(s["date"], s["strategy_coeff_hourly"])
+            inserted_settings = len(settings)
+        except Exception:
+            # Not fatal: allow import actuals only.
+            inserted_settings = 0
+
+    # Hourly prices/diffs (from profit sheet)
+    if profit_sheet_real is not None:
+        try:
+            df_profit_price = pd.read_excel(BytesIO(content), sheet_name=profit_sheet_real, header=0, engine="openpyxl")
+            price_rows = _parse_price_hourly_from_profit_sheet(df_profit_price)
+            inserted_price_hourly = _upsert_price_hourly(price_rows)
+        except Exception:
+            inserted_price_hourly = 0
+
+        # Also import declared day-ahead energy (actual submitted) from the same sheet.
+        try:
+            declared_rows = _parse_declared_hourly_from_profit_sheet(df_profit_price)
+            inserted_declared_hourly = _upsert_declared_hourly(declared_rows)
+        except Exception:
+            inserted_declared_hourly = 0
+
+        # Also import settlement actual hourly energy (real-time).
+        try:
+            rt_actual_rows = _parse_realtime_actual_hourly_from_profit_sheet(df_profit_price)
+            inserted_settlement_actual_hourly = _upsert_settlement_actual_hourly(rt_actual_rows)
+        except Exception:
+            inserted_settlement_actual_hourly = 0
+
+    return {
+        "status": "success",
+        "sheets": xl.sheet_names,
+        "used": {"actual_sheet": actual_sheet, "strategy_sheet": strategy_sheet},
+        "inserted": {
+            "actual_hourly": inserted_actual,
+            "day_settings": inserted_settings,
+            "price_hourly": inserted_price_hourly,
+            "declared_hourly": inserted_declared_hourly,
+            "settlement_actual_hourly": inserted_settlement_actual_hourly,
+        },
+    }
+
+
+@app.post("/api/strategy/actual-hourly/upload")
+async def upload_strategy_actual_hourly(
+    file: UploadFile = File(...),
+    sheet_name: Optional[str] = Form(None),
+    target_date: Optional[str] = Form(None),
+):
+    """
+    上传实际分时电量（单独上传一张表也可以）。
+
+    业务约束：日常只需要更新目标日 D 的 D-5 实际分时电量。
+    - 若传入 target_date(=D)，则仅写入 D-5 当天的 24 点数据（其余日期忽略），避免误导入。
+    - 不传 target_date 则按文件内容全量写入（适合首次导入/补历史）。
+    """
+    if not file.filename.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="只支持 .xlsx")
+    content = await file.read()
+    xl = pd.ExcelFile(BytesIO(content))
+    target_sheet = sheet_name or xl.sheet_names[0]
+    if target_sheet not in xl.sheet_names:
+        raise HTTPException(status_code=400, detail=f"sheet 不存在: {target_sheet}")
+    df = pd.read_excel(BytesIO(content), sheet_name=target_sheet, header=0, engine="openpyxl")
+    records = _parse_actual_sheet_like_reference(df)
+
+    expected_date = None
+    if target_date:
+        d = _parse_iso_date(target_date)
+        expected_date = (d - timedelta(days=5))
+        records = [r for r in records if r.get("record_date") == expected_date]
+
+    inserted = _upsert_actual_hourly(records)
+    return {
+        "status": "success",
+        "sheet": target_sheet,
+        "inserted": inserted,
+        "expected_date": None if expected_date is None else expected_date.isoformat(),
+    }
+
+
+@app.post("/api/strategy/actual-hourly")
+async def upsert_strategy_actual_hourly(payload: StrategyActualHourlyIn):
+    """
+    直接写入“实际分时电量”到数据库（不依赖Excel）。
+
+    - source=actual: 写入 strategy_actual_hourly
+    - source=settlement: 写入 strategy_settlement_actual_hourly
+    - source=both: 两张表都写（默认）
+    """
+    d = _parse_iso_date(payload.date)
+    if len(payload.hourly) != 24:
+        raise HTTPException(status_code=400, detail="hourly 长度必须为24")
+
+    rows = []
+    for h, v in enumerate(payload.hourly):
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except Exception:
+            continue
+        # Store raw float; profit/assessment computations apply their own rounding rules.
+        rows.append({"record_date": d, "hour": int(h), "actual_energy": float(fv)})
+
+    inserted_actual = 0
+    inserted_settlement = 0
+    if payload.source in ("actual", "both"):
+        inserted_actual = _upsert_actual_hourly(rows)
+    if payload.source in ("settlement", "both"):
+        inserted_settlement = _upsert_settlement_actual_hourly(rows)
+
+    return {
+        "status": "success",
+        "date": d.isoformat(),
+        "inserted": {
+            "actual_hourly": int(inserted_actual),
+            "settlement_actual_hourly": int(inserted_settlement),
+        },
+    }
+
+
+@app.post("/api/strategy/actual-hourly/batch")
+async def upsert_strategy_actual_hourly_batch(payload: List[StrategyActualHourlyIn]):
+    """批量写入多天的实际分时电量到数据库（不依赖Excel）。"""
+    inserted_actual = 0
+    inserted_settlement = 0
+    dates = []
+    for item in payload:
+        d = _parse_iso_date(item.date)
+        dates.append(d.isoformat())
+        if len(item.hourly) != 24:
+            raise HTTPException(status_code=400, detail=f"{item.date} hourly 长度必须为24")
+        rows = []
+        for h, v in enumerate(item.hourly):
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+            # Store raw float; profit/assessment computations apply their own rounding rules.
+            rows.append({"record_date": d, "hour": int(h), "actual_energy": float(fv)})
+        if item.source in ("actual", "both"):
+            inserted_actual += _upsert_actual_hourly(rows)
+        if item.source in ("settlement", "both"):
+            inserted_settlement += _upsert_settlement_actual_hourly(rows)
+
+    return {
+        "status": "success",
+        "dates": dates,
+        "inserted": {
+            "actual_hourly": int(inserted_actual),
+            "settlement_actual_hourly": int(inserted_settlement),
+        },
+    }
+
+
+@app.post("/api/strategy/day-settings")
+async def set_strategy_day_settings(payload: StrategyDaySettingsIn):
+    d = _parse_iso_date(payload.date)
+    if payload.strategy_coeff_hourly is not None:
+        if len(payload.strategy_coeff_hourly) != 24:
+            raise HTTPException(status_code=400, detail="strategy_coeff_hourly 长度必须为24")
+        _upsert_hourly_coeff(d, payload.strategy_coeff_hourly)
+
+        # Also store a derived "total coeff" for quick display if not provided.
+        coeff_total = payload.strategy_coeff
+        if coeff_total is None:
+            vals = [v for v in payload.strategy_coeff_hourly if v is not None]
+            coeff_total = (sum(vals) / len(vals)) if vals else None
+        _upsert_day_settings(d, coeff_total, payload.revenue_transfer, payload.note)
+    else:
+        # Back-compat: only a scalar coeff
+        _upsert_day_settings(d, payload.strategy_coeff, payload.revenue_transfer, payload.note)
+    return {"status": "success", "date": d.isoformat()}
+
+
+@app.get("/api/strategy/quote")
+async def strategy_quote(date: str, strategy_coeff: Optional[float] = Query(None, description="可选：临时覆盖策略系数")):
+    """返回某天的预测电量 + 申报电量（默认使用已保存策略系数，可用参数覆盖）。"""
+    d = _parse_iso_date(date)
+    # If called as a plain function (not via FastAPI injection), `strategy_coeff` may still be a Query() object.
+    if strategy_coeff is not None and not isinstance(strategy_coeff, (int, float)):
+        strategy_coeff = None
+    settings = _read_day_settings(d)
+    coeff_hourly_map = _read_hourly_coeff(d)
+    coeff_hourly = [None] * 24
+    coeff_source = None
+    for h in range(24):
+        coeff_hourly[h] = coeff_hourly_map.get(h)
+
+    # Prefer hourly coefficients if we have (most/all) of them.
+    if any(v is not None for v in coeff_hourly):
+        coeff_source = "hourly"
+    coeff = strategy_coeff if strategy_coeff is not None else settings["strategy_coeff"]
+    forecast = _compute_weighted_forecast(d)
+
+    declared = []
+    used_coeff_hourly = []
+    for h in range(24):
+        base = float(forecast["hourly"][h])
+        if coeff_source == "hourly":
+            ch = coeff_hourly[h]
+            if ch is None:
+                # fallback to scalar if hour missing
+                ch = 1.0 if coeff is None else float(coeff)
+            used_coeff_hourly.append(float(ch))
+            declared.append(round(base * float(ch), 3))
+        else:
+            c = 1.0 if coeff is None else float(coeff)
+            used_coeff_hourly.append(float(c))
+            declared.append(round(base * float(c), 3))
+    if coeff_source is None:
+        coeff_source = "scalar" if coeff is not None else "default_1.0"
+
+    # Daily update reminder: only D-5 actual hourly is updated day-by-day.
+    update_d = d - timedelta(days=5)
+    update_cnt = _count_actual_hourly(update_d)
+
+    return {
+        "status": "success",
+        "date": d.isoformat(),
+        "strategy_coeff": None if coeff is None else float(coeff),
+        "strategy_coeff_hourly": used_coeff_hourly,
+        "strategy_coeff_source": coeff_source,
+        "forecast": forecast,
+        "declared": {"hourly": declared, "total": float(sum(declared))},
+        "settings": settings,
+        "data_reminder": {
+            "update_actual_date": update_d.isoformat(),
+            "update_actual_count": int(update_cnt),
+            "update_actual_has_24": bool(update_cnt >= 24),
+        },
+    }
+
+
+@app.get("/api/strategy/review")
+async def strategy_review(month: str):
+    """
+    月度复盘：
+    - 策略胜率（逐时）：按策略系数与小时价差的方向规则统计
+    - 收益（真实/预期）：按“每日收益测算/预期收益（负荷无偏差）”同口径公式计算并落库缓存
+    - 电量：申报/月度预测 的总量、准确率、偏差；考核回收按±20%规则计算
+    """
+    # month: YYYY-MM
+    try:
+        y, m = month.split("-")
+        start = Date(int(y), int(m), 1)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="month 格式应为 YYYY-MM") from e
+    # next month
+    if start.month == 12:
+        end = Date(start.year + 1, 1, 1)
+    else:
+        end = Date(start.year, start.month + 1, 1)
+
+    _ensure_strategy_tables()
+
+    def _list_strategy_dates(range_start: Date, range_end: Date, inclusive_end: bool) -> List[Date]:
+        op = "<=" if inclusive_end else "<"
+        q = f"""
+            SELECT record_date
+            FROM (
+                SELECT DISTINCT record_date
+                FROM strategy_day_settings
+                WHERE record_date >= :start AND record_date {op} :end
+                UNION
+                SELECT DISTINCT record_date
+                FROM strategy_hourly_coeff
+                WHERE record_date >= :start AND record_date {op} :end
+            ) t
+            ORDER BY record_date
+        """
+        with db_manager.engine.connect() as conn:
+            return [r[0] for r in conn.execute(text(q), {"start": range_start, "end": range_end}).fetchall()]
+
+    dates = _list_strategy_dates(start, end, inclusive_end=False)
+
+    # Ensure daily metrics rows exist (fixed daily table; compute missing only).
+    try:
+        with db_manager.engine.connect() as conn:
+            existing = {
+                r[0]
+                for r in conn.execute(
+                    text(
+                        """
+                        SELECT record_date
+                        FROM strategy_daily_metrics
+                        WHERE record_date >= :start AND record_date < :end
+                        """
+                    ),
+                    {"start": start, "end": end},
+                ).fetchall()
+            }
+        missing = [d for d in dates if d not in existing]
+        if missing:
+            _refresh_daily_metrics_for_dates(missing)
+    except Exception:
+        pass
+
+    daily = []
+    # Track cumulative (from earliest strategy date)
+    with db_manager.engine.connect() as conn:
+        first_setting = conn.execute(
+            text(
+                """
+                SELECT MIN(record_date) AS d
+                FROM (
+                    SELECT record_date FROM strategy_day_settings
+                    UNION
+                    SELECT record_date FROM strategy_hourly_coeff
+                ) t
+                """
+            )
+        ).scalar()
+
+    cum_start = first_setting if first_setting else start
+    today = Date.today()
+
+    def compute_range_summary(range_start: Date, range_end: Date) -> dict:
+        # Read cached metrics (fixed daily table). If missing, compute once.
+        strategy_dates = _list_strategy_dates(range_start, range_end, inclusive_end=True)
+
+        try:
+            with db_manager.engine.connect() as conn:
+                existing = {
+                    r[0]
+                    for r in conn.execute(
+                        text(
+                            """
+                            SELECT record_date
+                            FROM strategy_daily_metrics
+                            WHERE record_date >= :start AND record_date <= :end
+                            """
+                        ),
+                        {"start": range_start, "end": range_end},
+                    ).fetchall()
+                }
+            missing = [d for d in strategy_dates if d not in existing]
+            if missing:
+                _refresh_daily_metrics_for_dates(missing)
+        except Exception:
+            pass
+
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                        record_date,
+                        profit_expected, profit_real,
+                        strategy_correct, strategy_total,
+                        declared_accuracy, forecast_accuracy,
+                        declared_bias, forecast_bias,
+                        assessment_recovery,
+                        coeff_total, coeff_avg
+                    FROM strategy_daily_metrics
+                    WHERE record_date >= :start AND record_date <= :end
+                    ORDER BY record_date
+                    """
+                ),
+                {"start": range_start, "end": range_end},
+            ).fetchall()
+
+        wins = 0
+        total_days = 0
+        sum_expected = 0.0
+        sum_real = 0.0
+
+        s_correct = 0
+        s_total = 0
+        f_correct = 0
+        f_total = 0
+        declared_acc_vals = []
+        forecast_acc_vals = []
+        declared_bias_sum = 0.0
+        forecast_bias_sum = 0.0
+        assessment_recovery_sum = 0.0
+
+        for (
+            _d,
+            p_exp,
+            p_real,
+            sc,
+            st,
+            d_acc,
+            f_acc,
+            d_bias,
+            f_bias,
+            rec,
+            coeff_total,
+            coeff_avg,
+        ) in rows:
+            if p_exp is None:
+                continue
+            if coeff_total is None and coeff_avg is None:
+                continue
+            total_days += 1
+            sum_expected += float(p_exp)
+            if float(p_exp) > 0:
+                wins += 1
+            if p_real is not None:
+                sum_real += float(p_real)
+
+            if st:
+                s_correct += int(sc or 0)
+                s_total += int(st)
+
+            if d_acc is not None:
+                declared_acc_vals.append(float(d_acc))
+            if f_acc is not None:
+                forecast_acc_vals.append(float(f_acc))
+            if d_bias is not None:
+                declared_bias_sum += float(d_bias)
+            if f_bias is not None:
+                forecast_bias_sum += float(f_bias)
+            if rec is not None:
+                assessment_recovery_sum += float(rec)
+
+        win_rate = (wins / total_days) if total_days else None
+        return {
+            "start": range_start.isoformat(),
+            "end": range_end.isoformat(),
+            "days": total_days,
+            "wins": wins,
+            "win_rate": win_rate,
+            "expected_profit_sum": float(sum_expected),
+            "real_profit_sum": float(sum_real),
+            "strategy_win_rate": (s_correct / s_total) if s_total else None,
+            "strategy_hours": s_total,
+            "declared_accuracy_avg": (sum(declared_acc_vals) / len(declared_acc_vals)) if declared_acc_vals else None,
+            "forecast_accuracy_avg": (sum(forecast_acc_vals) / len(forecast_acc_vals)) if forecast_acc_vals else None,
+            "declared_bias_sum": float(declared_bias_sum) if total_days else None,
+            "forecast_bias_sum": float(forecast_bias_sum) if total_days else None,
+            "assessment_recovery_sum": float(assessment_recovery_sum),
+        }
+
+    # Month daily rows (read fixed daily table)
+    if dates:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                        record_date,
+                        coeff_avg, coeff_min, coeff_max, coeff_total,
+                        actual_total,
+                        declared_total,
+                        forecast_total,
+                        declared_accuracy,
+                        forecast_accuracy,
+                        declared_bias,
+                        forecast_bias,
+                        strategy_correct, strategy_total,
+                        assessment_recovery,
+                        profit_real, profit_expected
+                    FROM strategy_daily_metrics
+                    WHERE record_date >= :start AND record_date < :end
+                      AND (coeff_total IS NOT NULL OR coeff_avg IS NOT NULL)
+                    ORDER BY record_date
+                    """
+                ),
+                {"start": start, "end": end},
+            ).fetchall()
+
+        # Precompute per-day DA-RT diagnostics in one query (avoid per-row round trips).
+        diff_stats = {}
+        try:
+            with db_manager.engine.connect() as conn:
+                ds = conn.execute(
+                    text(
+                        """
+                        SELECT
+                            record_date,
+                            AVG(CASE
+                                  WHEN price_diff IS NOT NULL THEN price_diff
+                                  WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN (price_da - price_rt)
+                                  ELSE NULL
+                                END) AS avg_diff,
+                            SUM(CASE
+                                  WHEN (CASE
+                                          WHEN price_diff IS NOT NULL THEN price_diff
+                                          WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN (price_da - price_rt)
+                                          ELSE NULL
+                                        END) > 0 THEN 1 ELSE 0
+                                END) AS pos_cnt,
+                            SUM(CASE
+                                  WHEN (CASE
+                                          WHEN price_diff IS NOT NULL THEN price_diff
+                                          WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN (price_da - price_rt)
+                                          ELSE NULL
+                                        END) < 0 THEN 1 ELSE 0
+                                END) AS neg_cnt,
+                            COUNT(CASE
+                                    WHEN price_diff IS NOT NULL THEN 1
+                                    WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN 1
+                                    ELSE NULL
+                                  END) AS cnt
+                        FROM cache_daily_hourly
+                        WHERE record_date >= :start AND record_date < :end
+                        GROUP BY record_date
+                        """
+                    ),
+                    {"start": start, "end": end},
+                ).fetchall()
+            for d_rec, avg_diff, pos_cnt, neg_cnt, cnt in ds:
+                if not d_rec:
+                    continue
+                cnt_i = int(cnt or 0)
+                if cnt_i < 24:
+                    diff_stats[d_rec] = (None, None, None)
+                else:
+                    diff_stats[d_rec] = (
+                        None if avg_diff is None else float(avg_diff),
+                        float(pos_cnt or 0) / float(cnt_i),
+                        float(neg_cnt or 0) / float(cnt_i),
+                    )
+        except Exception:
+            diff_stats = {}
+
+        # If cache table is missing/unavailable, fallback to the smaller strategy_price_hourly.
+        if not diff_stats:
+            try:
+                with db_manager.engine.connect() as conn:
+                    ds = conn.execute(
+                        text(
+                            """
+                            SELECT
+                                record_date,
+                                AVG(CASE
+                                      WHEN price_diff IS NOT NULL THEN price_diff
+                                      WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN (price_da - price_rt)
+                                      ELSE NULL
+                                    END) AS avg_diff,
+                                SUM(CASE
+                                      WHEN (CASE
+                                              WHEN price_diff IS NOT NULL THEN price_diff
+                                              WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN (price_da - price_rt)
+                                              ELSE NULL
+                                            END) > 0 THEN 1 ELSE 0
+                                    END) AS pos_cnt,
+                                SUM(CASE
+                                      WHEN (CASE
+                                              WHEN price_diff IS NOT NULL THEN price_diff
+                                              WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN (price_da - price_rt)
+                                              ELSE NULL
+                                            END) < 0 THEN 1 ELSE 0
+                                    END) AS neg_cnt,
+                                COUNT(CASE
+                                        WHEN price_diff IS NOT NULL THEN 1
+                                        WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN 1
+                                        ELSE NULL
+                                      END) AS cnt
+                            FROM strategy_price_hourly
+                            WHERE record_date >= :start AND record_date < :end
+                            GROUP BY record_date
+                            """
+                        ),
+                        {"start": start, "end": end},
+                    ).fetchall()
+                for d_rec, avg_diff, pos_cnt, neg_cnt, cnt in ds:
+                    if not d_rec:
+                        continue
+                    cnt_i = int(cnt or 0)
+                    if cnt_i < 24:
+                        diff_stats[d_rec] = (None, None, None)
+                    else:
+                        diff_stats[d_rec] = (
+                            None if avg_diff is None else float(avg_diff),
+                            float(pos_cnt or 0) / float(cnt_i),
+                            float(neg_cnt or 0) / float(cnt_i),
+                        )
+            except Exception:
+                pass
+
+        for (
+            dd,
+            coeff_avg,
+            coeff_min,
+            coeff_max,
+            coeff_total,
+            actual_total,
+            declared_total,
+            forecast_total,
+            declared_accuracy,
+            forecast_accuracy,
+            declared_bias,
+            forecast_bias,
+            s_correct,
+            s_total,
+            assessment_recovery,
+            profit_real,
+            profit_expected,
+        ) in rows:
+            price_diff_avg, price_diff_pos_share, price_diff_neg_share = diff_stats.get(dd, (None, None, None))
+
+            daily.append(
+                {
+                    "date": dd.isoformat() if hasattr(dd, "isoformat") else str(dd),
+                    "strategy_coeff_total": None if coeff_total is None else float(coeff_total),
+                    "strategy_coeff_avg": None if coeff_avg is None else float(coeff_avg),
+                    "strategy_coeff_min": None if coeff_min is None else float(coeff_min),
+                    "strategy_coeff_max": None if coeff_max is None else float(coeff_max),
+                    "actual_total": None if actual_total is None else float(actual_total),
+                    "declared_total": None if declared_total is None else float(declared_total),
+                    "forecast_total": None if forecast_total is None else float(forecast_total),
+                    "declared_accuracy": None if declared_accuracy is None else float(declared_accuracy),
+                    "forecast_accuracy": None if forecast_accuracy is None else float(forecast_accuracy),
+                    "declared_bias": None if declared_bias is None else float(declared_bias),
+                    "forecast_bias": None if forecast_bias is None else float(forecast_bias),
+                    "strategy_win_rate": (float(s_correct) / float(s_total)) if s_total else None,
+                    "strategy_hours": int(s_total or 0),
+                    "assessment_recovery": None if assessment_recovery is None else float(assessment_recovery),
+                    "profit_real": None if profit_real is None else float(profit_real),
+                    "profit_expected": None if profit_expected is None else float(profit_expected),
+                    "price_diff_avg": None if price_diff_avg is None else float(price_diff_avg),
+                    "price_diff_pos_share": None if price_diff_pos_share is None else float(price_diff_pos_share),
+                    "price_diff_neg_share": None if price_diff_neg_share is None else float(price_diff_neg_share),
+                }
+            )
+
+    # Month summary
+    month_days = 0
+    month_wins = 0
+    month_expected_sum = 0.0
+    month_real_sum = 0.0
+    month_forecast_acc_vals = []
+    month_forecast_bias_vals = []
+    month_declared_acc_vals = []
+    month_declared_bias_vals = []
+    month_assessment_recovery_sum = 0.0
+    month_s_correct = 0
+    month_s_total = 0
+    month_f_correct = 0
+    month_f_total = 0
+    for r in daily:
+        if r["profit_expected"] is not None and (r.get("strategy_coeff_avg") is not None or r.get("strategy_coeff_total") is not None):
+            month_days += 1
+            month_expected_sum += float(r["profit_expected"])
+            if float(r["profit_expected"]) > 0:
+                month_wins += 1
+        if r["profit_real"] is not None and (r.get("strategy_coeff_avg") is not None or r.get("strategy_coeff_total") is not None):
+            month_real_sum += float(r["profit_real"])
+        if r.get("forecast_accuracy") is not None:
+            month_forecast_acc_vals.append(float(r["forecast_accuracy"]))
+        if r.get("forecast_bias") is not None:
+            month_forecast_bias_vals.append(float(r["forecast_bias"]))
+        if r.get("declared_accuracy") is not None:
+            month_declared_acc_vals.append(float(r["declared_accuracy"]))
+        if r.get("declared_bias") is not None:
+            month_declared_bias_vals.append(float(r["declared_bias"]))
+        if r.get("assessment_recovery") is not None:
+            month_assessment_recovery_sum += float(r["assessment_recovery"] or 0.0)
+        if r.get("strategy_hours"):
+            month_s_total += int(r["strategy_hours"])
+            # reconstruct correct from rate is lossy; just recompute per date when needed
+        if r.get("forecast_hours"):
+            month_f_total += int(r["forecast_hours"])
+
+    month_summary = {
+        "month": month,
+        "days": month_days,
+        "wins": month_wins,
+        "win_rate": (month_wins / month_days) if month_days else None,
+        "expected_profit_sum": float(month_expected_sum),
+        "real_profit_sum": float(month_real_sum),
+        "declared_accuracy_avg": (sum(month_declared_acc_vals) / len(month_declared_acc_vals)) if month_declared_acc_vals else None,
+        "forecast_accuracy_avg": (sum(month_forecast_acc_vals) / len(month_forecast_acc_vals)) if month_forecast_acc_vals else None,
+        "declared_bias_sum": float(sum(month_declared_bias_vals)) if month_declared_bias_vals else None,
+        "forecast_bias_sum": float(sum(month_forecast_bias_vals)) if month_forecast_bias_vals else None,
+        "assessment_recovery_sum": float(month_assessment_recovery_sum) if month_assessment_recovery_sum else 0.0,
+        "strategy_win_rate": None,
+        "strategy_hours": None,
+    }
+
+    # Compute month hourly win rates from cached counts.
+    s_correct = 0
+    s_total = 0
+    f_correct = 0
+    f_total = 0
+    for r in daily:
+        if r.get("strategy_hours"):
+            s_total += int(r["strategy_hours"])
+            # win_rate already derived; use underlying totals by recomputing from counts if present
+        if r.get("forecast_hours"):
+            f_total += int(r["forecast_hours"])
+    # Better: sum the original counts from DB for the month
+    with db_manager.engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    SUM(strategy_correct) AS sc,
+                    SUM(strategy_total) AS st
+                FROM strategy_daily_metrics
+                WHERE record_date >= :start AND record_date < :end
+                  AND (coeff_total IS NOT NULL OR coeff_avg IS NOT NULL)
+                """
+            ),
+            {"start": start, "end": end},
+        ).fetchone()
+    if row:
+        sc, st = row[0], row[1]
+        if st:
+            month_summary["strategy_win_rate"] = float(sc or 0) / float(st)
+            month_summary["strategy_hours"] = int(st)
+        else:
+            month_summary["strategy_win_rate"] = None
+            month_summary["strategy_hours"] = None
+
+    cum_summary = compute_range_summary(cum_start, today)
+
+    return {"status": "success", "month": month, "summary": month_summary, "cumulative": cum_summary, "daily": daily}
+
+
+@app.get("/api/strategy/review/latest-month")
+async def strategy_review_latest_month():
+    """
+    Return the most recent month (YYYY-MM) that has any strategy settings/coeff data.
+    Used by the strategy review page to default to the latest available month instead of "current month".
+    """
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        ym = conn.execute(
+            text(
+                """
+                SELECT DATE_FORMAT(MAX(record_date), '%Y-%m') AS ym
+                FROM (
+                    SELECT record_date FROM strategy_day_settings
+                    UNION ALL
+                    SELECT record_date FROM strategy_hourly_coeff
+                ) t
+                """
+            )
+        ).scalar()
+    return {"status": "success", "month": ym}
+
+
+@app.get("/api/strategy/review/diagnose")
+async def strategy_review_diagnose(date: str):
+    """
+    Per-day diagnosis for strategy review:
+    - Returns hourly series for the selected date (actual/declared/coeff/DA-RT and derived PnL contributions)
+    - Returns month baseline (per-hour averages/stddev from cache_daily_hourly) so the UI can compare where the anomaly comes from.
+    """
+    d = _parse_iso_date(date)
+    start = Date(d.year, d.month, 1)
+    end = Date(d.year + 1, 1, 1) if d.month == 12 else Date(d.year, d.month + 1, 1)
+
+    _ensure_strategy_tables()
+
+    def _zscore(v, mu, sd):
+        try:
+            if v is None or mu is None or sd is None:
+                return None
+            sdv = float(sd)
+            if sdv <= 1e-9:
+                return None
+            return (float(v) - float(mu)) / sdv
+        except Exception:
+            return None
+
+    # Baseline (month averages per hour) from DB (fast, 4 aggregate queries).
+    baseline = {h: {"hour": h} for h in range(24)}
+    try:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT hour, AVG(coeff) AS v, COUNT(*) AS n
+                    FROM strategy_hourly_coeff
+                    WHERE record_date >= :start AND record_date < :end AND coeff IS NOT NULL
+                    GROUP BY hour
+                    """
+                ),
+                {"start": start, "end": end},
+            ).fetchall()
+        for h, v, n in rows:
+            hh = int(h)
+            baseline[hh]["coeff_avg"] = None if v is None else float(v)
+            baseline[hh]["coeff_n"] = int(n or 0)
+    except Exception:
+        pass
+
+    try:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT hour, AVG(declared_energy) AS v, COUNT(*) AS n
+                    FROM strategy_declared_hourly
+                    WHERE record_date >= :start AND record_date < :end AND declared_energy IS NOT NULL
+                    GROUP BY hour
+                    """
+                ),
+                {"start": start, "end": end},
+            ).fetchall()
+        for h, v, n in rows:
+            hh = int(h)
+            baseline[hh]["declared_avg"] = None if v is None else float(v)
+            baseline[hh]["declared_n"] = int(n or 0)
+    except Exception:
+        pass
+
+    # Prefer settlement actuals if we have coverage; otherwise fallback to strategy_actual_hourly.
+    actual_table = "strategy_settlement_actual_hourly"
+    try:
+        with db_manager.engine.connect() as conn:
+            total = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*) FROM strategy_settlement_actual_hourly
+                    WHERE record_date >= :start AND record_date < :end AND actual_energy IS NOT NULL
+                    """
+                ),
+                {"start": start, "end": end},
+            ).scalar()
+        if not total or int(total) < 24:
+            actual_table = "strategy_actual_hourly"
+    except Exception:
+        actual_table = "strategy_actual_hourly"
+
+    try:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    f"""
+                    SELECT hour, AVG(actual_energy) AS v, COUNT(*) AS n
+                    FROM {actual_table}
+                    WHERE record_date >= :start AND record_date < :end AND actual_energy IS NOT NULL
+                    GROUP BY hour
+                    """
+                ),
+                {"start": start, "end": end},
+            ).fetchall()
+        for h, v, n in rows:
+            hh = int(h)
+            baseline[hh]["actual_avg"] = None if v is None else float(v)
+            baseline[hh]["actual_n"] = int(n or 0)
+    except Exception:
+        pass
+
+    try:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                      hour,
+                      AVG(COALESCE(price_diff, price_da - price_rt)) AS diff_avg,
+                      STDDEV_SAMP(COALESCE(price_diff, price_da - price_rt)) AS diff_std,
+                      AVG(price_da) AS da_avg,
+                      AVG(price_rt) AS rt_avg,
+                      AVG(load_forecast) AS load_avg,
+                      STDDEV_SAMP(load_forecast) AS load_std,
+                      AVG(temperature) AS temp_avg,
+                      STDDEV_SAMP(temperature) AS temp_std,
+                      COUNT(*) AS n
+                    FROM cache_daily_hourly
+                    WHERE record_date >= :start AND record_date < :end
+                      AND (price_diff IS NOT NULL OR (price_da IS NOT NULL AND price_rt IS NOT NULL))
+                    GROUP BY hour
+                    """
+                ),
+                {"start": start, "end": end},
+            ).fetchall()
+        for h, diff_avg, diff_std, da_avg, rt_avg, load_avg, load_std, temp_avg, temp_std, n in rows:
+            hh = int(h)
+            baseline[hh]["price_diff_avg"] = None if diff_avg is None else float(diff_avg)
+            baseline[hh]["price_diff_std"] = None if diff_std is None else float(diff_std)
+            baseline[hh]["price_da_avg"] = None if da_avg is None else float(da_avg)
+            baseline[hh]["price_rt_avg"] = None if rt_avg is None else float(rt_avg)
+            baseline[hh]["load_forecast_avg"] = None if load_avg is None else float(load_avg)
+            baseline[hh]["load_forecast_std"] = None if load_std is None else float(load_std)
+            baseline[hh]["temperature_avg"] = None if temp_avg is None else float(temp_avg)
+            baseline[hh]["temperature_std"] = None if temp_std is None else float(temp_std)
+            baseline[hh]["price_n"] = int(n or 0)
+    except Exception:
+        pass
+
+    # Day series.
+    try:
+        actual_map_settlement = _read_settlement_actual_hourly(d)
+        actual_map_forecast = _read_actual_hourly(d)
+        actual_map = actual_map_settlement if len(actual_map_settlement) >= 24 else actual_map_forecast
+    except Exception:
+        actual_map = {}
+
+    # Forecast (explicit preferred) and derived coeff_hourly.
+    forecast = None
+    coeff_hourly = [None] * 24
+    try:
+        forecast = _compute_weighted_forecast(d)
+        computed = _compute_declared_from_forecast(d, forecast["hourly"], _read_day_settings(d).get("strategy_coeff"))
+        coeff_hourly = computed["coeff_hourly"]
+        computed_declared_hourly = computed["declared_hourly"]
+    except Exception:
+        computed_declared_hourly = [0.0] * 24
+
+    # Declared: prefer imported actual-submitted if complete; otherwise computed.
+    declared_hourly = None
+    try:
+        declared_override = _read_declared_hourly(d)
+        override_complete = sum(1 for h in range(24) if declared_override.get(h) is not None) >= 24
+        if override_complete:
+            declared_hourly = [round(float(declared_override[h]), 3) for h in range(24)]
+        else:
+            declared_hourly = []
+            for h in range(24):
+                v = declared_override.get(h)
+                declared_hourly.append(round(float(v), 3) if v is not None else float(computed_declared_hourly[h]))
+    except Exception:
+        declared_hourly = [float(v) for v in computed_declared_hourly]
+
+    # Day cache data (prices/temperature/load forecast).
+    cache = {}
+    try:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT hour, price_da, price_rt, price_diff, load_forecast, temperature, day_type
+                    FROM cache_daily_hourly
+                    WHERE record_date=:d
+                    """
+                ),
+                {"d": d},
+            ).fetchall()
+        for h, pda, prt, diff, lf, temp, day_type in rows:
+            hh = int(h)
+            diff_val = diff
+            if diff_val is None and pda is not None and prt is not None:
+                try:
+                    diff_val = float(pda) - float(prt)
+                except Exception:
+                    diff_val = None
+            cache[hh] = {
+                "price_da": None if pda is None else float(pda),
+                "price_rt": None if prt is None else float(prt),
+                "price_diff": None if diff_val is None else float(diff_val),
+                "load_forecast": None if lf is None else float(lf),
+                "temperature": None if temp is None else float(temp),
+                "day_type": day_type,
+            }
+    except Exception:
+        cache = {}
+
+    # Use the same diff mapping as the rest of the strategy logic (cache first).
+    diff_map = _read_price_diff(d)
+
+    hours = []
+    gap_hours = []
+    for h in range(24):
+        a = actual_map.get(h)
+        dcl = None if declared_hourly is None else declared_hourly[h]
+        c = coeff_hourly[h] if coeff_hourly else None
+        diff = diff_map.get(h)
+
+        raw = None
+        expected = None
+        recovered = None
+        d_exp = None
+        d_exp_clamp = None
+
+        if a is not None and dcl is not None and diff is not None:
+            try:
+                a4 = round(float(a), 4)
+                d3 = round(float(dcl), 3)
+                df = float(diff)
+                raw = (a4 - d3) * df
+
+                # Expected declared removes forecast error: A*c then clamp into penalty band.
+                if c is not None:
+                    cc = float(c)
+                    lo = 0.8 * a4
+                    hi = 1.2 * a4
+                    d_exp = round(a4 * cc, 5)
+                    d_exp_clamp = min(max(d_exp, lo), hi)
+                    expected = (a4 - float(d_exp_clamp)) * df
+
+                    # Recovery: only positive extra profit outside band is recovered.
+                    d_clamp = min(max(d3, lo), hi)
+                    inc = (a4 - d3) * df
+                    inc_clamp = (a4 - float(d_clamp)) * df
+                    recovered = max(0.0, inc - inc_clamp)
+
+                    gap_hours.append((abs((expected or 0.0) - (raw or 0.0)), h, raw, expected))
+            except Exception:
+                pass
+
+        row = {
+            "hour": h,
+            "actual": None if a is None else float(a),
+            "declared": None if dcl is None else float(dcl),
+            "coeff": None if c is None else float(c),
+            "price_diff": None if diff is None else float(diff),
+            "profit_raw": None if raw is None else float(raw),
+            "profit_expected": None if expected is None else float(expected),
+            "recovered": None if recovered is None else float(recovered),
+            "expected_declared": None if d_exp is None else float(d_exp),
+            "expected_declared_clamped": None if d_exp_clamp is None else float(d_exp_clamp),
+        }
+        if h in cache:
+            row.update(cache[h])
+
+        # Z-score vs month baseline (cache_daily_hourly) for anomaly spotting.
+        b = baseline.get(h, {})
+        row["z_price_diff"] = _zscore(row.get("price_diff"), b.get("price_diff_avg"), b.get("price_diff_std"))
+        row["z_load_forecast"] = _zscore(row.get("load_forecast"), b.get("load_forecast_avg"), b.get("load_forecast_std"))
+        row["z_temperature"] = _zscore(row.get("temperature"), b.get("temperature_avg"), b.get("temperature_std"))
+        hours.append(row)
+
+    gap_hours.sort(reverse=True)
+    top_hours = []
+    for _abs_gap, h, raw, exp in gap_hours[:8]:
+        top_hours.append(
+            {
+                "hour": h,
+                "profit_gap": float((exp or 0.0) - (raw or 0.0)),
+                "profit_raw": None if raw is None else float(raw),
+                "profit_expected": None if exp is None else float(exp),
+            }
+        )
+
+    # Top anomaly hours by cache Z-score (combined).
+    z_rank = []
+    for r in hours:
+        try:
+            score = 0.0
+            cnt = 0
+            for k in ("z_price_diff", "z_load_forecast", "z_temperature"):
+                z = r.get(k)
+                if z is None:
+                    continue
+                score += abs(float(z))
+                cnt += 1
+            if cnt:
+                z_rank.append((score, int(r["hour"]), r))
+        except Exception:
+            continue
+    z_rank.sort(reverse=True, key=lambda x: x[0])
+    top_z_hours = []
+    for _score, h, r in z_rank[:8]:
+        top_z_hours.append(
+            {
+                "hour": h,
+                "z_price_diff": r.get("z_price_diff"),
+                "z_load_forecast": r.get("z_load_forecast"),
+                "z_temperature": r.get("z_temperature"),
+            }
+        )
+
+    # Use cached daily metrics for consistent headline numbers if available.
+    try:
+        dm = _compute_daily_metrics(d)
+    except Exception:
+        dm = {"record_date": d}
+
+    return {
+        "status": "success",
+        "date": d.isoformat(),
+        "month": start.isoformat()[:7],
+        "baseline": {"actual_table": actual_table, "hours": [baseline[h] for h in range(24)]},
+        "day": {"summary": dm, "hours": hours, "top_hours": top_hours, "top_z_hours": top_z_hours},
+        "forecast_source": None if not forecast else forecast.get("source"),
+    }
+
+
+@app.post("/api/strategy/review/refresh")
+async def strategy_review_refresh(month: str = Form(...)):
+    """
+    强制刷新某月的 strategy_daily_metrics（用于“页面复盘数据更新”）。
+
+    说明：/api/strategy/review 默认只补缺失，不会覆盖已有缓存；当你更新了实际分时数据但缓存已存在时，
+    用这个接口强制重算并写回 strategy_daily_metrics。
+    """
+    try:
+        y, m = month.split("-")
+        start = Date(int(y), int(m), 1)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="month 格式应为 YYYY-MM") from e
+    end = Date(start.year + 1, 1, 1) if start.month == 12 else Date(start.year, start.month + 1, 1)
+
+    _ensure_strategy_tables()
+    with db_manager.engine.connect() as conn:
+        dates = [
+            r[0]
+            for r in conn.execute(
+                text(
+                    """
+                    SELECT record_date
+                    FROM (
+                        SELECT DISTINCT record_date
+                        FROM strategy_day_settings
+                        WHERE record_date >= :start AND record_date < :end
+                        UNION
+                        SELECT DISTINCT record_date
+                        FROM strategy_hourly_coeff
+                        WHERE record_date >= :start AND record_date < :end
+                    ) t
+                    ORDER BY record_date
+                    """
+                ),
+                {"start": start, "end": end},
+            ).fetchall()
+        ]
+
+    _refresh_daily_metrics_for_dates(dates)
+    return {"status": "success", "month": month, "refreshed_days": len(dates)}
+
 
 @app.post("/api/update-weather")
 async def update_weather(background_tasks: BackgroundTasks):
@@ -2203,6 +4925,22 @@ async def similar_day_page(request: Request):
 async def multi_day_compare_page(request: Request):
     """返回多日对比看板页面"""
     return templates.TemplateResponse("multi_day_compare.html", {"request": request})
+
+@app.get("/strategy_quote", response_class=HTMLResponse)
+async def strategy_quote_page(request: Request):
+    """报价/申报页面（策略系数 + 申报电量计算）"""
+    return templates.TemplateResponse("strategy_quote.html", {"request": request})
+
+@app.get("/strategy_review", response_class=HTMLResponse)
+async def strategy_review_page(request: Request):
+    """复盘页面（月度胜率/收益/预测偏差）"""
+    return templates.TemplateResponse("strategy_review.html", {"request": request})
+
+
+@app.get("/strategy_review_diag", response_class=HTMLResponse)
+async def strategy_review_diag_page(request: Request, date: Optional[str] = None):
+    """复盘诊断页面（按日期对比 cache_daily_hourly 与当月基线，定位异常小时）。"""
+    return templates.TemplateResponse("strategy_review_diag.html", {"request": request, "date": date})
 
 @app.get("/api/cache-available-dates")
 async def cache_available_dates(

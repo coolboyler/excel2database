@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>策略复盘 - Excel2SQL</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+  <style>
+    :root {
+      --bg-color: #f3f4f6;
+      --card-bg: #ffffff;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --accent-color: #3b82f6;
+    }
+    body {
+      background: var(--bg-color);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    .navbar {
+      background: var(--card-bg);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    }
+    .navbar-brand,
+    .navbar-brand:hover {
+      color: var(--text-primary);
+      font-weight: 800;
+      font-size: 1.4rem;
+      letter-spacing: -0.025em;
+    }
+    .navbar-nav { gap: 0.75rem; }
+    .navbar-nav .nav-link {
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 1.05rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .navbar-nav .nav-link:hover,
+    .navbar-nav .nav-link:focus {
+      color: var(--text-primary);
+      background-color: rgba(0, 0, 0, 0.08);
+    }
+    .navbar-nav .nav-link.active {
+      color: var(--accent-color);
+      font-weight: 700;
+      background-color: rgba(59, 130, 246, 0.12);
+      border-bottom: 2px solid var(--accent-color);
+    }
+
+    .dashboard-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      border: 1px solid rgba(15, 23, 42, 0.06);
+    }
+    .muted { color: var(--text-secondary); }
+    .mono { font-variant-numeric: tabular-nums; }
+    .table-sm td, .table-sm th { white-space: nowrap; }
+
+    /* Month quick choices (current month and previous 3 months) */
+    .month-choices {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      background: rgba(15, 23, 42, 0.03);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 999px;
+      overflow: hidden;
+      user-select: none;
+    }
+    .month-choice {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      padding: 8px 14px;
+      font-size: 0.9rem;
+      line-height: 1;
+      color: #374151;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .month-choice:hover { background: rgba(15, 23, 42, 0.04); }
+    .month-choice.is-active {
+      background: rgba(59, 130, 246, 0.18);
+      color: #1d4ed8;
+      font-weight: 700;
+    }
+    .month-choice + .month-choice {
+      border-left: 1px solid rgba(15, 23, 42, 0.10);
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-light mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav me-auto">
+          <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
+          <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
+          <li class="nav-item"><a class="nav-link" href="/similar_day">类比日匹配</a></li>
+          <li class="nav-item"><a class="nav-link" href="/multi_day_compare">多日对比</a></li>
+          <li class="nav-item"><a class="nav-link" href="/daily_hourly">分时看板</a></li>
+          <li class="nav-item"><a class="nav-link" href="/strategy_quote">报价申报</a></li>
+          <li class="nav-item"><a class="nav-link active fw-bold" href="/strategy_review">策略复盘</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container-fluid px-4 py-4">
+    <div class="dashboard-card mb-3">
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-clipboard-data text-primary"></i> 月度复盘</h5>
+          <div class="small muted">策略胜率（逐时）：coeff&lt;1 且 (DA-RT)&gt;0 正确；coeff≥1 且 (DA-RT)&lt;0 正确；(DA-RT)=0 不计入。月度预测不做逐时胜率，仅展示准确率/偏差。</div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <button id="btnRefresh" type="button" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-repeat"></i> 强制刷新本月
+          </button>
+          <div id="monthChoices" class="month-choices" aria-label="月份快捷选择"></div>
+        </div>
+      </div>
+      <div id="errorBox" class="alert alert-danger mt-3 d-none"></div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-xl-6">
+        <div class="dashboard-card">
+          <h6 class="mb-3"><i class="bi bi-calendar3"></i> 当月</h6>
+          <div class="row g-2">
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">策略胜率（逐时）</div>
+                <div class="fw-bold mono" id="mStrategyWinRate">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">样本天数</div>
+                <div class="fw-bold mono" id="mDays">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">预期收益合计</div>
+                <div class="fw-bold mono" id="mExpected">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">真实收益合计</div>
+                <div class="fw-bold mono" id="mReal">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">月度预测准确率（均值）</div>
+                <div class="fw-bold mono" id="mAcc">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">月度预测偏差（合计）</div>
+                <div class="fw-bold mono" id="mBias">-</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-xl-6">
+        <div class="dashboard-card">
+          <h6 class="mb-3"><i class="bi bi-graph-up"></i> 累计（策略开始至今日）</h6>
+          <div class="row g-2">
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">策略胜率（逐时）</div>
+                <div class="fw-bold mono" id="cStrategyWinRate">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">样本天数</div>
+                <div class="fw-bold mono" id="cDays">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">预期收益合计</div>
+                <div class="fw-bold mono" id="cExpected">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">真实收益合计</div>
+                <div class="fw-bold mono" id="cReal">-</div>
+              </div>
+            </div>
+          </div>
+          <div class="small muted mt-2" id="cRange">-</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dashboard-card">
+      <h6 class="mb-3"><i class="bi bi-table"></i> 日度明细</h6>
+      <div class="table-responsive" style="max-height: 660px;">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light sticky-top">
+            <tr>
+              <th>日期</th>
+              <th class="text-end">策略系数(均值)</th>
+              <th class="text-end">策略胜率(逐时)</th>
+              <th class="text-end">实际总电量</th>
+              <th class="text-end">申报总电量</th>
+              <th class="text-end">月度预测电量</th>
+              <th class="text-end">月度预测准确率</th>
+              <th class="text-end">月度预测偏差</th>
+              <th class="text-end">真实收益(元)</th>
+              <th class="text-end">预期收益(元)</th>
+              <th class="text-end">考核回收(元)</th>
+            </tr>
+          </thead>
+          <tbody id="dailyBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+	    <div class="dashboard-card mt-3 d-none" id="reviewSection">
+	      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+	        <h6 class="mb-0"><i class="bi bi-search"></i> 复盘诊断（<span class="mono" id="reviewMonth">-</span>）</h6>
+	        <div class="small muted">用“预期-真实”差距定位问题日，并联动预测偏差与价差结构（DA-RT）做解释。</div>
+	      </div>
+
+	      <div class="row g-3">
+	        <div class="col-12 col-xl-4">
+	          <div class="row g-2">
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">预期-真实差距合计</div>
+                <div class="fw-bold mono" id="rGapSum">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">差距中位数（日）</div>
+                <div class="fw-bold mono" id="rGapMedian">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">预测偏差相关系数 r</div>
+                <div class="fw-bold mono" id="rCorrForecast">-</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">申报偏离相关系数 r</div>
+                <div class="fw-bold mono" id="rCorrDeclared">-</div>
+              </div>
+            </div>
+          </div>
+
+	          <div class="mt-3">
+	            <div class="small fw-bold mb-1">异常日（按差距绝对值 Top 6）</div>
+	            <div class="table-responsive">
+	              <table class="table table-sm align-middle mb-0">
+	                <thead class="table-light">
+	                  <tr>
+	                    <th>日期</th>
+	                    <th class="text-end">真实</th>
+	                    <th class="text-end">预期</th>
+	                    <th class="text-end">差距</th>
+	                  </tr>
+	                </thead>
+	                <tbody id="outlierBody"></tbody>
+	              </table>
+	            </div>
+	          </div>
+
+	          <div class="small muted mt-2" id="reviewNotes">-</div>
+	        </div>
+
+	        <div class="col-12 col-xl-8">
+	          <div class="row g-3">
+            <div class="col-12">
+              <div class="p-2 rounded bg-light">
+                <div class="small muted mb-1">真实/预期收益（日度）</div>
+                <canvas id="chartProfit" height="120"></canvas>
+              </div>
+            </div>
+            <div class="col-12 col-xl-6">
+              <div class="p-2 rounded bg-light">
+                <div class="small muted mb-1">预期-真实差距（日度）</div>
+                <canvas id="chartGap" height="140"></canvas>
+              </div>
+            </div>
+            <div class="col-12 col-xl-6">
+              <div class="p-2 rounded bg-light">
+                <div class="small muted mb-1">电量对比（日度）</div>
+                <canvas id="chartEnergy" height="140"></canvas>
+              </div>
+	            </div>
+	          </div>
+	          <div class="dashboard-card mt-3" id="diagBox">
+	            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+	              <div>
+	                <div class="small fw-bold"><i class="bi bi-bug"></i> 异常日分时诊断（对比缓存表）</div>
+	                <div class="small muted">点击左侧“异常日”任一行加载诊断；对比 <span class="mono">cache_daily_hourly</span> 与当月基线（均值±1σ）定位异常小时。</div>
+	              </div>
+	              <div class="d-flex align-items-center gap-2">
+	                <span class="badge bg-light text-dark border mono" id="diagDate">-</span>
+	                <button id="btnDiagPrev" type="button" class="btn btn-sm btn-outline-secondary" disabled><i class="bi bi-chevron-left"></i></button>
+	                <button id="btnDiagNext" type="button" class="btn btn-sm btn-outline-secondary" disabled><i class="bi bi-chevron-right"></i></button>
+	              </div>
+	            </div>
+
+	            <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+	              <span class="small muted">Forecast 来源：</span><span class="small mono" id="diagForecastSource">-</span>
+	              <span class="small muted">实际表：</span><span class="small mono" id="diagActualTable">-</span>
+	              <span class="small muted" id="diagLoading" style="display:none;"><span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>加载中</span>
+	            </div>
+
+	            <div class="row g-3 mt-1">
+	              <div class="col-12">
+	                <div class="p-2 rounded bg-light">
+	                  <div class="small muted mb-1">价差（DA-RT）：当日 vs 月均 ±1σ</div>
+	                  <canvas id="chartDiagDiff" height="120"></canvas>
+	                </div>
+	              </div>
+	              <div class="col-12 col-xl-6">
+	                <div class="p-2 rounded bg-light">
+	                  <div class="small muted mb-1">负荷预测（cache）：当日 vs 月均 ±1σ</div>
+	                  <canvas id="chartDiagLoad" height="150"></canvas>
+	                </div>
+	              </div>
+	              <div class="col-12 col-xl-6">
+	                <div class="p-2 rounded bg-light">
+	                  <div class="small muted mb-1">温度（cache）：当日 vs 月均 ±1σ</div>
+	                  <canvas id="chartDiagTemp" height="150"></canvas>
+	                </div>
+	              </div>
+	              <div class="col-12 col-xl-6">
+	                <div class="p-2 rounded bg-light">
+	                  <div class="small muted mb-1">异常小时 Top（Z 分数）</div>
+	                  <div class="table-responsive">
+	                    <table class="table table-sm align-middle mb-0">
+	                      <thead class="table-light">
+	                        <tr>
+	                          <th>小时</th>
+	                          <th class="text-end">Z(价差)</th>
+	                          <th class="text-end">Z(负荷)</th>
+	                          <th class="text-end">Z(温度)</th>
+	                        </tr>
+	                      </thead>
+	                      <tbody id="diagTopZBody"></tbody>
+	                    </table>
+	                  </div>
+	                  <div class="small muted mt-1">Z=(当日值-月均)/月σ，σ 为 0 或缺失时不计算。</div>
+	                </div>
+	              </div>
+	              <div class="col-12 col-xl-6">
+	                <div class="p-2 rounded bg-light">
+	                  <div class="small muted mb-1">收益差距来源（Top 小时：预期-真实）</div>
+	                  <div class="table-responsive">
+	                    <table class="table table-sm align-middle mb-0">
+	                      <thead class="table-light">
+	                        <tr>
+	                          <th>小时</th>
+	                          <th class="text-end">价差(DA-RT)</th>
+	                          <th class="text-end">实际</th>
+	                          <th class="text-end">申报</th>
+	                          <th class="text-end">系数</th>
+	                          <th class="text-end">真实(小时)</th>
+	                          <th class="text-end">预期(小时)</th>
+	                          <th class="text-end">预期-真实</th>
+	                        </tr>
+	                      </thead>
+	                      <tbody id="diagTopHoursBody"></tbody>
+	                    </table>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+	          </div>
+	          <div class="small muted mt-2" id="chartFallback" style="display:none;">图表库加载失败（离线/受限环境）。仍可查看上方“异常日”表与日度明细。</div>
+	        </div>
+	      </div>
+	    </div>
+
+    <div class="mt-3 d-flex justify-content-center">
+      <button id="btnToggleReview" type="button" class="btn btn-outline-primary">
+        <i class="bi bi-search"></i> 展开复盘诊断
+      </button>
+    </div>
+  </div>
+
+  <script>
+	    let currentMonth = null;
+	    let defaultMonth = null;
+	    let chartProfit = null;
+	    let chartGap = null;
+	    let chartEnergy = null;
+	    let reviewVisible = false;
+	    let lastMonthData = null; // { month, daily }
+	    let chartJsReady = (typeof Chart !== "undefined");
+	    let chartJsLoading = null;
+	    let diagAbort = null;
+	    let diagSelectedDate = null;
+	    let diagOutliers = []; // list of {date, gap}
+	    let diagLoadedKey = null; // `${month}|${date}` to avoid duplicate auto-load fetches
+	    let chartDiagDiff = null;
+	    let chartDiagLoad = null;
+	    let chartDiagTemp = null;
+
+    function fmt(n, digits=4) {
+      if (n === null || n === undefined || Number.isNaN(Number(n))) return "-";
+      return Number(n).toFixed(digits);
+    }
+    function fmtPct(n) {
+      if (n === null || n === undefined || Number.isNaN(Number(n))) return "-";
+      return (Number(n) * 100).toFixed(1) + "%";
+    }
+    function showError(msg) {
+      const el = document.getElementById("errorBox");
+      el.textContent = msg;
+      el.classList.remove("d-none");
+    }
+    function clearError() {
+      const el = document.getElementById("errorBox");
+      el.textContent = "";
+      el.classList.add("d-none");
+    }
+
+    function corr(xs, ys) {
+      const pts = [];
+      for (let i = 0; i < xs.length; i++) {
+        const x = xs[i], y = ys[i];
+        if (x === null || x === undefined || y === null || y === undefined) continue;
+        const xf = Number(x), yf = Number(y);
+        if (Number.isNaN(xf) || Number.isNaN(yf)) continue;
+        pts.push([xf, yf]);
+      }
+      if (pts.length < 3) return null;
+      const mx = pts.reduce((s,p)=>s+p[0],0)/pts.length;
+      const my = pts.reduce((s,p)=>s+p[1],0)/pts.length;
+      let vx = 0, vy = 0, cov = 0;
+      for (const [x,y] of pts) {
+        vx += (x-mx)*(x-mx);
+        vy += (y-my)*(y-my);
+        cov += (x-mx)*(y-my);
+      }
+      if (vx <= 0 || vy <= 0) return null;
+      return cov / Math.sqrt(vx * vy);
+    }
+
+    function median(arr) {
+      const vals = arr
+        .map(x => Number(x))
+        .filter(x => x !== null && x !== undefined && !Number.isNaN(x))
+        .sort((a,b)=>a-b);
+      if (!vals.length) return null;
+      const mid = Math.floor(vals.length / 2);
+      return (vals.length % 2) ? vals[mid] : (vals[mid-1] + vals[mid]) / 2;
+    }
+
+    function ensureChartLib() {
+      const ok = typeof Chart !== "undefined";
+      document.getElementById("chartFallback").style.display = ok ? "none" : "block";
+      return ok;
+    }
+
+	    function destroyCharts() {
+	      if (chartProfit) { chartProfit.destroy(); chartProfit = null; }
+	      if (chartGap) { chartGap.destroy(); chartGap = null; }
+	      if (chartEnergy) { chartEnergy.destroy(); chartEnergy = null; }
+	      if (chartDiagDiff) { chartDiagDiff.destroy(); chartDiagDiff = null; }
+	      if (chartDiagLoad) { chartDiagLoad.destroy(); chartDiagLoad = null; }
+	      if (chartDiagTemp) { chartDiagTemp.destroy(); chartDiagTemp = null; }
+	    }
+
+	    function setDiagLoading(on) {
+	      const el = document.getElementById("diagLoading");
+	      if (!el) return;
+	      el.style.display = on ? "inline-flex" : "none";
+	    }
+
+	    function makeBandDatasets(avg, std, color) {
+	      const up = avg.map((v,i) => (v == null || std[i] == null) ? null : (v + std[i]));
+	      const lo = avg.map((v,i) => (v == null || std[i] == null) ? null : (v - std[i]));
+	      return [
+	        { label: "月均+1σ", data: up, borderColor: "rgba(0,0,0,0)", backgroundColor: "rgba(0,0,0,0)", pointRadius: 0, fill: false, spanGaps: true },
+	        { label: "月均-1σ", data: lo, borderColor: "rgba(0,0,0,0)", backgroundColor: color, pointRadius: 0, fill: "-1", spanGaps: true },
+	      ];
+	    }
+
+	    function highlightOutlier(dateStr) {
+	      document.querySelectorAll("#outlierBody tr").forEach(tr => {
+	        tr.classList.toggle("table-primary", tr.dataset.date === dateStr);
+	      });
+	    }
+
+	    function renderReview(month, daily) {
+	      document.getElementById("reviewMonth").textContent = month || "-";
+
+	      const labels = daily.map(r => (r.date || "").slice(8));
+      const real = daily.map(r => r.profit_real ?? null);
+      const exp = daily.map(r => r.profit_expected ?? null);
+      const gap = daily.map(r => (r.profit_expected != null && r.profit_real != null) ? (r.profit_expected - r.profit_real) : null);
+      const actual = daily.map(r => r.actual_total ?? null);
+      const declared = daily.map(r => r.declared_total ?? null);
+      const forecast = daily.map(r => r.forecast_total ?? null);
+      const forecastGap = daily.map(r => (r.forecast_total != null && r.actual_total != null) ? (r.forecast_total - r.actual_total) : null);
+      const declaredGap = daily.map(r => (r.declared_total != null && r.actual_total != null) ? (r.declared_total - r.actual_total) : null);
+
+      const gapSum = gap.reduce((s,x)=>s+(Number(x)||0),0);
+      document.getElementById("rGapSum").textContent = fmt(gapSum, 2);
+      const gapMed = median(gap);
+      document.getElementById("rGapMedian").textContent = gapMed == null ? "-" : fmt(gapMed, 2);
+
+      const rForecast = corr(forecastGap, gap);
+      const rDeclared = corr(declaredGap, gap);
+      document.getElementById("rCorrForecast").textContent = rForecast == null ? "-" : fmt(rForecast, 3);
+      document.getElementById("rCorrDeclared").textContent = rDeclared == null ? "-" : fmt(rDeclared, 3);
+
+      // Outliers table: by abs(gap)
+	      const outliers = daily
+	        .filter(r => r.profit_real != null && r.profit_expected != null)
+	        .map(r => ({...r, gap: r.profit_expected - r.profit_real}))
+	        .sort((a,b)=>Math.abs(b.gap)-Math.abs(a.gap))
+	        .slice(0, 6);
+	      diagOutliers = outliers.map(r => ({ date: r.date, gap: r.gap }));
+	      const ob = document.getElementById("outlierBody");
+	      ob.innerHTML = "";
+	      for (const r of outliers) {
+	        const tr = document.createElement("tr");
+	        tr.style.cursor = "pointer";
+	        tr.dataset.date = r.date;
+	        const g = r.gap;
+	        tr.innerHTML = `
+	          <td class="mono">${r.date}</td>
+	          <td class="text-end mono ${r.profit_real > 0 ? 'text-success' : (r.profit_real < 0 ? 'text-danger' : '')}">${fmt(r.profit_real, 2)}</td>
+	          <td class="text-end mono ${r.profit_expected > 0 ? 'text-success' : (r.profit_expected < 0 ? 'text-danger' : '')}">${fmt(r.profit_expected, 2)}</td>
+	          <td class="text-end mono ${g > 0 ? 'text-primary' : (g < 0 ? 'text-warning' : '')}">${fmt(g, 2)}</td>
+	        `;
+	        ob.appendChild(tr);
+	      }
+
+	      // Default select the worst outlier if no selection yet.
+	      if (!diagSelectedDate && diagOutliers.length) {
+	        diagSelectedDate = diagOutliers[0].date;
+	      }
+	      if (!diagSelectedDate) {
+	        diagLoadedKey = null;
+	      }
+	      updateDiagNavButtons();
+	      if (diagSelectedDate) highlightOutlier(diagSelectedDate);
+
+	      // Notes: focus on a few high-signal diagnostics
+      const validDiffDays = daily.filter(r => r.price_diff_pos_share != null);
+      const mostlyPos = validDiffDays.filter(r => r.price_diff_pos_share >= 0.75).length;
+      const mostlyNeg = validDiffDays.filter(r => r.price_diff_neg_share >= 0.75).length;
+      const worstReal = daily
+        .filter(r => r.profit_real != null)
+        .slice()
+        .sort((a,b)=>a.profit_real-b.profit_real)[0];
+      const noteParts = [];
+      if (worstReal) noteParts.push(`本月最差真实收益：${worstReal.date}（${fmt(worstReal.profit_real,2)}）`);
+      if (validDiffDays.length) noteParts.push(`价差结构：偏正(>75%) ${mostlyPos} 天，偏负(>75%) ${mostlyNeg} 天`);
+      if (rForecast != null) noteParts.push(`“预测偏差”与“收益差距”相关性更高（r≈${fmt(rForecast,3)}）`);
+      document.getElementById("reviewNotes").textContent = noteParts.length ? noteParts.join("；") : "-";
+
+      destroyCharts();
+      if (!ensureChartLib()) return;
+
+      // Profit lines
+      chartProfit = new Chart(document.getElementById("chartProfit"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "真实收益", data: real, borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,0.15)", tension: 0.2, spanGaps: true },
+            { label: "预期收益", data: exp, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.15)", tension: 0.2, spanGaps: true },
+          ],
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: "top" } },
+          scales: { y: { ticks: { callback: (v)=>Number(v).toFixed(0) } } },
+        },
+      });
+
+      // Gap bars
+      chartGap = new Chart(document.getElementById("chartGap"), {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            {
+              label: "预期-真实",
+              data: gap,
+              backgroundColor: (ctx) => {
+                const v = ctx.raw;
+                if (v == null) return "rgba(148,163,184,0.4)";
+                return v >= 0 ? "rgba(59,130,246,0.55)" : "rgba(245,158,11,0.55)";
+              },
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: { y: { ticks: { callback: (v)=>Number(v).toFixed(0) } } },
+        },
+      });
+
+      // Energy totals
+	      chartEnergy = new Chart(document.getElementById("chartEnergy"), {
+	        type: "line",
+	        data: {
+	          labels,
+          datasets: [
+            { label: "实际总电量", data: actual, borderColor: "#111827", tension: 0.2, spanGaps: true },
+            { label: "申报总电量", data: declared, borderColor: "#10b981", tension: 0.2, spanGaps: true },
+            { label: "月度预测电量", data: forecast, borderColor: "#6366f1", tension: 0.2, spanGaps: true },
+          ],
+	        },
+	        options: { responsive: true, plugins: { legend: { position: "top" } } },
+	      });
+
+	      // Auto-load diagnosis for the default selected outlier (once per month/date).
+	      if (diagSelectedDate && month) {
+	        const key = `${month}|${diagSelectedDate}`;
+	        if (diagLoadedKey !== key) {
+	          diagLoadedKey = key;
+	          loadDayDiagnose(diagSelectedDate);
+	        }
+	      }
+	    }
+
+	    function updateDiagNavButtons() {
+	      const prev = document.getElementById("btnDiagPrev");
+	      const next = document.getElementById("btnDiagNext");
+	      if (!prev || !next) return;
+	      const idx = diagOutliers.findIndex(x => x.date === diagSelectedDate);
+	      prev.disabled = !(idx > 0);
+	      next.disabled = !(idx >= 0 && idx < diagOutliers.length - 1);
+	    }
+
+	    function renderDayDiagnose(d) {
+	      const day = d.day || {};
+	      const baseline = d.baseline || {};
+	      const dayHours = day.hours || [];
+	      const baseHours = baseline.hours || [];
+
+	      document.getElementById("diagDate").textContent = d.date || "-";
+	      document.getElementById("diagForecastSource").textContent = d.forecast_source || "-";
+	      document.getElementById("diagActualTable").textContent = (baseline && baseline.actual_table) || "-";
+
+	      // Top Z table
+	      const zb = document.getElementById("diagTopZBody");
+	      zb.innerHTML = "";
+	      for (const t of (day.top_z_hours || [])) {
+	        const tr = document.createElement("tr");
+	        tr.innerHTML = `
+	          <td class="mono">${String(t.hour).padStart(2,"0")}:00</td>
+	          <td class="text-end mono">${fmt(t.z_price_diff, 2)}</td>
+	          <td class="text-end mono">${fmt(t.z_load_forecast, 2)}</td>
+	          <td class="text-end mono">${fmt(t.z_temperature, 2)}</td>
+	        `;
+	        zb.appendChild(tr);
+	      }
+
+	      // Top gap hours (PnL explanation)
+	      const tbody = document.getElementById("diagTopHoursBody");
+	      tbody.innerHTML = "";
+	      for (const t of (day.top_hours || [])) {
+	        const h = t.hour;
+	        const r = dayHours[h] || {};
+	        const gap = t.profit_gap;
+	        const tr = document.createElement("tr");
+	        tr.innerHTML = `
+	          <td class="mono">${String(h).padStart(2,"0")}:00</td>
+	          <td class="text-end mono">${fmt(r.price_diff, 2)}</td>
+	          <td class="text-end mono">${fmt(r.actual, 4)}</td>
+	          <td class="text-end mono">${fmt(r.declared, 3)}</td>
+	          <td class="text-end mono">${fmt(r.coeff, 3)}</td>
+	          <td class="text-end mono ${t.profit_raw > 0 ? 'text-success' : (t.profit_raw < 0 ? 'text-danger' : '')}">${fmt(t.profit_raw, 2)}</td>
+	          <td class="text-end mono ${t.profit_expected > 0 ? 'text-success' : (t.profit_expected < 0 ? 'text-danger' : '')}">${fmt(t.profit_expected, 2)}</td>
+	          <td class="text-end mono ${gap > 0 ? 'text-primary' : (gap < 0 ? 'text-warning' : '')}">${fmt(gap, 2)}</td>
+	        `;
+	        tbody.appendChild(tr);
+	      }
+
+	      // Charts (optional): still render tables if Chart.js is unavailable.
+	      if (!ensureChartLib()) return;
+
+	      const labels = Array.from({length:24}, (_,i)=>String(i).padStart(2,"0"));
+	      const dayDiff = dayHours.map(r => r.price_diff ?? null);
+	      const dayLoad = dayHours.map(r => r.load_forecast ?? null);
+	      const dayTemp = dayHours.map(r => r.temperature ?? null);
+
+	      const avgDiff = baseHours.map(r => r.price_diff_avg ?? null);
+	      const stdDiff = baseHours.map(r => r.price_diff_std ?? null);
+	      const avgLoad = baseHours.map(r => r.load_forecast_avg ?? null);
+	      const stdLoad = baseHours.map(r => r.load_forecast_std ?? null);
+	      const avgTemp = baseHours.map(r => r.temperature_avg ?? null);
+	      const stdTemp = baseHours.map(r => r.temperature_std ?? null);
+
+	      if (chartDiagDiff) { chartDiagDiff.destroy(); chartDiagDiff = null; }
+	      if (chartDiagLoad) { chartDiagLoad.destroy(); chartDiagLoad = null; }
+	      if (chartDiagTemp) { chartDiagTemp.destroy(); chartDiagTemp = null; }
+
+	      chartDiagDiff = new Chart(document.getElementById("chartDiagDiff"), {
+	        type: "line",
+	        data: {
+	          labels,
+	          datasets: [
+	            ...makeBandDatasets(avgDiff, stdDiff, "rgba(59,130,246,0.12)"),
+	            { label: "月均", data: avgDiff, borderColor: "rgba(59,130,246,0.45)", borderDash: [6,4], tension: 0.2, pointRadius: 0, spanGaps: true },
+	            { label: "当日", data: dayDiff, borderColor: "#3b82f6", tension: 0.2, spanGaps: true },
+	          ],
+	        },
+	        options: { responsive: true, plugins: { legend: { position: "top" } } },
+	      });
+
+	      chartDiagLoad = new Chart(document.getElementById("chartDiagLoad"), {
+	        type: "line",
+	        data: {
+	          labels,
+	          datasets: [
+	            ...makeBandDatasets(avgLoad, stdLoad, "rgba(17,24,39,0.10)"),
+	            { label: "月均", data: avgLoad, borderColor: "rgba(17,24,39,0.40)", borderDash: [6,4], tension: 0.2, pointRadius: 0, spanGaps: true },
+	            { label: "当日", data: dayLoad, borderColor: "#111827", tension: 0.2, spanGaps: true },
+	          ],
+	        },
+	        options: { responsive: true, plugins: { legend: { position: "top" } } },
+	      });
+
+	      chartDiagTemp = new Chart(document.getElementById("chartDiagTemp"), {
+	        type: "line",
+	        data: {
+	          labels,
+	          datasets: [
+	            ...makeBandDatasets(avgTemp, stdTemp, "rgba(245,158,11,0.12)"),
+	            { label: "月均", data: avgTemp, borderColor: "rgba(245,158,11,0.45)", borderDash: [6,4], tension: 0.2, pointRadius: 0, spanGaps: true },
+	            { label: "当日", data: dayTemp, borderColor: "#f59e0b", tension: 0.2, spanGaps: true },
+	          ],
+	        },
+	        options: { responsive: true, plugins: { legend: { position: "top" } } },
+	      });
+	    }
+
+	    async function loadDayDiagnose(dateStr) {
+	      if (!dateStr) return;
+	      diagSelectedDate = dateStr;
+	      updateDiagNavButtons();
+	      highlightOutlier(dateStr);
+
+	      if (diagAbort) {
+	        try { diagAbort.abort(); } catch {}
+	      }
+	      diagAbort = new AbortController();
+	      setDiagLoading(true);
+	      try {
+	        const res = await fetch(`/api/strategy/review/diagnose?date=${encodeURIComponent(dateStr)}`, { signal: diagAbort.signal });
+	        const json = await res.json();
+	        if (!res.ok) return;
+	        if (diagAbort.signal.aborted) return;
+	        await loadChartJs();
+	        if (diagAbort.signal.aborted) return;
+	        renderDayDiagnose(json);
+	      } catch {
+	        return;
+	      } finally {
+	        setDiagLoading(false);
+	      }
+	    }
+
+	    function loadChartJs() {
+	      if (typeof Chart !== "undefined") {
+	        chartJsReady = true;
+	        return Promise.resolve(true);
+      }
+      if (chartJsLoading) return chartJsLoading;
+      chartJsLoading = new Promise((resolve) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+        s.async = true;
+        s.onload = () => {
+          chartJsReady = (typeof Chart !== "undefined");
+          resolve(chartJsReady);
+        };
+        s.onerror = () => resolve(false);
+        document.head.appendChild(s);
+      });
+      return chartJsLoading;
+    }
+
+    function setReviewVisible(visible) {
+      reviewVisible = !!visible;
+      const section = document.getElementById("reviewSection");
+      const btn = document.getElementById("btnToggleReview");
+      if (section) section.classList.toggle("d-none", !reviewVisible);
+      if (btn) {
+        btn.classList.toggle("btn-outline-primary", !reviewVisible);
+        btn.classList.toggle("btn-primary", reviewVisible);
+        btn.innerHTML = reviewVisible
+          ? '<i class="bi bi-x-lg"></i> 收起复盘诊断'
+          : '<i class="bi bi-search"></i> 展开复盘诊断';
+      }
+	      if (!reviewVisible) {
+	        if (diagAbort) {
+	          try { diagAbort.abort(); } catch {}
+	          diagAbort = null;
+	        }
+	        diagLoadedKey = null;
+	        destroyCharts();
+	        return;
+	      }
+      // Lazy-load Chart.js so the initial page load doesn't block on CDN.
+      loadChartJs().then((ok) => {
+        document.getElementById("chartFallback").style.display = ok ? "none" : "block";
+        if (!ok) return;
+        if (lastMonthData) renderReview(lastMonthData.month, lastMonthData.daily || []);
+      });
+    }
+
+    async function loadMonth(month) {
+      clearError();
+      if (!month) return;
+      currentMonth = month;
+      const res = await fetch(`/api/strategy/review?month=${encodeURIComponent(month)}`);
+      const json = await res.json();
+      if (!res.ok) {
+        showError(json.detail || "加载失败");
+        return;
+      }
+
+	      const s = json.summary;
+	      document.getElementById("mStrategyWinRate").textContent = fmtPct(s.strategy_win_rate);
+	      document.getElementById("mDays").textContent = s.days ?? "-";
+	      document.getElementById("mExpected").textContent = fmt(s.expected_profit_sum, 2);
+	      document.getElementById("mReal").textContent = fmt(s.real_profit_sum, 2);
+      document.getElementById("mAcc").textContent = fmtPct(s.forecast_accuracy_avg);
+      document.getElementById("mBias").textContent = fmt(s.forecast_bias_sum, 4);
+
+	      const c = json.cumulative;
+	      document.getElementById("cStrategyWinRate").textContent = fmtPct(c.strategy_win_rate);
+	      document.getElementById("cDays").textContent = c.days ?? "-";
+	      document.getElementById("cExpected").textContent = fmt(c.expected_profit_sum, 2);
+	      document.getElementById("cReal").textContent = fmt(c.real_profit_sum, 2);
+      document.getElementById("cRange").textContent = `区间：${c.start} ~ ${c.end}`;
+
+      const tbody = document.getElementById("dailyBody");
+      tbody.innerHTML = "";
+      for (const r of json.daily) {
+        const tr = document.createElement("tr");
+        const realNet = r.profit_real;
+        const expNet = r.profit_expected;
+        const assess = r.assessment_recovery;
+	        tr.innerHTML = `
+	          <td class="mono">${r.date}</td>
+	          <td class="text-end mono">${fmt(r.strategy_coeff_avg, 6)}</td>
+	          <td class="text-end mono">${fmtPct(r.strategy_win_rate)}</td>
+	          <td class="text-end mono">${fmt(r.actual_total, 4)}</td>
+	          <td class="text-end mono">${fmt(r.declared_total, 4)}</td>
+	          <td class="text-end mono">${fmt(r.forecast_total, 4)}</td>
+          <td class="text-end mono">${fmtPct(r.forecast_accuracy)}</td>
+          <td class="text-end mono">${fmt(r.forecast_bias, 4)}</td>
+          <td class="text-end mono ${realNet > 0 ? 'text-success' : (realNet < 0 ? 'text-danger' : '')}">${fmt(realNet, 2)}</td>
+          <td class="text-end mono ${expNet > 0 ? 'text-success' : (expNet < 0 ? 'text-danger' : '')}">${fmt(expNet, 2)}</td>
+          <td class="text-end mono">${fmt(assess, 2)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      lastMonthData = { month, daily: (json.daily || []) };
+      if (reviewVisible) {
+        if (chartJsReady || typeof Chart !== "undefined") {
+          renderReview(month, json.daily || []);
+        } else {
+          loadChartJs().then((ok) => {
+            document.getElementById("chartFallback").style.display = ok ? "none" : "block";
+            if (ok) renderReview(month, json.daily || []);
+          });
+        }
+      }
+    }
+
+    async function refreshMonth(month) {
+      clearError();
+      if (!month) return;
+      const btn = document.getElementById("btnRefresh");
+      const oldHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>刷新中`;
+      try {
+        const fd = new FormData();
+        fd.append("month", month);
+        const res = await fetch("/api/strategy/review/refresh", { method: "POST", body: fd });
+        const json = await res.json();
+        if (!res.ok) {
+          showError(json.detail || "刷新失败");
+          return;
+        }
+        await loadMonth(month);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = oldHtml;
+      }
+    }
+
+    function fmtYmFromDate(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      return `${y}-${m}`;
+    }
+
+    function monthAdd(baseDate, deltaMonths) {
+      // Avoid toISOString() here (UTC conversion can shift month in non-UTC timezones).
+      const d = new Date(baseDate.getFullYear(), baseDate.getMonth() + deltaMonths, 1);
+      return fmtYmFromDate(d);
+    }
+
+    function monthAddFromYm(ym, deltaMonths) {
+      // ym: "YYYY-MM"
+      try {
+        const parts = (ym || "").split("-");
+        const y = Number(parts[0]);
+        const m = Number(parts[1]);
+        if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+        const d = new Date(y, (m - 1) + deltaMonths, 1);
+        return fmtYmFromDate(d);
+      } catch {
+        return null;
+      }
+    }
+
+    function setActiveMonth(month) {
+      document.querySelectorAll("#monthChoices .month-choice").forEach(btn => {
+        btn.classList.toggle("is-active", btn.dataset.month === month);
+      });
+    }
+
+    async function getLatestMonth() {
+      try {
+        const res = await fetch("/api/strategy/review/latest-month");
+        const json = await res.json();
+        if (!res.ok) return null;
+        return json.month || null;
+      } catch {
+        return null;
+      }
+    }
+
+    async function initMonthChoices() {
+      const container = document.getElementById("monthChoices");
+      const now = new Date();
+      const latest = await getLatestMonth();
+      const baseMonth = latest || monthAdd(now, 0);
+      // Show the latest 3 months for quick selection.
+      const months = [0, -1, -2]
+        .map((d) => monthAddFromYm(baseMonth, d))
+        .filter(Boolean);
+      defaultMonth = months[0] || monthAdd(now, 0);
+      container.innerHTML = months.map((m, idx) => (
+        `<button type="button" class="month-choice ${m === defaultMonth ? "is-active" : ""}" data-month="${m}">${m}</button>`
+      )).join("");
+
+      container.addEventListener("click", (e) => {
+        const btn = e.target.closest(".month-choice");
+        if (!btn) return;
+        const m = btn.dataset.month;
+        if (!m) return;
+        setActiveMonth(m);
+        loadMonth(m);
+      });
+
+      // initial load = latest available month (fallback: current month)
+      loadMonth(defaultMonth);
+    }
+
+	    initMonthChoices();
+	    document.getElementById("btnToggleReview").addEventListener("click", () => setReviewVisible(!reviewVisible));
+	    document.getElementById("btnRefresh").addEventListener("click", () => refreshMonth(currentMonth || defaultMonth));
+	    document.getElementById("outlierBody").addEventListener("click", (e) => {
+	      const tr = e.target.closest("tr");
+	      const d = tr && tr.dataset.date;
+	      if (!d) return;
+	      loadDayDiagnose(d);
+	    });
+
+	    document.getElementById("btnDiagPrev").addEventListener("click", () => {
+	      const idx = diagOutliers.findIndex(x => x.date === diagSelectedDate);
+	      if (idx > 0) loadDayDiagnose(diagOutliers[idx - 1].date);
+	    });
+	    document.getElementById("btnDiagNext").addEventListener("click", () => {
+	      const idx = diagOutliers.findIndex(x => x.date === diagSelectedDate);
+	      if (idx >= 0 && idx < diagOutliers.length - 1) loadDayDiagnose(diagOutliers[idx + 1].date);
+	    });
+	  </script>
+</body>
+</html>

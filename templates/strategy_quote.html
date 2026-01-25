@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>报价申报 - Excel2SQL</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css">
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
+  <style>
+    :root {
+      --bg-color: #f3f4f6;
+      --card-bg: #ffffff;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --accent-color: #3b82f6;
+    }
+    body {
+      background: var(--bg-color);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    .navbar {
+      background: var(--card-bg);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    }
+    .navbar-brand,
+    .navbar-brand:hover {
+      color: var(--text-primary);
+      font-weight: 800;
+      font-size: 1.4rem;
+      letter-spacing: -0.025em;
+    }
+    .navbar-nav { gap: 0.75rem; }
+    .navbar-nav .nav-link {
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 1.05rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .navbar-nav .nav-link:hover,
+    .navbar-nav .nav-link:focus {
+      color: var(--text-primary);
+      background-color: rgba(0, 0, 0, 0.08);
+    }
+    .navbar-nav .nav-link.active {
+      color: var(--accent-color);
+      font-weight: 700;
+      background-color: rgba(59, 130, 246, 0.12);
+      border-bottom: 2px solid var(--accent-color);
+    }
+
+    .dashboard-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      border: 1px solid rgba(15, 23, 42, 0.06);
+    }
+    .muted { color: var(--text-secondary); }
+    .mono { font-variant-numeric: tabular-nums; }
+    .table-sm td, .table-sm th { white-space: nowrap; }
+
+    /* Segmented coefficient choices (0.8/0.9/1.0/1.1/1.2) */
+    .coeff-choices {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      background: rgba(15, 23, 42, 0.03);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 999px;
+      overflow: hidden;
+      user-select: none;
+    }
+    .coeff-choice {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      padding: 6px 12px;
+      font-size: 0.875rem;
+      line-height: 1;
+      color: #374151;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .coeff-choice:hover {
+      background: rgba(15, 23, 42, 0.04);
+    }
+    .coeff-choice.is-active {
+      background: rgba(59, 130, 246, 0.18);
+      color: #1d4ed8;
+      font-weight: 700;
+    }
+    .coeff-choice + .coeff-choice {
+      border-left: 1px solid rgba(15, 23, 42, 0.10);
+    }
+    .coeff-note {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    /* Table alignment + copy button */
+    .coeff-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+    }
+    .declared-cell {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+    }
+    .btn-copy-decl {
+      padding: 6px 10px;
+      line-height: 1;
+      border-radius: 10px;
+      min-width: 72px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-copy-decl i {
+      font-size: 0.95rem;
+    }
+    .row-copied {
+      background: rgba(16, 185, 129, 0.10);
+    }
+    .pulse-success {
+      animation: pulseSuccess 0.45s ease-out;
+    }
+    @keyframes pulseSuccess {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.03); }
+      100% { transform: scale(1); }
+    }
+
+    /* Make the table layout feel more balanced and keep headings centered */
+    th.col-coeff, th.col-decl { text-align: center; }
+    td.col-coeff, td.col-decl { text-align: center; }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-light mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav me-auto">
+          <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
+          <li class="nav-item"><a class="nav-link" href="/join_query">多天均值查询</a></li>
+          <li class="nav-item"><a class="nav-link" href="/similar_day">类比日匹配</a></li>
+          <li class="nav-item"><a class="nav-link" href="/multi_day_compare">多日对比</a></li>
+          <li class="nav-item"><a class="nav-link" href="/daily_hourly">分时看板</a></li>
+          <li class="nav-item"><a class="nav-link active fw-bold" href="/strategy_quote">报价申报</a></li>
+          <li class="nav-item"><a class="nav-link" href="/strategy_review">策略复盘</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container-fluid px-4 py-4">
+    <div class="row g-3">
+      <div class="col-12 col-xl-4">
+        <div class="dashboard-card">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h5 class="mb-0"><i class="bi bi-calculator text-primary"></i> 申报计算</h5>
+            <span class="badge bg-light text-dark">D-7/14/21 加权</span>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label muted">目标日期 (D)</label>
+            <input id="targetDate" class="form-control" placeholder="选择日期" readonly />
+            <div class="form-text">通常在 D-1 11:30-12:00 做预测；系统用 D-7/14/21 实际分时电量加权。</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label muted">策略系数一键粘贴（24个时刻）</label>
+            <textarea id="coeffPaste" class="form-control" rows="2" placeholder="从Excel复制连续24个格子后，直接 Ctrl+V 粘贴到这里（支持Tab/换行分隔）"></textarea>
+            <div id="pasteHint" class="form-text">粘贴后会自动应用到 00:00-23:00。</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label muted">备注（可选）</label>
+            <textarea id="strategyNote" class="form-control" rows="2" placeholder="策略描述/备注"></textarea>
+          </div>
+
+          <div class="d-flex gap-2">
+            <button id="btnExecute" class="btn btn-primary">
+              <i class="bi bi-check2-circle"></i> 实施（保存策略）
+            </button>
+          </div>
+          <div id="executeHint" class="form-text"></div>
+
+          <hr class="my-3" />
+
+          <div class="mb-2">
+            <div class="muted mb-1"><i class="bi bi-upload"></i> 导入/更新数据</div>
+            <div class="mb-2">
+              <label class="form-label muted mb-1">实际分时电量一键粘贴（24个时刻，用于更新 D-5）</label>
+              <textarea id="actualPaste" class="form-control" rows="2" placeholder="从Excel或文本复制连续24个数值后，直接 Ctrl+V 粘贴到这里（支持Tab/换行/逗号分隔）"></textarea>
+              <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+                <button id="btnSaveActual" type="button" class="btn btn-outline-secondary btn-sm">
+                  粘贴入库（写入 D-5）
+                </button>
+                <div id="actualPasteHint" class="form-text mb-0"></div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+              <label class="btn btn-outline-secondary btn-sm mb-0">
+                上传实际分时电量（每天更新：D-5）
+                <input id="uploadActual" type="file" accept=".xlsx" hidden />
+              </label>
+            </div>
+            <div id="dailyReminder" class="form-text"></div>
+            <div id="uploadHint" class="form-text"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-8">
+        <div class="dashboard-card">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h5 class="mb-0"><i class="bi bi-table text-secondary"></i> 分时预测与申报</h5>
+            <div class="small muted" id="metaText">-</div>
+          </div>
+
+          <div class="row g-2 mb-2">
+            <div class="col-12 col-md-4">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">月度预测电量（总）</div>
+                <div class="fw-bold mono" id="forecastTotal">-</div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">日前申报电量（总）</div>
+                <div class="fw-bold mono" id="declaredTotal">-</div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="p-2 rounded bg-light">
+                <div class="muted small">策略系数</div>
+                <div class="fw-bold mono" id="coeffShow">-</div>
+              </div>
+            </div>
+          </div>
+
+          <div id="hourlyTableWrap" class="table-responsive" style="max-height: 560px;">
+            <table class="table table-sm table-hover align-middle mb-0">
+              <colgroup>
+                <col style="width: 88px;">
+                <col style="width: 160px;">
+                <col style="width: 360px;">
+                <col style="width: 240px;">
+              </colgroup>
+              <thead class="table-light sticky-top">
+                <tr>
+                  <th>时刻</th>
+                  <th class="text-end">预测电量</th>
+                  <th class="col-coeff">策略系数</th>
+                  <th class="col-decl">申报电量</th>
+                </tr>
+              </thead>
+              <tbody id="hourlyBody"></tbody>
+            </table>
+          </div>
+
+          <div id="errorBox" class="alert alert-danger mt-3 d-none"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function fmt(n, digits=6) {
+      if (n === null || n === undefined || Number.isNaN(Number(n))) return "-";
+      const v = Number(n);
+      return v.toFixed(digits);
+    }
+
+    const COEFF_OPTIONS = [0.8, 0.9, 1.0, 1.1, 1.2];
+    // Prevent piling up in-flight requests when users switch dates quickly.
+    let computeReqId = 0;
+    let computeAbort = null;
+    let saveAbort = null;
+    let state = {
+      date: null,
+      forecastHourly: null,     // length 24
+      coeffHourly: null,        // length 24
+      copiedDeclByDate: {},     // date -> { [hour]: true }
+      executedStrategyByDate: {}, // date -> true (persist until refresh)
+    };
+
+    function showError(msg) {
+      const el = document.getElementById("errorBox");
+      el.textContent = msg;
+      el.classList.remove("d-none");
+    }
+    function clearError() {
+      const el = document.getElementById("errorBox");
+      el.textContent = "";
+      el.classList.add("d-none");
+    }
+
+    function normalizeCoeff(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 1.0;
+    }
+
+    function roundTo(v, digits) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return 0;
+      const p = Math.pow(10, digits);
+      return Math.round(n * p) / p;
+    }
+
+    function isPresetCoeff(v) {
+      return COEFF_OPTIONS.some(o => Math.abs(o - v) < 1e-9);
+    }
+
+    function renderHourlyTable() {
+      const tbody = document.getElementById("hourlyBody");
+      tbody.innerHTML = "";
+      if (!state.forecastHourly || !state.coeffHourly) return;
+
+      const copiedForDate = state.date ? (state.copiedDeclByDate[state.date] || {}) : {};
+
+      let declaredSum = 0;
+      for (let h = 0; h < 24; h++) {
+        const forecast = Number(state.forecastHourly[h] || 0);
+        const coeff = normalizeCoeff(state.coeffHourly[h]);
+        // Submitted declared energy is typically rounded to 0.001.
+        const declared = roundTo(forecast * coeff, 3);
+        declaredSum += declared;
+        const declaredText = fmt(declared, 6);
+        const isCopied = !!copiedForDate[h];
+
+        const presetHint = isPresetCoeff(coeff) ? "" : `<div class="coeff-note">当前为非标准系数：${fmt(coeff, 6)}（请点选修正）</div>`;
+
+        const tr = document.createElement("tr");
+        if (isCopied) tr.classList.add("row-copied");
+        tr.innerHTML = `
+          <td class="mono">${String(h).padStart(2,"0")}:00</td>
+          <td class="text-end mono">${fmt(forecast, 6)}</td>
+          <td class="col-coeff">
+            <div class="coeff-cell">
+              <div class="coeff-choices" data-hour="${h}" aria-label="${String(h).padStart(2,"0")}:00 策略系数">
+                ${COEFF_OPTIONS.map((v) => (
+                  `<button type="button" class="coeff-choice ${Math.abs(v - coeff) < 1e-9 ? "is-active" : ""}" data-hour="${h}" data-value="${v}">${v.toFixed(1)}</button>`
+                )).join("")}
+              </div>
+              ${presetHint}
+            </div>
+          </td>
+          <td class="col-decl">
+            <div class="declared-cell">
+              <span class="mono fw-bold" id="decl_${h}">${declaredText}</span>
+              <button type="button"
+                      class="btn btn-sm btn-copy-decl ${isCopied ? "btn-success" : "btn-primary"}"
+                      data-hour="${h}"
+                      data-copy="${declaredText}"
+                      aria-label="复制 ${String(h).padStart(2,"0")}:00 申报电量">
+                <i class="bi ${isCopied ? "bi-clipboard-check" : "bi-clipboard"}"></i>
+                <span>${isCopied ? "已复制" : "复制"}</span>
+              </button>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      document.getElementById("declaredTotal").textContent = fmt(declaredSum, 6);
+    }
+
+    function parsePastedCoefficients(text) {
+      const parts = (text || "").trim().split(/[\s,]+/).filter(Boolean);
+      const nums = parts.map((p) => Number(p));
+      if (nums.length < 24) {
+        return { ok: false, message: `系数数量不足：识别到 ${nums.length} 个，需 24 个（00:00-23:00）。` };
+      }
+      if (nums.slice(0, 24).some((n) => !Number.isFinite(n))) {
+        return { ok: false, message: "系数包含非数字内容，请检查粘贴内容。" };
+      }
+      return { ok: true, values: nums.slice(0, 24), extra: Math.max(0, nums.length - 24) };
+    }
+
+    function parsePastedActual(text) {
+      const parts = (text || "").trim().split(/[\s,]+/).filter(Boolean);
+      const nums = parts.map((p) => Number(p));
+      if (nums.length < 24) {
+        return { ok: false, message: `电量数量不足：识别到 ${nums.length} 个，需 24 个（00:00-23:00）。` };
+      }
+      if (nums.slice(0, 24).some((n) => !Number.isFinite(n))) {
+        return { ok: false, message: "电量包含非数字内容，请检查粘贴内容。" };
+      }
+      return { ok: true, values: nums.slice(0, 24), extra: Math.max(0, nums.length - 24) };
+    }
+
+    function addDays(isoDate, days) {
+      // Treat as local date (avoid timezone offset surprises).
+      const d = new Date(`${isoDate}T00:00:00`);
+      d.setDate(d.getDate() + days);
+      return d.toISOString().split("T")[0];
+    }
+
+    async function compute() {
+      clearError();
+      computeReqId += 1;
+      const reqId = computeReqId;
+      if (computeAbort) {
+        try { computeAbort.abort(); } catch {}
+      }
+      computeAbort = new AbortController();
+      const date = document.getElementById("targetDate").value;
+      if (!date) return;
+
+      // Keep "implemented" state visible until refresh; only reset when switching to a non-implemented date.
+      const execHint = document.getElementById("executeHint");
+      const execBtn = document.getElementById("btnExecute");
+      const implemented = !!state.executedStrategyByDate[date];
+      if (execHint) {
+        execHint.classList.remove("text-danger");
+        execHint.classList.toggle("text-success", implemented);
+        execHint.textContent = implemented ? `已实施：${date}（策略描述与策略系数已入库）` : "";
+      }
+      if (execBtn) {
+        execBtn.disabled = false;
+        if (implemented) {
+          execBtn.classList.remove("btn-primary");
+          execBtn.classList.add("btn-success");
+          execBtn.innerHTML = '<i class="bi bi-check2"></i> 已实施';
+        } else {
+          execBtn.classList.remove("btn-success");
+          execBtn.classList.add("btn-primary");
+          execBtn.innerHTML = '<i class="bi bi-check2-circle"></i> 实施（保存策略）';
+        }
+      }
+
+      // Load forecast + coefficients from DB; UI can edit hourly coefficients client-side.
+      let res;
+      try {
+        res = await fetch(`/api/strategy/quote?date=${encodeURIComponent(date)}`, { signal: computeAbort.signal });
+      } catch (e) {
+        if (computeAbort.signal.aborted) return;
+        showError("计算失败（网络/连接异常）");
+        return;
+      }
+      const json = await res.json();
+      if (computeAbort.signal.aborted || reqId !== computeReqId) return;
+      if (!res.ok) {
+        showError(json.detail || "计算失败");
+        return;
+      }
+
+      const coeffHourly = json.strategy_coeff_hourly || Array.from({length:24}, () => 1.0);
+      state.date = date;
+      state.forecastHourly = json.forecast.hourly;
+      state.coeffHourly = coeffHourly.map(normalizeCoeff);
+
+      document.getElementById("coeffShow").textContent = "分时系数";
+      document.getElementById("forecastTotal").textContent = fmt(json.forecast.total, 6);
+      // declaredTotal will be re-calculated from UI coefficients (may differ from server if non-standard)
+      if (json.forecast && json.forecast.source === "explicit") {
+        document.getElementById("metaText").textContent = "来源: 月度预测（独立维护）";
+      } else {
+        document.getElementById("metaText").textContent =
+          `来源: ${json.forecast.source_dates.map(s => `${s.date}×${s.weight}`).join(" + ")}`;
+      }
+
+      if (json.data_reminder) {
+        const r = json.data_reminder;
+        const ok = r.update_actual_has_24;
+        document.getElementById("dailyReminder").textContent =
+          `每天更新数据仅需上传 D-5 实际分时电量：${r.update_actual_date}（${ok ? "已入库" : "未入库"}）`;
+      } else {
+        document.getElementById("dailyReminder").textContent = "";
+      }
+
+      renderHourlyTable();
+    }
+
+    async function saveSettings() {
+      clearError();
+      const hint = document.getElementById("executeHint");
+      if (hint) {
+        hint.textContent = "正在实施...";
+        hint.classList.remove("text-danger");
+        hint.classList.remove("text-success");
+      }
+      if (saveAbort) {
+        try { saveAbort.abort(); } catch {}
+      }
+      saveAbort = new AbortController();
+      const btn = document.getElementById("btnExecute");
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.remove("btn-success");
+        btn.classList.add("btn-primary");
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>实施中...';
+      }
+      const date = document.getElementById("targetDate").value;
+      const note = document.getElementById("strategyNote").value;
+      if (!date) return;
+      const hourly = (state.coeffHourly && state.coeffHourly.length === 24)
+        ? state.coeffHourly
+        : Array.from({length:24}, () => 1.0);
+      let res;
+      try {
+        res = await fetch("/api/strategy/day-settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({date, strategy_coeff_hourly: hourly, revenue_transfer: 0.0, note}),
+          signal: saveAbort.signal,
+        });
+      } catch (e) {
+        if (saveAbort.signal.aborted) return;
+        showError("保存失败（网络/连接异常）");
+        if (hint) {
+          hint.textContent = "实施失败（网络/连接异常）";
+          hint.classList.add("text-danger");
+          hint.classList.remove("text-success");
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.classList.remove("btn-success");
+          btn.classList.add("btn-primary");
+          btn.innerHTML = '<i class="bi bi-check2-circle"></i> 实施（保存策略）';
+        }
+        return;
+      }
+      const json = await res.json();
+      if (!res.ok) {
+        showError(json.detail || "保存失败");
+        if (hint) {
+          hint.textContent = (json.detail || "实施失败");
+          hint.classList.add("text-danger");
+          hint.classList.remove("text-success");
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.classList.remove("btn-success");
+          btn.classList.add("btn-primary");
+          btn.innerHTML = '<i class="bi bi-check2-circle"></i> 实施（保存策略）';
+        }
+        return;
+      }
+
+      // Mark as implemented for this date (persist until refresh).
+      state.executedStrategyByDate[date] = true;
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.classList.add("text-success");
+        hint.textContent = `已实施：${date}（策略描述与策略系数已入库）`;
+      }
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove("btn-primary");
+        btn.classList.add("btn-success");
+        btn.innerHTML = '<i class="bi bi-check2"></i> 已实施';
+      }
+      await compute();
+    }
+
+    async function uploadActual(file) {
+      const hint = document.getElementById("uploadHint");
+      hint.textContent = "正在上传...";
+      const fd = new FormData();
+      fd.append("file", file);
+      const date = document.getElementById("targetDate").value;
+      if (date) fd.append("target_date", date);
+      const res = await fetch("/api/strategy/actual-hourly/upload", {method: "POST", body: fd});
+      const json = await res.json();
+      if (!res.ok) {
+        hint.textContent = (json.detail || "上传失败");
+        return;
+      }
+      if (json.expected_date) {
+        hint.textContent = `上传成功：已按日常规则仅写入 D-5（${json.expected_date}）数据，共 ${json.inserted} 条。`;
+      } else {
+        hint.textContent = `上传成功：写入 ${json.inserted} 条实际分时记录。`;
+      }
+      // Refresh reminder state after upload
+      compute();
+    }
+
+    async function pasteActualToDb() {
+      clearError();
+      const hint = document.getElementById("actualPasteHint");
+      const date = document.getElementById("targetDate").value;
+      if (!date) return;
+
+      const updateDate = addDays(date, -5);
+      const text = document.getElementById("actualPaste").value;
+      const parsed = parsePastedActual(text);
+      if (!parsed.ok) {
+        hint.textContent = parsed.message;
+        hint.classList.add("text-danger");
+        return;
+      }
+      hint.classList.remove("text-danger");
+      hint.textContent = "正在入库...";
+
+      const res = await fetch("/api/strategy/actual-hourly", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({date: updateDate, source: "both", hourly: parsed.values}),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        hint.textContent = (json.detail || "入库失败");
+        hint.classList.add("text-danger");
+        return;
+      }
+      hint.classList.remove("text-danger");
+      hint.textContent = `入库成功：${updateDate}（共 24 条）`;
+      compute();
+    }
+
+    // Init
+    // Default target date = tomorrow (D day). Forecast is typically made on D-1.
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    const iso = d.toISOString().split("T")[0];
+    flatpickr("#targetDate", {
+      locale: "zh",
+      dateFormat: "Y-m-d",
+      defaultDate: iso,
+      allowInput: false,
+      clickOpens: true,
+      disableMobile: true,
+      onChange: () => compute(),
+    });
+    document.getElementById("btnExecute").addEventListener("click", saveSettings);
+    document.getElementById("btnSaveActual").addEventListener("click", pasteActualToDb);
+
+    document.getElementById("coeffPaste").addEventListener("paste", (e) => {
+      // Excel 24 cells copy: "v1\tv2\t...\tv24"
+      const text = (e.clipboardData || window.clipboardData)?.getData("text");
+      const parsed = parsePastedCoefficients(text);
+      const hint = document.getElementById("pasteHint");
+      if (!parsed.ok) {
+        hint.textContent = parsed.message;
+        hint.classList.add("text-danger");
+        return;
+      }
+      hint.classList.remove("text-danger");
+      hint.textContent = `已应用 24 个策略系数${parsed.extra ? `（已忽略后续 ${parsed.extra} 个）` : ""}。`;
+
+      if (!state.coeffHourly || state.coeffHourly.length !== 24) {
+        state.coeffHourly = Array.from({ length: 24 }, () => 1.0);
+      }
+      state.coeffHourly = parsed.values.map(normalizeCoeff);
+      renderHourlyTable();
+    });
+
+    // Click per-hour choices (event delegation)
+    document.getElementById("hourlyBody").addEventListener("click", (e) => {
+      const copyBtn = e.target.closest(".btn-copy-decl");
+      if (copyBtn) {
+        const text = copyBtn.dataset.copy || "";
+        const h = Number(copyBtn.dataset.hour);
+        const wrap = document.getElementById("hourlyTableWrap");
+        const scrollTop = wrap ? wrap.scrollTop : 0;
+        const setOk = () => {
+          // Persist a visual mark until page refresh (per-date, per-hour).
+          const d = state.date || "";
+          if (d) {
+            if (!state.copiedDeclByDate[d]) state.copiedDeclByDate[d] = {};
+            state.copiedDeclByDate[d][h] = true;
+          }
+          renderHourlyTable();
+          if (wrap) wrap.scrollTop = scrollTop;
+          // Extra feedback pulse on the clicked control (best-effort).
+          const btnNow = document.querySelector(`.btn-copy-decl[data-hour=\"${h}\"]`);
+          if (btnNow) {
+            btnNow.classList.add("pulse-success");
+            setTimeout(() => btnNow.classList.remove("pulse-success"), 500);
+          }
+        };
+
+        const fallbackCopy = (t) => {
+          const ta = document.createElement("textarea");
+          ta.value = t;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.top = "-1000px";
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            const ok = document.execCommand("copy");
+            document.body.removeChild(ta);
+            return ok;
+          } catch {
+            document.body.removeChild(ta);
+            return false;
+          }
+        };
+
+        (async () => {
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(text);
+              setOk();
+              return;
+            }
+          } catch {}
+          if (fallbackCopy(text)) setOk();
+        })();
+        return;
+      }
+
+      const btn = e.target.closest(".coeff-choice");
+      if (!btn) return;
+      const hour = btn.dataset.hour;
+      const value = btn.dataset.value;
+      if (hour === undefined || value === undefined) return;
+      const h = Number(hour);
+      const v = normalizeCoeff(value);
+      if (!state.coeffHourly || state.coeffHourly.length !== 24) return;
+      state.coeffHourly[h] = v;
+      renderHourlyTable();
+    });
+    document.getElementById("uploadActual").addEventListener("change", (e) => {
+      if (e.target.files && e.target.files[0]) uploadActual(e.target.files[0]);
+    });
+
+    compute();
+  </script>
+</body>
+</html>
