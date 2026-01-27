@@ -243,6 +243,7 @@
                   <tr>
                     <th style="width: 110px;">日期</th>
                     <th style="width: 90px;">分时</th>
+                    <th style="width: 120px;" class="text-end">总电量</th>
                     <th style="width: 90px;">策略</th>
                     <th style="width: 150px;">更新时间</th>
                   </tr>
@@ -258,10 +259,6 @@
                   <button id="btnLoadActualForDate" type="button" class="btn btn-outline-secondary btn-sm">加载</button>
                   <button id="btnSaveActualForDate" type="button" class="btn btn-outline-secondary btn-sm">保存实际（24）</button>
                   <button id="btnSaveCoeffForDate" type="button" class="btn btn-outline-secondary btn-sm">保存策略系数（24）</button>
-                  <label class="btn btn-outline-secondary btn-sm mb-0">
-                    上传xlsx写入该日
-                    <input id="uploadActualForDate" type="file" accept=".xlsx" hidden />
-                  </label>
                 </div>
               </div>
               <label class="form-label muted small mt-2 mb-1">实际分时电量（24个，00-23）</label>
@@ -269,7 +266,6 @@
               <label class="form-label muted small mt-2 mb-1">策略系数（24个，00-23）</label>
               <textarea id="coeffEditPaste" class="form-control" rows="2" placeholder="策略系数：从Excel复制连续24个系数，直接 Ctrl+V 粘贴（支持Tab/换行/逗号分隔）"></textarea>
               <div id="actualEditHint" class="form-text"></div>
-              <div id="uploadHint" class="form-text"></div>
             </div>
           </div>
         </div>
@@ -708,9 +704,11 @@
         else if (ccnt > 0) cBadgeClass = "bg-warning text-dark";
         const cBadge = `<span class="badge ${cBadgeClass}">${Math.min(24, ccnt)}/24</span>`;
         const updated = day.updated_at ? String(day.updated_at) : "-";
+        const total = (day.has_24 && day.total_energy != null) ? fmt(day.total_energy, 4) : "-";
         tr.innerHTML = `
           <td class="mono">${day.date}</td>
           <td>${badge}</td>
+          <td class="text-end mono">${total}</td>
           <td>${cBadge}</td>
           <td class="small muted">${updated}</td>
         `;
@@ -868,28 +866,6 @@
       compute();
     }
 
-    async function uploadActualForDate(d, file) {
-      const hint = document.getElementById("uploadHint");
-      if (!d || !file) return;
-      const platform = getPlatform();
-      if (hint) hint.textContent = "正在上传...";
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("record_date", d);
-      fd.append("platform", platform);
-      const res = await fetch("/api/strategy/actual-hourly/upload", {method: "POST", body: fd});
-      const json = await res.json();
-      if (!res.ok) {
-        if (hint) hint.textContent = (json.detail || "上传失败");
-        return;
-      }
-      if (hint) {
-        hint.textContent = `上传成功：已写入 ${d}，共 ${json.inserted} 条。`;
-      }
-      await refreshActualSummary();
-      compute();
-    }
-
     function ensureActualMaintenanceDefaults(targetDate) {
       if (!targetDate) return;
       const key = `${getPlatform()}|${targetDate}`;
@@ -1032,11 +1008,7 @@
       state.coeffHourly[h] = v;
       renderHourlyTable();
     });
-    document.getElementById("uploadActualForDate").addEventListener("change", (e) => {
-      if (e.target.files && e.target.files[0]) uploadActualForDate(state.actualSelectedDate, e.target.files[0]);
-      // Allow re-uploading the same file by resetting the input value.
-      e.target.value = "";
-    });
+    // Deliberately removed "upload xlsx for selected date" to avoid misuse; keep paste-based maintenance only.
 
     compute();
   </script>

@@ -2231,6 +2231,7 @@ def _list_actual_hourly_summary(start: Date, end: Date, platform: Optional[str] 
         SELECT
           record_date,
           SUM(CASE WHEN actual_energy IS NOT NULL THEN 1 ELSE 0 END) AS cnt,
+          SUM(actual_energy) AS total_energy,
           MAX(updated_at) AS updated_at
         FROM {table}
         WHERE record_date >= :start AND record_date <= :end
@@ -2251,13 +2252,14 @@ def _list_actual_hourly_summary(start: Date, end: Date, platform: Optional[str] 
     stats = {}
     coeff_stats = {}
     with db_manager.engine.connect() as conn:
-        for d, cnt, updated_at in conn.execute(q, {"start": start, "end": end}).fetchall():
+        for d, cnt, total_energy, updated_at in conn.execute(q, {"start": start, "end": end}).fetchall():
             try:
                 dd = d if isinstance(d, Date) else Date.fromisoformat(str(d))
             except Exception:
                 continue
             stats[dd] = {
                 "count": int(cnt or 0),
+                "total_energy": None if total_energy is None else float(total_energy),
                 "updated_at": None if updated_at is None else _normalize_dt(updated_at),
             }
         for d, cnt, updated_at in conn.execute(q_coeff, {"start": start, "end": end}).fetchall():
@@ -2275,6 +2277,9 @@ def _list_actual_hourly_summary(start: Date, end: Date, platform: Optional[str] 
     while cur <= end:
         s = stats.get(cur)
         cnt = int(s["count"]) if s else 0
+        total_energy = None
+        if s and cnt >= 24:
+            total_energy = s.get("total_energy")
         cs = coeff_stats.get(cur)
         ccnt = int(cs["count"]) if cs else 0
         days.append(
@@ -2283,6 +2288,7 @@ def _list_actual_hourly_summary(start: Date, end: Date, platform: Optional[str] 
                 "count": cnt,
                 "has_24": bool(cnt >= 24),
                 "updated_at": None if not s or s["updated_at"] is None else s["updated_at"].isoformat(sep=" "),
+                "total_energy": None if total_energy is None else float(total_energy),
                 "coeff_count": ccnt,
                 "coeff_has_24": bool(ccnt >= 24),
                 "coeff_updated_at": None if not cs or cs["updated_at"] is None else cs["updated_at"].isoformat(sep=" "),
