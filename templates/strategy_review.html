@@ -99,6 +99,27 @@
     .month-choice + .month-choice {
       border-left: 1px solid rgba(15, 23, 42, 0.10);
     }
+
+    /* Floating loading toast (does not affect layout). */
+    #monthLoadingToast {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 3000;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(17, 24, 39, 0.92);
+      color: #ffffff;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.20);
+      border: 1px solid rgba(255,255,255,0.12);
+      backdrop-filter: blur(6px);
+      max-width: min(520px, calc(100vw - 32px));
+    }
+    #monthLoadingToastText { color: rgba(255,255,255,0.92); }
+    #monthLoadingToastSub { color: rgba(255,255,255,0.72); font-size: 0.85rem; }
   </style>
 </head>
 <body>
@@ -127,6 +148,10 @@
           <div class="small muted">策略胜率（逐时）：coeff&lt;1 且 (DA-RT)&gt;0 正确；coeff≥1 且 (DA-RT)&lt;0 正确；(DA-RT)=0 不计入。月度预测不做逐时胜率，仅展示准确率/偏差。</div>
         </div>
         <div class="d-flex align-items-center gap-2">
+          <select id="platformSelect" class="form-select form-select-sm" style="width: 120px;">
+            <option value="tianlang">天朗</option>
+            <option value="huihua">辉华</option>
+          </select>
           <button id="btnRefresh" type="button" class="btn btn-outline-secondary btn-sm">
             <i class="bi bi-arrow-repeat"></i> 强制刷新本月
           </button>
@@ -407,23 +432,129 @@
     </div>
   </div>
 
-  <script>
-	    let currentMonth = null;
-	    let defaultMonth = null;
+  <div id="monthLoadingToast" class="d-none" role="status" aria-live="polite">
+    <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
+    <div>
+      <div id="monthLoadingToastText" class="fw-semibold">正在加载...</div>
+      <div id="monthLoadingToastSub">策略复盘数据较多，请稍候</div>
+    </div>
+  </div>
+
+	  <script>
+	    const SERVER_DEFAULT_PLATFORM = "{{ default_platform|default('tianlang') }}";
+
+		    let currentMonth = null;
+		    let defaultMonth = null;
 	    let chartProfit = null;
 	    let chartGap = null;
 	    let chartEnergy = null;
 	    let reviewVisible = false;
 	    let lastMonthData = null; // { month, daily }
-	    let chartJsReady = (typeof Chart !== "undefined");
-	    let chartJsLoading = null;
-	    let diagAbort = null;
-	    let diagSelectedDate = null;
-	    let diagOutliers = []; // list of {date, gap}
-	    let diagLoadedKey = null; // `${month}|${date}` to avoid duplicate auto-load fetches
-	    let chartDiagDiff = null;
-	    let chartDiagLoad = null;
-	    let chartDiagTemp = null;
+		    let chartJsReady = (typeof Chart !== "undefined");
+		    let chartJsLoading = null;
+        let monthAbort = null;
+        let monthReqId = 0;
+		    let diagAbort = null;
+		    let diagSelectedDate = null;
+		    let diagOutliers = []; // list of {date, gap}
+		    let diagLoadedKey = null; // `${month}|${date}` to avoid duplicate auto-load fetches
+			    let chartDiagDiff = null;
+		    let chartDiagLoad = null;
+		    let chartDiagTemp = null;
+        let lastMonthByPlatform = {}; // platform -> YYYY-MM
+
+	    function normalizePlatform(v) {
+	      const s = String(v || "").trim();
+	      if (s === "huihua" || s === "辉华" || s === "HH" || s === "hh") return "huihua";
+	      return "tianlang";
+	    }
+
+		    function getPlatform() {
+		      const el = document.getElementById("platformSelect");
+		      return normalizePlatform(el ? el.value : "tianlang");
+		    }
+
+        function syncPlatformToUrl(platform) {
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.set("platform", platform);
+            window.history.replaceState({}, "", url.toString());
+          } catch {}
+        }
+
+        function syncMonthToUrl(month) {
+          try {
+            const url = new URL(window.location.href);
+            if (month) url.searchParams.set("month", month);
+            window.history.replaceState({}, "", url.toString());
+          } catch {}
+        }
+
+        function getUrlMonth() {
+          try {
+            return new URLSearchParams(window.location.search).get("month");
+          } catch {
+            return null;
+          }
+        }
+
+        function redirectToPlatform(platform, month) {
+          // Hard navigation: ensures the address is shareable and the page is truly "that platform's review page".
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.set("platform", platform);
+            if (month) url.searchParams.set("month", month);
+            window.location.assign(url.toString());
+          } catch {
+            // Fallback: at least refresh data in-place.
+            syncPlatformToUrl(platform);
+            initMonthChoices(month || null);
+          }
+        }
+
+        function setMonthLoading(on, msg) {
+          const el = document.getElementById("monthLoadingToast");
+          const tx = document.getElementById("monthLoadingToastText");
+          if (tx && msg) tx.textContent = msg;
+          if (el) el.classList.toggle("d-none", !on);
+          const sel = document.getElementById("platformSelect");
+          if (sel) sel.disabled = !!on;
+          const btnRefresh = document.getElementById("btnRefresh");
+          if (btnRefresh) btnRefresh.disabled = !!on;
+          document.querySelectorAll("#monthChoices .month-choice").forEach((b) => {
+            b.disabled = !!on;
+          });
+        }
+
+        function applyPlatformToLinks(platform) {
+          // Keep navigation shareable (not only localStorage).
+          document.querySelectorAll('a[href^="/strategy_"]').forEach((a) => {
+            try {
+              const url = new URL(a.getAttribute("href"), window.location.origin);
+              url.searchParams.set("platform", platform);
+              a.setAttribute("href", url.pathname + "?" + url.searchParams.toString());
+            } catch {}
+          });
+        }
+
+			    function initPlatform() {
+			      const sel = document.getElementById("platformSelect");
+			      if (!sel) return;
+		      const qp = new URLSearchParams(window.location.search).get("platform");
+		      const stored = localStorage.getItem("strategy_platform");
+		      const initial = normalizePlatform(qp || stored || SERVER_DEFAULT_PLATFORM || "tianlang");
+			      sel.value = initial;
+			      localStorage.setItem("strategy_platform", initial);
+            syncPlatformToUrl(initial);
+            applyPlatformToLinks(initial);
+			      sel.addEventListener("change", () => {
+			        const p = getPlatform();
+	            const keepMonth = lastMonthByPlatform[p] || getUrlMonth() || currentMonth || defaultMonth;
+			        localStorage.setItem("strategy_platform", p);
+              // Switch to the corresponding platform page (shareable URL).
+              redirectToPlatform(p, keepMonth);
+			      });
+			    }
 
     function fmt(n, digits=4) {
       if (n === null || n === undefined || Number.isNaN(Number(n))) return "-";
@@ -476,11 +607,11 @@
       return (vals.length % 2) ? vals[mid] : (vals[mid-1] + vals[mid]) / 2;
     }
 
-    function ensureChartLib() {
-      const ok = typeof Chart !== "undefined";
-      document.getElementById("chartFallback").style.display = ok ? "none" : "block";
-      return ok;
-    }
+	    function ensureChartLib() {
+	      const ok = typeof Chart !== "undefined";
+	      document.getElementById("chartFallback").style.display = ok ? "none" : "block";
+	      return ok;
+	    }
 
 	    function destroyCharts() {
 	      if (chartProfit) { chartProfit.destroy(); chartProfit = null; }
@@ -642,7 +773,7 @@
 
 	      // Auto-load diagnosis for the default selected outlier (once per month/date).
 	      if (diagSelectedDate && month) {
-	        const key = `${month}|${diagSelectedDate}`;
+	        const key = `${getPlatform()}|${month}|${diagSelectedDate}`;
 	        if (diagLoadedKey !== key) {
 	          diagLoadedKey = key;
 	          loadDayDiagnose(diagSelectedDate);
@@ -763,47 +894,62 @@
 	      });
 	    }
 
-	    async function loadDayDiagnose(dateStr) {
-	      if (!dateStr) return;
-	      diagSelectedDate = dateStr;
-	      updateDiagNavButtons();
-	      highlightOutlier(dateStr);
+		    async function loadDayDiagnose(dateStr) {
+		      if (!dateStr) return;
+		      diagSelectedDate = dateStr;
+		      updateDiagNavButtons();
+		      highlightOutlier(dateStr);
 
-	      if (diagAbort) {
-	        try { diagAbort.abort(); } catch {}
-	      }
-	      diagAbort = new AbortController();
-	      setDiagLoading(true);
-	      try {
-	        const res = await fetch(`/api/strategy/review/diagnose?date=${encodeURIComponent(dateStr)}`, { signal: diagAbort.signal });
-	        const json = await res.json();
-	        if (!res.ok) return;
-	        if (diagAbort.signal.aborted) return;
-	        await loadChartJs();
-	        if (diagAbort.signal.aborted) return;
-	        renderDayDiagnose(json);
-	      } catch {
-	        return;
-	      } finally {
-	        setDiagLoading(false);
-	      }
-	    }
+		      if (diagAbort) {
+		        try { diagAbort.abort(); } catch {}
+		      }
+		      diagAbort = new AbortController();
+          let timeoutId = null;
+		      setDiagLoading(true);
+		      try {
+            // Avoid getting stuck forever on a stalled network request.
+            timeoutId = setTimeout(() => {
+              try { diagAbort.abort(); } catch {}
+            }, 20000);
+		        const platform = getPlatform();
+		        const res = await fetch(`/api/strategy/review/diagnose?date=${encodeURIComponent(dateStr)}&platform=${encodeURIComponent(platform)}`, { signal: diagAbort.signal });
+		        const json = await res.json();
+		        if (!res.ok) return;
+		        if (diagAbort.signal.aborted) return;
+		        await loadChartJs();
+		        if (diagAbort.signal.aborted) return;
+		        renderDayDiagnose(json);
+		      } catch {
+		        return;
+		      } finally {
+            if (timeoutId) {
+              try { clearTimeout(timeoutId); } catch {}
+            }
+		        setDiagLoading(false);
+		      }
+		    }
 
-	    function loadChartJs() {
-	      if (typeof Chart !== "undefined") {
-	        chartJsReady = true;
-	        return Promise.resolve(true);
+		    function loadChartJs() {
+		      if (typeof Chart !== "undefined") {
+		        chartJsReady = true;
+		        return Promise.resolve(true);
       }
       if (chartJsLoading) return chartJsLoading;
       chartJsLoading = new Promise((resolve) => {
         const s = document.createElement("script");
         s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
         s.async = true;
+        // Some networks may stall without firing onload/onerror; add a timeout.
+        const t = setTimeout(() => resolve(false), 12000);
         s.onload = () => {
+          try { clearTimeout(t); } catch {}
           chartJsReady = (typeof Chart !== "undefined");
           resolve(chartJsReady);
         };
-        s.onerror = () => resolve(false);
+        s.onerror = () => {
+          try { clearTimeout(t); } catch {}
+          resolve(false);
+        };
         document.head.appendChild(s);
       });
       return chartJsLoading;
@@ -841,13 +987,32 @@
     async function loadMonth(month) {
       clearError();
       if (!month) return;
-      currentMonth = month;
-      const res = await fetch(`/api/strategy/review?month=${encodeURIComponent(month)}`);
-      const json = await res.json();
-      if (!res.ok) {
-        showError(json.detail || "加载失败");
-        return;
+      // Cancel any previous in-flight month load (prevents "stuck loading" from stalled requests).
+      if (monthAbort) {
+        try { monthAbort.abort(); } catch {}
       }
+      monthAbort = new AbortController();
+      const reqId = (monthReqId += 1);
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        try { monthAbort.abort(); } catch {}
+      }, 30000);
+      currentMonth = month;
+      const platform = getPlatform();
+      lastMonthByPlatform[platform] = month;
+      syncMonthToUrl(month);
+      setMonthLoading(true, `正在加载 ${month}...`);
+      try {
+        const res = await fetch(
+          `/api/strategy/review?month=${encodeURIComponent(month)}&platform=${encodeURIComponent(platform)}`,
+          { signal: monthAbort.signal }
+        );
+        const json = await res.json();
+        if (!res.ok) {
+          showError(json.detail || "加载失败");
+          return;
+        }
 
 	      const s = json.summary;
 	      document.getElementById("mStrategyWinRate").textContent = fmtPct(s.strategy_win_rate);
@@ -887,15 +1052,30 @@
         tbody.appendChild(tr);
       }
 
-      lastMonthData = { month, daily: (json.daily || []) };
-      if (reviewVisible) {
-        if (chartJsReady || typeof Chart !== "undefined") {
-          renderReview(month, json.daily || []);
-        } else {
-          loadChartJs().then((ok) => {
-            document.getElementById("chartFallback").style.display = ok ? "none" : "block";
-            if (ok) renderReview(month, json.daily || []);
-          });
+	      lastMonthData = { month, daily: (json.daily || []) };
+	      if (reviewVisible) {
+	        if (chartJsReady || typeof Chart !== "undefined") {
+	          renderReview(month, json.daily || []);
+	        } else {
+	          loadChartJs().then((ok) => {
+	            document.getElementById("chartFallback").style.display = ok ? "none" : "block";
+	            if (ok) renderReview(month, json.daily || []);
+	          });
+	        }
+	      }
+      } catch (e) {
+        // Ignore results from superseded requests.
+        if (reqId !== monthReqId) return;
+        if (timedOut) {
+          showError("加载超时，请稍后重试（30s）");
+          return;
+        }
+        showError("加载失败（网络/连接异常）");
+      } finally {
+        try { clearTimeout(timeoutId); } catch {}
+        // Only the latest request is allowed to stop the loading state.
+        if (reqId === monthReqId) {
+          setMonthLoading(false);
         }
       }
     }
@@ -903,6 +1083,7 @@
     async function refreshMonth(month) {
       clearError();
       if (!month) return;
+      setMonthLoading(true, `正在刷新 ${month}...`);
       const btn = document.getElementById("btnRefresh");
       const oldHtml = btn.innerHTML;
       btn.disabled = true;
@@ -910,6 +1091,7 @@
       try {
         const fd = new FormData();
         fd.append("month", month);
+        fd.append("platform", getPlatform());
         const res = await fetch("/api/strategy/review/refresh", { method: "POST", body: fd });
         const json = await res.json();
         if (!res.ok) {
@@ -920,6 +1102,7 @@
       } finally {
         btn.disabled = false;
         btn.innerHTML = oldHtml;
+        setMonthLoading(false);
       }
     }
 
@@ -957,7 +1140,8 @@
 
     async function getLatestMonth() {
       try {
-        const res = await fetch("/api/strategy/review/latest-month");
+        const platform = getPlatform();
+        const res = await fetch(`/api/strategy/review/latest-month?platform=${encodeURIComponent(platform)}`);
         const json = await res.json();
         if (!res.ok) return null;
         return json.month || null;
@@ -966,34 +1150,50 @@
       }
     }
 
-    async function initMonthChoices() {
+    async function initMonthChoices(preferredMonth=null) {
       const container = document.getElementById("monthChoices");
+      if (!container) return;
       const now = new Date();
       const latest = await getLatestMonth();
       const baseMonth = latest || monthAdd(now, 0);
-      // Show the latest 3 months for quick selection.
-      const months = [0, -1, -2]
-        .map((d) => monthAddFromYm(baseMonth, d))
-        .filter(Boolean);
-      defaultMonth = months[0] || monthAdd(now, 0);
+      // Show (preferred month if provided) + latest 3 months for quick selection.
+      const candidates = [
+        preferredMonth,
+        baseMonth,
+        monthAddFromYm(baseMonth, -1),
+        monthAddFromYm(baseMonth, -2),
+      ].filter(Boolean);
+      const months = [];
+      const seen = new Set();
+      for (const m of candidates) {
+        if (!m || seen.has(m)) continue;
+        seen.add(m);
+        months.push(m);
+      }
+      defaultMonth = (preferredMonth && months.includes(preferredMonth)) ? preferredMonth : (months[0] || monthAdd(now, 0));
       container.innerHTML = months.map((m, idx) => (
         `<button type="button" class="month-choice ${m === defaultMonth ? "is-active" : ""}" data-month="${m}">${m}</button>`
       )).join("");
 
-      container.addEventListener("click", (e) => {
-        const btn = e.target.closest(".month-choice");
-        if (!btn) return;
-        const m = btn.dataset.month;
-        if (!m) return;
-        setActiveMonth(m);
-        loadMonth(m);
-      });
+      if (!container.dataset.bound) {
+        container.addEventListener("click", (e) => {
+          const btn = e.target.closest(".month-choice");
+          if (!btn) return;
+          const m = btn.dataset.month;
+          if (!m) return;
+          setActiveMonth(m);
+          loadMonth(m);
+        });
+        container.dataset.bound = "1";
+      }
 
       // initial load = latest available month (fallback: current month)
       loadMonth(defaultMonth);
     }
 
-	    initMonthChoices();
+	    initPlatform();
+	    // Keep month shareable too: /strategy_review?platform=...&month=YYYY-MM
+	    initMonthChoices(getUrlMonth());
 	    document.getElementById("btnToggleReview").addEventListener("click", () => setReviewVisible(!reviewVisible));
 	    document.getElementById("btnRefresh").addEventListener("click", () => refreshMonth(currentMonth || defaultMonth));
 	    document.getElementById("outlierBody").addEventListener("click", (e) => {

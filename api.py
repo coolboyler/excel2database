@@ -420,6 +420,16 @@ async def find_similar_days(request: SimilarDayRequest):
 # 策略报价/复盘（申报电量 + 胜率/收益）
 # =========================
 
+class StrategyActualHourlyIn(BaseModel):
+    date: str = Field(..., description="日期 YYYY-MM-DD")
+    hourly: List[float] = Field(..., description="24小时实际分时电量(00-23)，长度必须为24")
+    source: Literal["actual", "settlement", "both"] = Field(
+        "both",
+        description="写入目标表：actual=strategy_actual_hourly, settlement=strategy_settlement_actual_hourly, both=两者都写",
+    )
+    platform: Optional[str] = Field(None, description="平台：天朗/辉华（默认天朗）")
+
+
 class StrategyDaySettingsIn(BaseModel):
     date: str = Field(..., description="目标日期 YYYY-MM-DD")
     # 策略系数为 24 个时刻分别报；保留 strategy_coeff 作为兼容/快速填充（可选）。
@@ -429,15 +439,49 @@ class StrategyDaySettingsIn(BaseModel):
     )
     revenue_transfer: float = Field(0.0, description="收益转移（元，可正可负）")
     note: Optional[str] = Field(None, description="备注/策略说明")
+    platform: Optional[str] = Field(None, description="平台：天朗/辉华（默认天朗）")
 
 
-class StrategyActualHourlyIn(BaseModel):
-    date: str = Field(..., description="日期 YYYY-MM-DD")
-    hourly: List[float] = Field(..., description="24小时实际分时电量(00-23)，长度必须为24")
-    source: Literal["actual", "settlement", "both"] = Field(
-        "both",
-        description="写入目标表：actual=strategy_actual_hourly, settlement=strategy_settlement_actual_hourly, both=两者都写",
-    )
+_STRATEGY_PLATFORM_LABELS = {"tianlang": "天朗", "huihua": "辉华"}
+_STRATEGY_PLATFORM_ALIASES = {
+    None: "tianlang",
+    "": "tianlang",
+    "tianlang": "tianlang",
+    "tl": "tianlang",
+    "天朗": "tianlang",
+    "huihua": "huihua",
+    "hh": "huihua",
+    "辉华": "huihua",
+}
+
+
+def _normalize_platform(value: Optional[str]) -> str:
+    """Normalize platform name/code into a safe internal code."""
+    try:
+        v = (value or "").strip()
+    except Exception:
+        v = ""
+    key = v if v in _STRATEGY_PLATFORM_ALIASES else v.lower()
+    p = _STRATEGY_PLATFORM_ALIASES.get(key)
+    if not p:
+        # Default to existing dataset to keep backward compatibility.
+        p = "tianlang"
+    if p not in _STRATEGY_PLATFORM_LABELS:
+        p = "tianlang"
+    return p
+
+
+def _strategy_table(base: str, platform: Optional[str]) -> str:
+    """
+    Strategy tables are isolated per platform.
+    - 天朗: use existing table names (no suffix) to keep current data intact.
+    - 辉华: create/read tables with suffix `_huihua`.
+    """
+    p = _normalize_platform(platform)
+    if p == "tianlang":
+        return base
+    # base is hard-coded; platform is normalized to a safe ascii identifier.
+    return f"{base}_{p}"
 
 
 def _parse_iso_date(value: str) -> Date:
@@ -470,25 +514,26 @@ def _hour_label_to_hour(label) -> Optional[int]:
     return None
 
 
-_STRATEGY_TABLES_READY = False
+_STRATEGY_TABLES_READY_PLATFORMS = set()
 _STRATEGY_TABLES_LOCK = threading.Lock()
 
 
-def _ensure_strategy_tables():
+def _ensure_strategy_tables(platform: Optional[str] = None):
     """Create tables on-demand (safe to call per request)."""
     # Table creation is idempotent, but repeatedly running these DDL statements is slow on remote DBs.
-    global _STRATEGY_TABLES_READY
-    if _STRATEGY_TABLES_READY:
+    p = _normalize_platform(platform)
+    if p in _STRATEGY_TABLES_READY_PLATFORMS:
         return
     with _STRATEGY_TABLES_LOCK:
-        if _STRATEGY_TABLES_READY:
+        if p in _STRATEGY_TABLES_READY_PLATFORMS:
             return
     with db_manager.engine.connect() as conn:
         with conn.begin():
+            t_actual = _strategy_table("strategy_actual_hourly", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_actual_hourly (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_actual} (
                         record_date DATE NOT NULL,
                         hour TINYINT NOT NULL,
                         actual_energy DOUBLE NULL,
@@ -499,10 +544,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_settle = _strategy_table("strategy_settlement_actual_hourly", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_settlement_actual_hourly (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_settle} (
                         record_date DATE NOT NULL,
                         hour TINYINT NOT NULL,
                         actual_energy DOUBLE NULL,
@@ -513,10 +559,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_settings = _strategy_table("strategy_day_settings", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_day_settings (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_settings} (
                         record_date DATE NOT NULL,
                         strategy_coeff DOUBLE NULL,
                         revenue_transfer DOUBLE NOT NULL DEFAULT 0,
@@ -528,10 +575,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_coeff = _strategy_table("strategy_hourly_coeff", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_hourly_coeff (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_coeff} (
                         record_date DATE NOT NULL,
                         hour TINYINT NOT NULL,
                         coeff DOUBLE NULL,
@@ -542,10 +590,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_price = _strategy_table("strategy_price_hourly", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_price_hourly (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_price} (
                         record_date DATE NOT NULL,
                         hour TINYINT NOT NULL,
                         price_da DOUBLE NULL,
@@ -558,10 +607,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_forecast = _strategy_table("strategy_forecast_hourly", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_forecast_hourly (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_forecast} (
                         record_date DATE NOT NULL,
                         hour TINYINT NOT NULL,
                         forecast_energy DOUBLE NULL,
@@ -573,10 +623,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_declared = _strategy_table("strategy_declared_hourly", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_declared_hourly (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_declared} (
                         record_date DATE NOT NULL,
                         hour TINYINT NOT NULL,
                         declared_energy DOUBLE NULL,
@@ -587,10 +638,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_profit = _strategy_table("strategy_daily_profit", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_daily_profit (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_profit} (
                         record_date DATE NOT NULL,
                         profit_real DOUBLE NULL,
                         profit_expected DOUBLE NULL,
@@ -601,10 +653,11 @@ def _ensure_strategy_tables():
                     """
                 )
             )
+            t_metrics = _strategy_table("strategy_daily_metrics", p)
             conn.execute(
                 text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_daily_metrics (
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {t_metrics} (
                         record_date DATE NOT NULL,
                         actual_total DOUBLE NULL,
                         forecast_total DOUBLE NULL,
@@ -634,16 +687,19 @@ def _ensure_strategy_tables():
                 )
             )
 
-    _STRATEGY_TABLES_READY = True
+    with _STRATEGY_TABLES_LOCK:
+        _STRATEGY_TABLES_READY_PLATFORMS.add(p)
 
 
-def _upsert_actual_hourly(records: List[dict]) -> int:
+def _upsert_actual_hourly(records: List[dict], platform: Optional[str] = None) -> int:
     if not records:
         return 0
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_actual_hourly", p)
     sql = text(
-        """
-        INSERT INTO strategy_actual_hourly (record_date, hour, actual_energy)
+        f"""
+        INSERT INTO {table} (record_date, hour, actual_energy)
         VALUES (:record_date, :hour, :actual_energy)
         ON DUPLICATE KEY UPDATE actual_energy=VALUES(actual_energy)
         """
@@ -661,19 +717,21 @@ def _upsert_actual_hourly(records: List[dict]) -> int:
             refresh.add(d + timedelta(days=7))
             refresh.add(d + timedelta(days=14))
             refresh.add(d + timedelta(days=21))
-        _refresh_daily_metrics_for_dates(list(refresh))
+        _refresh_daily_metrics_for_dates(list(refresh), platform=p)
     except Exception:
         pass
     return len(records)
 
 
-def _upsert_settlement_actual_hourly(records: List[dict]) -> int:
+def _upsert_settlement_actual_hourly(records: List[dict], platform: Optional[str] = None) -> int:
     if not records:
         return 0
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_settlement_actual_hourly", p)
     sql = text(
-        """
-        INSERT INTO strategy_settlement_actual_hourly (record_date, hour, actual_energy)
+        f"""
+        INSERT INTO {table} (record_date, hour, actual_energy)
         VALUES (:record_date, :hour, :actual_energy)
         ON DUPLICATE KEY UPDATE actual_energy=VALUES(actual_energy)
         """
@@ -685,17 +743,19 @@ def _upsert_settlement_actual_hourly(records: List[dict]) -> int:
     # Metrics are evaluated against settlement actuals when available.
     try:
         touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
-        _refresh_daily_metrics_for_dates(touched_dates)
+        _refresh_daily_metrics_for_dates(touched_dates, platform=p)
     except Exception:
         pass
     return len(records)
 
 
-def _read_settlement_actual_hourly(d: Date) -> dict:
-    _ensure_strategy_tables()
+def _read_settlement_actual_hourly(d: Date, platform: Optional[str] = None) -> dict:
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_settlement_actual_hourly", p)
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT hour, actual_energy FROM strategy_settlement_actual_hourly WHERE record_date=:d"),
+            text(f"SELECT hour, actual_energy FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchall()
     out = {}
@@ -714,11 +774,14 @@ def _upsert_day_settings(
     strategy_coeff: Optional[float] = None,
     revenue_transfer: float = 0.0,
     note: Optional[str] = None,
+    platform: Optional[str] = None,
 ):
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_day_settings", p)
     sql = text(
-        """
-        INSERT INTO strategy_day_settings (record_date, strategy_coeff, revenue_transfer, note)
+        f"""
+        INSERT INTO {table} (record_date, strategy_coeff, revenue_transfer, note)
         VALUES (:record_date, :strategy_coeff, :revenue_transfer, :note)
         ON DUPLICATE KEY UPDATE
             strategy_coeff=VALUES(strategy_coeff),
@@ -740,17 +803,19 @@ def _upsert_day_settings(
 
     # Keep cached daily metrics in sync.
     try:
-        _refresh_daily_metrics_for_dates([d])
+        _refresh_daily_metrics_for_dates([d], platform=p)
     except Exception:
         pass
 
 
-def _upsert_hourly_coeff(d: Date, coeff_hourly: List[float]) -> None:
+def _upsert_hourly_coeff(d: Date, coeff_hourly: List[float], platform: Optional[str] = None) -> None:
     if coeff_hourly is None:
         return
     if len(coeff_hourly) != 24:
         raise HTTPException(status_code=400, detail="strategy_coeff_hourly 长度必须为24")
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_hourly_coeff", p)
     rows = []
     for h in range(24):
         v = coeff_hourly[h]
@@ -759,8 +824,8 @@ def _upsert_hourly_coeff(d: Date, coeff_hourly: List[float]) -> None:
         else:
             rows.append({"record_date": d, "hour": h, "coeff": float(v)})
     sql = text(
-        """
-        INSERT INTO strategy_hourly_coeff (record_date, hour, coeff)
+        f"""
+        INSERT INTO {table} (record_date, hour, coeff)
         VALUES (:record_date, :hour, :coeff)
         ON DUPLICATE KEY UPDATE coeff=VALUES(coeff)
         """
@@ -771,17 +836,19 @@ def _upsert_hourly_coeff(d: Date, coeff_hourly: List[float]) -> None:
 
     # Keep cached daily metrics in sync.
     try:
-        _refresh_daily_metrics_for_dates([d])
+        _refresh_daily_metrics_for_dates([d], platform=p)
     except Exception:
         pass
 
 
-def _read_hourly_coeff(d: Date) -> dict:
+def _read_hourly_coeff(d: Date, platform: Optional[str] = None) -> dict:
     """Return hour->coeff (only existing rows)."""
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_hourly_coeff", p)
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT hour, coeff FROM strategy_hourly_coeff WHERE record_date=:d"),
+            text(f"SELECT hour, coeff FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchall()
     out = {}
@@ -795,13 +862,15 @@ def _read_hourly_coeff(d: Date) -> dict:
     return out
 
 
-def _upsert_price_hourly(records: List[dict]) -> int:
+def _upsert_price_hourly(records: List[dict], platform: Optional[str] = None) -> int:
     if not records:
         return 0
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_price_hourly", p)
     sql = text(
-        """
-        INSERT INTO strategy_price_hourly (record_date, hour, price_da, price_rt, price_diff)
+        f"""
+        INSERT INTO {table} (record_date, hour, price_da, price_rt, price_diff)
         VALUES (:record_date, :hour, :price_da, :price_rt, :price_diff)
         ON DUPLICATE KEY UPDATE
             price_da=VALUES(price_da),
@@ -816,23 +885,25 @@ def _upsert_price_hourly(records: List[dict]) -> int:
     # Keep cached daily metrics in sync (win rates & assessment depend on price_diff).
     try:
         touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
-        _refresh_daily_metrics_for_dates(touched_dates)
+        _refresh_daily_metrics_for_dates(touched_dates, platform=p)
     except Exception:
         pass
     return len(records)
 
 
-def _upsert_forecast_hourly(records: List[dict]) -> int:
+def _upsert_forecast_hourly(records: List[dict], platform: Optional[str] = None) -> int:
     """
     Upsert forecast hourly energy.
     This is used to decouple monthly forecasts from the D-7/14/21 weighted forecast when needed.
     """
     if not records:
         return 0
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_forecast_hourly", p)
     sql = text(
-        """
-        INSERT INTO strategy_forecast_hourly (record_date, hour, forecast_energy, source)
+        f"""
+        INSERT INTO {table} (record_date, hour, forecast_energy, source)
         VALUES (:record_date, :hour, :forecast_energy, :source)
         ON DUPLICATE KEY UPDATE
             forecast_energy=VALUES(forecast_energy),
@@ -845,18 +916,20 @@ def _upsert_forecast_hourly(records: List[dict]) -> int:
     # Forecast impacts daily metrics for the target date.
     try:
         touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
-        _refresh_daily_metrics_for_dates(touched_dates)
+        _refresh_daily_metrics_for_dates(touched_dates, platform=p)
     except Exception:
         pass
     return len(records)
 
 
-def _read_forecast_hourly(d: Date) -> dict:
+def _read_forecast_hourly(d: Date, platform: Optional[str] = None) -> dict:
     """Return hour->forecast_energy (only existing rows)."""
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_forecast_hourly", p)
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT hour, forecast_energy FROM strategy_forecast_hourly WHERE record_date=:d"),
+            text(f"SELECT hour, forecast_energy FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchall()
     out = {}
@@ -870,17 +943,19 @@ def _read_forecast_hourly(d: Date) -> dict:
     return out
 
 
-def _upsert_declared_hourly(records: List[dict]) -> int:
+def _upsert_declared_hourly(records: List[dict], platform: Optional[str] = None) -> int:
     """
     Upsert day-ahead declared hourly energy (actual submitted).
     This is used for settlement-based assessment recovery.
     """
     if not records:
         return 0
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_declared_hourly", p)
     sql = text(
-        """
-        INSERT INTO strategy_declared_hourly (record_date, hour, declared_energy)
+        f"""
+        INSERT INTO {table} (record_date, hour, declared_energy)
         VALUES (:record_date, :hour, :declared_energy)
         ON DUPLICATE KEY UPDATE declared_energy=VALUES(declared_energy)
         """
@@ -891,18 +966,20 @@ def _upsert_declared_hourly(records: List[dict]) -> int:
 
     try:
         touched_dates = sorted({r["record_date"] for r in records if r.get("record_date")})
-        _refresh_daily_metrics_for_dates(touched_dates)
+        _refresh_daily_metrics_for_dates(touched_dates, platform=p)
     except Exception:
         pass
     return len(records)
 
 
-def _read_declared_hourly(d: Date) -> dict:
+def _read_declared_hourly(d: Date, platform: Optional[str] = None) -> dict:
     """Return hour->declared_energy (only existing rows)."""
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_declared_hourly", p)
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT hour, declared_energy FROM strategy_declared_hourly WHERE record_date=:d"),
+            text(f"SELECT hour, declared_energy FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchall()
     out = {}
@@ -916,12 +993,13 @@ def _read_declared_hourly(d: Date) -> dict:
     return out
 
 
-def _read_price_diff(d: Date) -> dict:
+def _read_price_diff(d: Date, platform: Optional[str] = None) -> dict:
     """
     Return hour -> price_diff (DA-RT).
     Prefer cache_daily_hourly (system cache), then fallback to strategy_price_hourly (workbook import).
     """
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
     out = {}
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
@@ -943,9 +1021,10 @@ def _read_price_diff(d: Date) -> dict:
     if out:
         return out
 
+    table = _strategy_table("strategy_price_hourly", p)
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT hour, price_diff, price_da, price_rt FROM strategy_price_hourly WHERE record_date=:d"),
+            text(f"SELECT hour, price_diff, price_da, price_rt FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchall()
     for h, diff, pda, prt in rows:
@@ -961,11 +1040,15 @@ def _read_price_diff(d: Date) -> dict:
     return out
 
 
-def _upsert_daily_profit(d: Date, profit_real: Optional[float] = None, profit_expected: Optional[float] = None):
-    _ensure_strategy_tables()
+def _upsert_daily_profit(
+    d: Date, profit_real: Optional[float] = None, profit_expected: Optional[float] = None, platform: Optional[str] = None
+):
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_daily_profit", p)
     sql = text(
-        """
-        INSERT INTO strategy_daily_profit (record_date, profit_real, profit_expected)
+        f"""
+        INSERT INTO {table} (record_date, profit_real, profit_expected)
         VALUES (:record_date, :profit_real, :profit_expected)
         ON DUPLICATE KEY UPDATE
             profit_real=COALESCE(VALUES(profit_real), profit_real),
@@ -985,16 +1068,18 @@ def _upsert_daily_profit(d: Date, profit_real: Optional[float] = None, profit_ex
 
     # Keep cached daily metrics in sync.
     try:
-        _refresh_daily_metrics_for_dates([d])
+        _refresh_daily_metrics_for_dates([d], platform=p)
     except Exception:
         pass
 
 
-def _read_daily_profit(d: Date) -> dict:
-    _ensure_strategy_tables()
+def _read_daily_profit(d: Date, platform: Optional[str] = None) -> dict:
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_daily_profit", p)
     with db_manager.engine.connect() as conn:
         row = conn.execute(
-            text("SELECT profit_real, profit_expected FROM strategy_daily_profit WHERE record_date=:d"),
+            text(f"SELECT profit_real, profit_expected FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchone()
     if not row:
@@ -1005,11 +1090,13 @@ def _read_daily_profit(d: Date) -> dict:
     }
 
 
-def _read_actual_hourly(d: Date) -> dict:
-    _ensure_strategy_tables()
+def _read_actual_hourly(d: Date, platform: Optional[str] = None) -> dict:
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_actual_hourly", p)
     with db_manager.engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT hour, actual_energy FROM strategy_actual_hourly WHERE record_date=:d"),
+            text(f"SELECT hour, actual_energy FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchall()
     out = {}
@@ -1023,20 +1110,22 @@ def _read_actual_hourly(d: Date) -> dict:
     return out
 
 
-def _read_actual_hourly_multi(dates: List[Date]) -> dict:
+def _read_actual_hourly_multi(dates: List[Date], platform: Optional[str] = None) -> dict:
     """
     Read multiple days' actual hourly in a single query to reduce round-trips.
     Return: { record_date (Date) -> {hour -> actual_energy} }
     """
     if not dates:
         return {}
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_actual_hourly", p)
     params = {f"d{i}": d for i, d in enumerate(dates)}
     in_list = ", ".join([f":d{i}" for i in range(len(dates))])
     q = text(
         f"""
         SELECT record_date, hour, actual_energy
-        FROM strategy_actual_hourly
+        FROM {table}
         WHERE record_date IN ({in_list})
         """
     )
@@ -1059,23 +1148,27 @@ def _read_actual_hourly_multi(dates: List[Date]) -> dict:
     return out
 
 
-def _count_actual_hourly(d: Date) -> int:
-    _ensure_strategy_tables()
+def _count_actual_hourly(d: Date, platform: Optional[str] = None) -> int:
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_actual_hourly", p)
     with db_manager.engine.connect() as conn:
         return int(
             conn.execute(
-                text("SELECT COUNT(*) FROM strategy_actual_hourly WHERE record_date=:d"),
+                text(f"SELECT COUNT(*) FROM {table} WHERE record_date=:d"),
                 {"d": d},
             ).scalar()
             or 0
         )
 
 
-def _read_day_settings(d: Date) -> dict:
-    _ensure_strategy_tables()
+def _read_day_settings(d: Date, platform: Optional[str] = None) -> dict:
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_day_settings", p)
     with db_manager.engine.connect() as conn:
         row = conn.execute(
-            text("SELECT strategy_coeff, revenue_transfer, note FROM strategy_day_settings WHERE record_date=:d"),
+            text(f"SELECT strategy_coeff, revenue_transfer, note FROM {table} WHERE record_date=:d"),
             {"d": d},
         ).fetchone()
     if not row:
@@ -1114,7 +1207,7 @@ def _read_prices(d: Date) -> dict:
     return out
 
 
-def _compute_weighted_forecast(target: Date) -> dict:
+def _compute_weighted_forecast(target: Date, platform: Optional[str] = None) -> dict:
     """
     月度预测电量（分时）：
     forecast(h) = 0.5 * actual(D-7,h) + 0.3 * actual(D-14,h) + 0.2 * actual(D-21,h)
@@ -1122,7 +1215,7 @@ def _compute_weighted_forecast(target: Date) -> dict:
     # If an explicit forecast exists (e.g., a month-specific forecast after portfolio/user changes),
     # prefer it to avoid mixing with historical series that no longer represent the same load.
     try:
-        explicit = _read_forecast_hourly(target)
+        explicit = _read_forecast_hourly(target, platform=platform)
         if len(explicit) >= 24 and all(explicit.get(h) is not None for h in range(24)):
             hourly = [float(explicit[h]) for h in range(24)]
             return {
@@ -1144,7 +1237,7 @@ def _compute_weighted_forecast(target: Date) -> dict:
     src_maps = []
     sources_status = []
     missing = []
-    actual_maps = _read_actual_hourly_multi([d for d, _w in sources])
+    actual_maps = _read_actual_hourly_multi([d for d, _w in sources], platform=platform)
     for d, w in sources:
         m = actual_maps.get(d) or {}
         if len(m) < 24:
@@ -1171,7 +1264,7 @@ def _compute_weighted_forecast(target: Date) -> dict:
     }
 
 
-def _hourly_win_stats_for_date(d: Date) -> dict:
+def _hourly_win_stats_for_date(d: Date, platform: Optional[str] = None) -> dict:
     """
     Strategy win-rate computed per-hour:
     - based on coeff vs 1 and price_diff sign
@@ -1180,8 +1273,8 @@ def _hourly_win_stats_for_date(d: Date) -> dict:
 
     price_diff == 0 is excluded.
     """
-    price_diff = _read_price_diff(d)
-    coeff = _read_hourly_coeff(d)
+    price_diff = _read_price_diff(d, platform=platform)
+    coeff = _read_hourly_coeff(d, platform=platform)
 
     s_total = 0
     s_correct = 0
@@ -1235,7 +1328,9 @@ def _ratio_accuracy(a: float, b: float) -> Optional[float]:
     return min(a, b) / denom
 
 
-def _compute_declared_from_forecast(d: Date, forecast_hourly: List[float], coeff_fallback: Optional[float]) -> dict:
+def _compute_declared_from_forecast(
+    d: Date, forecast_hourly: List[float], coeff_fallback: Optional[float], platform: Optional[str] = None
+) -> dict:
     """
     Compute declared hourly using stored hourly coeff if available.
     Fallback order per hour:
@@ -1243,7 +1338,7 @@ def _compute_declared_from_forecast(d: Date, forecast_hourly: List[float], coeff
       - coeff_fallback (legacy scalar from day_settings)
       - 1.0
     """
-    coeff_hourly_map = _read_hourly_coeff(d)
+    coeff_hourly_map = _read_hourly_coeff(d, platform=platform)
     out_coeff = []
     declared = []
     for h in range(24):
@@ -1342,17 +1437,18 @@ def _compute_profit_raw_expected(
     return {"profit_raw": float(raw), "profit_expected": float(expected), "hours": used_hours}
 
 
-def _compute_daily_metrics(d: Date) -> dict:
+def _compute_daily_metrics(d: Date, platform: Optional[str] = None) -> dict:
     """
     Compute and return a single-row daily metrics dict for strategy review.
     This is used to persist a fixed daily table and avoid recomputing on every page view.
     """
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
 
-    settings = _read_day_settings(d)
+    settings = _read_day_settings(d, platform=p)
     coeff_total = settings.get("strategy_coeff")
 
-    coeff_hourly_map = _read_hourly_coeff(d)
+    coeff_hourly_map = _read_hourly_coeff(d, platform=p)
     coeff_vals = [coeff_hourly_map.get(h) for h in range(24)]
     coeff_present = [v for v in coeff_vals if v is not None]
     coeff_avg = (sum(coeff_present) / len(coeff_present)) if coeff_present else None
@@ -1360,8 +1456,8 @@ def _compute_daily_metrics(d: Date) -> dict:
     coeff_max = max(coeff_present) if coeff_present else None
 
     # Forecast inputs use strategy_actual_hourly; settlement evaluation prefers settlement actuals if available.
-    actual_map_forecast = _read_actual_hourly(d)
-    actual_map_settlement = _read_settlement_actual_hourly(d)
+    actual_map_forecast = _read_actual_hourly(d, platform=p)
+    actual_map_settlement = _read_settlement_actual_hourly(d, platform=p)
     actual_map = actual_map_settlement if len(actual_map_settlement) >= 24 else actual_map_forecast
 
     actual_total = None
@@ -1381,17 +1477,17 @@ def _compute_daily_metrics(d: Date) -> dict:
     declared_hourly = None
     if actual_total is not None:
         try:
-            forecast = _compute_weighted_forecast(d)
+            forecast = _compute_weighted_forecast(d, platform=p)
             forecast_total = float(forecast["total"])
             forecast_accuracy = _ratio_accuracy(actual_total, forecast_total)
             forecast_bias = float(forecast_total) - float(actual_total)
 
             # Declared energy: prefer imported actual-submitted (from settlement sheet) if complete; otherwise compute.
-            computed = _compute_declared_from_forecast(d, forecast["hourly"], coeff_total)
+            computed = _compute_declared_from_forecast(d, forecast["hourly"], coeff_total, platform=p)
             coeff_hourly = computed["coeff_hourly"]
             computed_declared_hourly = computed["declared_hourly"]
 
-            declared_override = _read_declared_hourly(d)
+            declared_override = _read_declared_hourly(d, platform=p)
             override_complete = sum(1 for h in range(24) if declared_override.get(h) is not None) >= 24
             if override_complete:
                 declared_hourly = [round(float(declared_override[h]), 3) for h in range(24)]
@@ -1406,7 +1502,7 @@ def _compute_daily_metrics(d: Date) -> dict:
             declared_accuracy = _ratio_accuracy(actual_total, declared_total)
             declared_bias = float(declared_total) - float(actual_total)
 
-            diff = _read_price_diff(d)
+            diff = _read_price_diff(d, platform=p)
             rec = _compute_assessment_recovery(actual_map, declared_hourly, diff)
             assessment_recovery = rec["assessment_recovery"]
 
@@ -1419,7 +1515,7 @@ def _compute_daily_metrics(d: Date) -> dict:
         except Exception:
             pass
 
-    ws = _hourly_win_stats_for_date(d)
+    ws = _hourly_win_stats_for_date(d, platform=p)
 
     return {
         "record_date": d,
@@ -1446,13 +1542,15 @@ def _compute_daily_metrics(d: Date) -> dict:
     }
 
 
-def _upsert_daily_metrics(rows: List[dict]) -> int:
+def _upsert_daily_metrics(rows: List[dict], platform: Optional[str] = None) -> int:
     if not rows:
         return 0
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_daily_metrics", p)
     sql = text(
-        """
-        INSERT INTO strategy_daily_metrics (
+        f"""
+        INSERT INTO {table} (
             record_date,
             actual_total, forecast_total, declared_total,
             forecast_accuracy, declared_accuracy,
@@ -1505,12 +1603,13 @@ def _upsert_daily_metrics(rows: List[dict]) -> int:
     return len(rows)
 
 
-def _refresh_daily_metrics_for_dates(dates: List[Date]) -> int:
+def _refresh_daily_metrics_for_dates(dates: List[Date], platform: Optional[str] = None) -> int:
+    p = _normalize_platform(platform)
     uniq = sorted({d for d in dates if d is not None})
     rows = []
     for d in uniq:
-        rows.append(_compute_daily_metrics(d))
-    return _upsert_daily_metrics(rows)
+        rows.append(_compute_daily_metrics(d, platform=p))
+    return _upsert_daily_metrics(rows, platform=p)
 
 
 def _clamp_declared(actual: float, declared: float) -> float:
@@ -1964,7 +2063,7 @@ def _parse_realtime_actual_hourly_from_profit_sheet(df: pd.DataFrame) -> List[di
 
 
 @app.post("/api/strategy/import-workbook")
-async def import_strategy_workbook(file: UploadFile = File(...)):
+async def import_strategy_workbook(file: UploadFile = File(...), platform: Optional[str] = Form(None)):
     """
     导入复盘/报价Excel（参考“天朗25年12月复盘.xlsx”）：
     - 实际分时电量：写入 strategy_actual_hourly
@@ -1977,6 +2076,7 @@ async def import_strategy_workbook(file: UploadFile = File(...)):
     """
     if not file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="只支持 .xlsx")
+    p = _normalize_platform(platform)
     content = await file.read()
     xl = pd.ExcelFile(BytesIO(content))
 
@@ -2011,7 +2111,7 @@ async def import_strategy_workbook(file: UploadFile = File(...)):
     try:
         df_actual = pd.read_excel(BytesIO(content), sheet_name=actual_sheet, header=0, engine="openpyxl")
         actual_records = _parse_actual_sheet_like_reference(df_actual)
-        inserted_actual = _upsert_actual_hourly(actual_records)
+        inserted_actual = _upsert_actual_hourly(actual_records, platform=p)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"解析实际分时电量失败: {e}") from e
 
@@ -2021,9 +2121,9 @@ async def import_strategy_workbook(file: UploadFile = File(...)):
             df_strategy = pd.read_excel(BytesIO(content), sheet_name=strategy_sheet, header=0, engine="openpyxl")
             settings = _parse_strategy_sheet_coeff(df_strategy)
             for s in settings:
-                _upsert_day_settings(s["date"], s.get("strategy_coeff"), 0.0, s.get("note"))
+                _upsert_day_settings(s["date"], s.get("strategy_coeff"), 0.0, s.get("note"), platform=p)
                 if s.get("strategy_coeff_hourly") is not None:
-                    _upsert_hourly_coeff(s["date"], s["strategy_coeff_hourly"])
+                    _upsert_hourly_coeff(s["date"], s["strategy_coeff_hourly"], platform=p)
             inserted_settings = len(settings)
         except Exception:
             # Not fatal: allow import actuals only.
@@ -2034,26 +2134,27 @@ async def import_strategy_workbook(file: UploadFile = File(...)):
         try:
             df_profit_price = pd.read_excel(BytesIO(content), sheet_name=profit_sheet_real, header=0, engine="openpyxl")
             price_rows = _parse_price_hourly_from_profit_sheet(df_profit_price)
-            inserted_price_hourly = _upsert_price_hourly(price_rows)
+            inserted_price_hourly = _upsert_price_hourly(price_rows, platform=p)
         except Exception:
             inserted_price_hourly = 0
 
         # Also import declared day-ahead energy (actual submitted) from the same sheet.
         try:
             declared_rows = _parse_declared_hourly_from_profit_sheet(df_profit_price)
-            inserted_declared_hourly = _upsert_declared_hourly(declared_rows)
+            inserted_declared_hourly = _upsert_declared_hourly(declared_rows, platform=p)
         except Exception:
             inserted_declared_hourly = 0
 
         # Also import settlement actual hourly energy (real-time).
         try:
             rt_actual_rows = _parse_realtime_actual_hourly_from_profit_sheet(df_profit_price)
-            inserted_settlement_actual_hourly = _upsert_settlement_actual_hourly(rt_actual_rows)
+            inserted_settlement_actual_hourly = _upsert_settlement_actual_hourly(rt_actual_rows, platform=p)
         except Exception:
             inserted_settlement_actual_hourly = 0
 
     return {
         "status": "success",
+        "platform": p,
         "sheets": xl.sheet_names,
         "used": {"actual_sheet": actual_sheet, "strategy_sheet": strategy_sheet},
         "inserted": {
@@ -2071,16 +2172,20 @@ async def upload_strategy_actual_hourly(
     file: UploadFile = File(...),
     sheet_name: Optional[str] = Form(None),
     target_date: Optional[str] = Form(None),
+    record_date: Optional[str] = Form(None),
+    platform: Optional[str] = Form(None),
 ):
     """
     上传实际分时电量（单独上传一张表也可以）。
 
     业务约束：日常只需要更新目标日 D 的 D-5 实际分时电量。
     - 若传入 target_date(=D)，则仅写入 D-5 当天的 24 点数据（其余日期忽略），避免误导入。
+    - 若传入 record_date(=YYYY-MM-DD)，则仅写入该日期（优先于 target_date）。
     - 不传 target_date 则按文件内容全量写入（适合首次导入/补历史）。
     """
     if not file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="只支持 .xlsx")
+    p = _normalize_platform(platform)
     content = await file.read()
     xl = pd.ExcelFile(BytesIO(content))
     target_sheet = sheet_name or xl.sheet_names[0]
@@ -2090,17 +2195,181 @@ async def upload_strategy_actual_hourly(
     records = _parse_actual_sheet_like_reference(df)
 
     expected_date = None
+    fixed_date = None
+    if record_date:
+        fixed_date = _parse_iso_date(record_date)
+        records = [r for r in records if r.get("record_date") == fixed_date]
     if target_date:
         d = _parse_iso_date(target_date)
         expected_date = (d - timedelta(days=5))
-        records = [r for r in records if r.get("record_date") == expected_date]
+        # If record_date is provided, it wins (fixed import for maintenance).
+        if fixed_date is None:
+            records = [r for r in records if r.get("record_date") == expected_date]
 
-    inserted = _upsert_actual_hourly(records)
+    inserted = _upsert_actual_hourly(records, platform=p)
     return {
         "status": "success",
+        "platform": p,
         "sheet": target_sheet,
         "inserted": inserted,
         "expected_date": None if expected_date is None else expected_date.isoformat(),
+        "record_date": None if fixed_date is None else fixed_date.isoformat(),
+    }
+
+
+def _list_actual_hourly_summary(start: Date, end: Date, platform: Optional[str] = None) -> List[dict]:
+    """Return a per-day summary for strategy_actual_hourly + corresponding hourly coeff coverage."""
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_actual_hourly", p)
+    coeff_table = _strategy_table("strategy_hourly_coeff", p)
+    if end < start:
+        raise HTTPException(status_code=400, detail="start 不能大于 end")
+
+    q = text(
+        f"""
+        SELECT
+          record_date,
+          SUM(CASE WHEN actual_energy IS NOT NULL THEN 1 ELSE 0 END) AS cnt,
+          MAX(updated_at) AS updated_at
+        FROM {table}
+        WHERE record_date >= :start AND record_date <= :end
+        GROUP BY record_date
+        """
+    )
+    q_coeff = text(
+        f"""
+        SELECT
+          record_date,
+          SUM(CASE WHEN coeff IS NOT NULL THEN 1 ELSE 0 END) AS cnt,
+          MAX(updated_at) AS updated_at
+        FROM {coeff_table}
+        WHERE record_date >= :start AND record_date <= :end
+        GROUP BY record_date
+        """
+    )
+    stats = {}
+    coeff_stats = {}
+    with db_manager.engine.connect() as conn:
+        for d, cnt, updated_at in conn.execute(q, {"start": start, "end": end}).fetchall():
+            try:
+                dd = d if isinstance(d, Date) else Date.fromisoformat(str(d))
+            except Exception:
+                continue
+            stats[dd] = {
+                "count": int(cnt or 0),
+                "updated_at": None if updated_at is None else _normalize_dt(updated_at),
+            }
+        for d, cnt, updated_at in conn.execute(q_coeff, {"start": start, "end": end}).fetchall():
+            try:
+                dd = d if isinstance(d, Date) else Date.fromisoformat(str(d))
+            except Exception:
+                continue
+            coeff_stats[dd] = {
+                "count": int(cnt or 0),
+                "updated_at": None if updated_at is None else _normalize_dt(updated_at),
+            }
+
+    days = []
+    cur = start
+    while cur <= end:
+        s = stats.get(cur)
+        cnt = int(s["count"]) if s else 0
+        cs = coeff_stats.get(cur)
+        ccnt = int(cs["count"]) if cs else 0
+        days.append(
+            {
+                "date": cur.isoformat(),
+                "count": cnt,
+                "has_24": bool(cnt >= 24),
+                "updated_at": None if not s or s["updated_at"] is None else s["updated_at"].isoformat(sep=" "),
+                "coeff_count": ccnt,
+                "coeff_has_24": bool(ccnt >= 24),
+                "coeff_updated_at": None if not cs or cs["updated_at"] is None else cs["updated_at"].isoformat(sep=" "),
+            }
+        )
+        cur = cur + timedelta(days=1)
+    # newest first for UI
+    days.reverse()
+    return days
+
+
+@app.get("/api/strategy/actual-hourly/summary")
+async def strategy_actual_hourly_summary(start: Optional[str] = None, end: Optional[str] = None, platform: Optional[str] = None):
+    """
+    按日期范围汇总“实际分时电量”入库情况（用于维护台账/补数）。
+    返回包含缺失日期（count=0），便于一眼看出哪天没数据。
+    """
+    today = Date.today()
+    end_d = _parse_iso_date(end) if end else today
+    start_d = _parse_iso_date(start) if start else (end_d - timedelta(days=30))
+    p = _normalize_platform(platform)
+    return {
+        "status": "success",
+        "platform": p,
+        "start": start_d.isoformat(),
+        "end": end_d.isoformat(),
+        "days": _list_actual_hourly_summary(start_d, end_d, platform=p),
+    }
+
+
+def _normalize_dt(value):
+    # Accept datetime/date strings, and strip tz info to keep UI stable.
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+        return datetime.datetime.combine(value, datetime.datetime.min.time())
+    if isinstance(value, str):
+        try:
+            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return None
+    return None
+
+
+@app.get("/api/strategy/actual-hourly")
+async def get_strategy_actual_hourly(
+    date: str,
+    platform: Optional[str] = None,
+    source: Literal["actual", "settlement"] = "actual",
+):
+    """读取某天 24 点“实际分时电量”（用于维护面板回填/检查）。"""
+    d = _parse_iso_date(date)
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    table = _strategy_table("strategy_actual_hourly", p) if source == "actual" else _strategy_table("strategy_settlement_actual_hourly", p)
+
+    with db_manager.engine.connect() as conn:
+        rows = conn.execute(
+            text(f"SELECT hour, actual_energy, updated_at FROM {table} WHERE record_date=:d"),
+            {"d": d},
+        ).fetchall()
+
+    hourly = [None] * 24
+    updated_max = None
+    for h, v, updated_at in rows:
+        try:
+            hh = int(h)
+        except Exception:
+            continue
+        if 0 <= hh <= 23:
+            hourly[hh] = None if v is None else float(v)
+        u = _normalize_dt(updated_at)
+        if u is not None and (updated_max is None or u > updated_max):
+            updated_max = u
+
+    cnt = sum(1 for v in hourly if v is not None)
+    return {
+        "status": "success",
+        "platform": p,
+        "date": d.isoformat(),
+        "source": source,
+        "count": int(cnt),
+        "has_24": bool(cnt >= 24),
+        "updated_at": None if updated_max is None else updated_max.isoformat(sep=" "),
+        "hourly": hourly,
     }
 
 
@@ -2114,6 +2383,7 @@ async def upsert_strategy_actual_hourly(payload: StrategyActualHourlyIn):
     - source=both: 两张表都写（默认）
     """
     d = _parse_iso_date(payload.date)
+    p = _normalize_platform(payload.platform)
     if len(payload.hourly) != 24:
         raise HTTPException(status_code=400, detail="hourly 长度必须为24")
 
@@ -2131,12 +2401,13 @@ async def upsert_strategy_actual_hourly(payload: StrategyActualHourlyIn):
     inserted_actual = 0
     inserted_settlement = 0
     if payload.source in ("actual", "both"):
-        inserted_actual = _upsert_actual_hourly(rows)
+        inserted_actual = _upsert_actual_hourly(rows, platform=p)
     if payload.source in ("settlement", "both"):
-        inserted_settlement = _upsert_settlement_actual_hourly(rows)
+        inserted_settlement = _upsert_settlement_actual_hourly(rows, platform=p)
 
     return {
         "status": "success",
+        "platform": p,
         "date": d.isoformat(),
         "inserted": {
             "actual_hourly": int(inserted_actual),
@@ -2153,6 +2424,7 @@ async def upsert_strategy_actual_hourly_batch(payload: List[StrategyActualHourly
     dates = []
     for item in payload:
         d = _parse_iso_date(item.date)
+        p = _normalize_platform(item.platform)
         dates.append(d.isoformat())
         if len(item.hourly) != 24:
             raise HTTPException(status_code=400, detail=f"{item.date} hourly 长度必须为24")
@@ -2167,9 +2439,9 @@ async def upsert_strategy_actual_hourly_batch(payload: List[StrategyActualHourly
             # Store raw float; profit/assessment computations apply their own rounding rules.
             rows.append({"record_date": d, "hour": int(h), "actual_energy": float(fv)})
         if item.source in ("actual", "both"):
-            inserted_actual += _upsert_actual_hourly(rows)
+            inserted_actual += _upsert_actual_hourly(rows, platform=p)
         if item.source in ("settlement", "both"):
-            inserted_settlement += _upsert_settlement_actual_hourly(rows)
+            inserted_settlement += _upsert_settlement_actual_hourly(rows, platform=p)
 
     return {
         "status": "success",
@@ -2184,32 +2456,60 @@ async def upsert_strategy_actual_hourly_batch(payload: List[StrategyActualHourly
 @app.post("/api/strategy/day-settings")
 async def set_strategy_day_settings(payload: StrategyDaySettingsIn):
     d = _parse_iso_date(payload.date)
+    p = _normalize_platform(payload.platform)
     if payload.strategy_coeff_hourly is not None:
         if len(payload.strategy_coeff_hourly) != 24:
             raise HTTPException(status_code=400, detail="strategy_coeff_hourly 长度必须为24")
-        _upsert_hourly_coeff(d, payload.strategy_coeff_hourly)
+        _upsert_hourly_coeff(d, payload.strategy_coeff_hourly, platform=p)
 
         # Also store a derived "total coeff" for quick display if not provided.
         coeff_total = payload.strategy_coeff
         if coeff_total is None:
             vals = [v for v in payload.strategy_coeff_hourly if v is not None]
             coeff_total = (sum(vals) / len(vals)) if vals else None
-        _upsert_day_settings(d, coeff_total, payload.revenue_transfer, payload.note)
+        _upsert_day_settings(d, coeff_total, payload.revenue_transfer, payload.note, platform=p)
     else:
         # Back-compat: only a scalar coeff
-        _upsert_day_settings(d, payload.strategy_coeff, payload.revenue_transfer, payload.note)
-    return {"status": "success", "date": d.isoformat()}
+        _upsert_day_settings(d, payload.strategy_coeff, payload.revenue_transfer, payload.note, platform=p)
+    return {"status": "success", "platform": p, "date": d.isoformat()}
+
+
+@app.get("/api/strategy/day-settings")
+async def get_strategy_day_settings(date: str, platform: Optional[str] = None):
+    """读取某天策略系数（逐时24个 + 总系数/备注），用于台账维护回填。"""
+    d = _parse_iso_date(date)
+    p = _normalize_platform(platform)
+    settings = _read_day_settings(d, platform=p)
+    coeff_map = _read_hourly_coeff(d, platform=p)
+    hourly = [None] * 24
+    for h in range(24):
+        hourly[h] = coeff_map.get(h)
+    cnt = sum(1 for v in hourly if v is not None)
+    return {
+        "status": "success",
+        "platform": p,
+        "date": d.isoformat(),
+        "settings": settings,
+        "coeff_count": int(cnt),
+        "coeff_has_24": bool(cnt >= 24),
+        "strategy_coeff_hourly": hourly,
+    }
 
 
 @app.get("/api/strategy/quote")
-async def strategy_quote(date: str, strategy_coeff: Optional[float] = Query(None, description="可选：临时覆盖策略系数")):
+async def strategy_quote(
+    date: str,
+    platform: Optional[str] = Query(None, description="平台：天朗/辉华（默认天朗）"),
+    strategy_coeff: Optional[float] = Query(None, description="可选：临时覆盖策略系数"),
+):
     """返回某天的预测电量 + 申报电量（默认使用已保存策略系数，可用参数覆盖）。"""
     d = _parse_iso_date(date)
+    p = _normalize_platform(platform)
     # If called as a plain function (not via FastAPI injection), `strategy_coeff` may still be a Query() object.
     if strategy_coeff is not None and not isinstance(strategy_coeff, (int, float)):
         strategy_coeff = None
-    settings = _read_day_settings(d)
-    coeff_hourly_map = _read_hourly_coeff(d)
+    settings = _read_day_settings(d, platform=p)
+    coeff_hourly_map = _read_hourly_coeff(d, platform=p)
     coeff_hourly = [None] * 24
     coeff_source = None
     for h in range(24):
@@ -2219,7 +2519,7 @@ async def strategy_quote(date: str, strategy_coeff: Optional[float] = Query(None
     if any(v is not None for v in coeff_hourly):
         coeff_source = "hourly"
     coeff = strategy_coeff if strategy_coeff is not None else settings["strategy_coeff"]
-    forecast = _compute_weighted_forecast(d)
+    forecast = _compute_weighted_forecast(d, platform=p)
 
     declared = []
     used_coeff_hourly = []
@@ -2241,10 +2541,12 @@ async def strategy_quote(date: str, strategy_coeff: Optional[float] = Query(None
 
     # Daily update reminder: only D-5 actual hourly is updated day-by-day.
     update_d = d - timedelta(days=5)
-    update_cnt = _count_actual_hourly(update_d)
+    update_cnt = _count_actual_hourly(update_d, platform=p)
 
     return {
         "status": "success",
+        "platform": p,
+        "platform_label": _STRATEGY_PLATFORM_LABELS.get(p),
         "date": d.isoformat(),
         "strategy_coeff": None if coeff is None else float(coeff),
         "strategy_coeff_hourly": used_coeff_hourly,
@@ -2261,7 +2563,7 @@ async def strategy_quote(date: str, strategy_coeff: Optional[float] = Query(None
 
 
 @app.get("/api/strategy/review")
-async def strategy_review(month: str):
+async def strategy_review(month: str, platform: Optional[str] = None):
     """
     月度复盘：
     - 策略胜率（逐时）：按策略系数与小时价差的方向规则统计
@@ -2280,7 +2582,12 @@ async def strategy_review(month: str):
     else:
         end = Date(start.year, start.month + 1, 1)
 
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    t_settings = _strategy_table("strategy_day_settings", p)
+    t_coeff = _strategy_table("strategy_hourly_coeff", p)
+    t_metrics = _strategy_table("strategy_daily_metrics", p)
+    t_price = _strategy_table("strategy_price_hourly", p)
 
     def _list_strategy_dates(range_start: Date, range_end: Date, inclusive_end: bool) -> List[Date]:
         op = "<=" if inclusive_end else "<"
@@ -2288,11 +2595,11 @@ async def strategy_review(month: str):
             SELECT record_date
             FROM (
                 SELECT DISTINCT record_date
-                FROM strategy_day_settings
+                FROM {t_settings}
                 WHERE record_date >= :start AND record_date {op} :end
                 UNION
                 SELECT DISTINCT record_date
-                FROM strategy_hourly_coeff
+                FROM {t_coeff}
                 WHERE record_date >= :start AND record_date {op} :end
             ) t
             ORDER BY record_date
@@ -2309,9 +2616,9 @@ async def strategy_review(month: str):
                 r[0]
                 for r in conn.execute(
                     text(
-                        """
+                        f"""
                         SELECT record_date
-                        FROM strategy_daily_metrics
+                        FROM {t_metrics}
                         WHERE record_date >= :start AND record_date < :end
                         """
                     ),
@@ -2320,7 +2627,7 @@ async def strategy_review(month: str):
             }
         missing = [d for d in dates if d not in existing]
         if missing:
-            _refresh_daily_metrics_for_dates(missing)
+            _refresh_daily_metrics_for_dates(missing, platform=p)
     except Exception:
         pass
 
@@ -2329,12 +2636,12 @@ async def strategy_review(month: str):
     with db_manager.engine.connect() as conn:
         first_setting = conn.execute(
             text(
-                """
+                f"""
                 SELECT MIN(record_date) AS d
                 FROM (
-                    SELECT record_date FROM strategy_day_settings
+                    SELECT record_date FROM {t_settings}
                     UNION
-                    SELECT record_date FROM strategy_hourly_coeff
+                    SELECT record_date FROM {t_coeff}
                 ) t
                 """
             )
@@ -2353,9 +2660,9 @@ async def strategy_review(month: str):
                     r[0]
                     for r in conn.execute(
                         text(
-                            """
+                            f"""
                             SELECT record_date
-                            FROM strategy_daily_metrics
+                            FROM {t_metrics}
                             WHERE record_date >= :start AND record_date <= :end
                             """
                         ),
@@ -2364,14 +2671,14 @@ async def strategy_review(month: str):
                 }
             missing = [d for d in strategy_dates if d not in existing]
             if missing:
-                _refresh_daily_metrics_for_dates(missing)
+                _refresh_daily_metrics_for_dates(missing, platform=p)
         except Exception:
             pass
 
         with db_manager.engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         record_date,
                         profit_expected, profit_real,
@@ -2380,7 +2687,7 @@ async def strategy_review(month: str):
                         declared_bias, forecast_bias,
                         assessment_recovery,
                         coeff_total, coeff_avg
-                    FROM strategy_daily_metrics
+                    FROM {t_metrics}
                     WHERE record_date >= :start AND record_date <= :end
                     ORDER BY record_date
                     """
@@ -2466,7 +2773,7 @@ async def strategy_review(month: str):
         with db_manager.engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         record_date,
                         coeff_avg, coeff_min, coeff_max, coeff_total,
@@ -2480,7 +2787,7 @@ async def strategy_review(month: str):
                         strategy_correct, strategy_total,
                         assessment_recovery,
                         profit_real, profit_expected
-                    FROM strategy_daily_metrics
+                    FROM {t_metrics}
                     WHERE record_date >= :start AND record_date < :end
                       AND (coeff_total IS NOT NULL OR coeff_avg IS NOT NULL)
                     ORDER BY record_date
@@ -2550,7 +2857,7 @@ async def strategy_review(month: str):
                 with db_manager.engine.connect() as conn:
                     ds = conn.execute(
                         text(
-                            """
+                            f"""
                             SELECT
                                 record_date,
                                 AVG(CASE
@@ -2577,7 +2884,7 @@ async def strategy_review(month: str):
                                         WHEN price_da IS NOT NULL AND price_rt IS NOT NULL THEN 1
                                         ELSE NULL
                                       END) AS cnt
-                            FROM strategy_price_hourly
+                            FROM {t_price}
                             WHERE record_date >= :start AND record_date < :end
                             GROUP BY record_date
                             """
@@ -2714,11 +3021,11 @@ async def strategy_review(month: str):
     with db_manager.engine.connect() as conn:
         row = conn.execute(
             text(
-                """
+                f"""
                 SELECT
                     SUM(strategy_correct) AS sc,
                     SUM(strategy_total) AS st
-                FROM strategy_daily_metrics
+                FROM {t_metrics}
                 WHERE record_date >= :start AND record_date < :end
                   AND (coeff_total IS NOT NULL OR coeff_avg IS NOT NULL)
                 """
@@ -2736,34 +3043,45 @@ async def strategy_review(month: str):
 
     cum_summary = compute_range_summary(cum_start, today)
 
-    return {"status": "success", "month": month, "summary": month_summary, "cumulative": cum_summary, "daily": daily}
+    return {
+        "status": "success",
+        "platform": p,
+        "platform_label": _STRATEGY_PLATFORM_LABELS.get(p),
+        "month": month,
+        "summary": month_summary,
+        "cumulative": cum_summary,
+        "daily": daily,
+    }
 
 
 @app.get("/api/strategy/review/latest-month")
-async def strategy_review_latest_month():
+async def strategy_review_latest_month(platform: Optional[str] = None):
     """
     Return the most recent month (YYYY-MM) that has any strategy settings/coeff data.
     Used by the strategy review page to default to the latest available month instead of "current month".
     """
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    t_settings = _strategy_table("strategy_day_settings", p)
+    t_coeff = _strategy_table("strategy_hourly_coeff", p)
     with db_manager.engine.connect() as conn:
         ym = conn.execute(
             text(
-                """
+                f"""
                 SELECT DATE_FORMAT(MAX(record_date), '%Y-%m') AS ym
                 FROM (
-                    SELECT record_date FROM strategy_day_settings
+                    SELECT record_date FROM {t_settings}
                     UNION ALL
-                    SELECT record_date FROM strategy_hourly_coeff
+                    SELECT record_date FROM {t_coeff}
                 ) t
                 """
             )
         ).scalar()
-    return {"status": "success", "month": ym}
+    return {"status": "success", "platform": p, "platform_label": _STRATEGY_PLATFORM_LABELS.get(p), "month": ym}
 
 
 @app.get("/api/strategy/review/diagnose")
-async def strategy_review_diagnose(date: str):
+async def strategy_review_diagnose(date: str, platform: Optional[str] = None):
     """
     Per-day diagnosis for strategy review:
     - Returns hourly series for the selected date (actual/declared/coeff/DA-RT and derived PnL contributions)
@@ -2773,7 +3091,12 @@ async def strategy_review_diagnose(date: str):
     start = Date(d.year, d.month, 1)
     end = Date(d.year + 1, 1, 1) if d.month == 12 else Date(d.year, d.month + 1, 1)
 
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    t_coeff = _strategy_table("strategy_hourly_coeff", p)
+    t_declared = _strategy_table("strategy_declared_hourly", p)
+    t_actual = _strategy_table("strategy_actual_hourly", p)
+    t_settle = _strategy_table("strategy_settlement_actual_hourly", p)
 
     def _zscore(v, mu, sd):
         try:
@@ -2792,9 +3115,9 @@ async def strategy_review_diagnose(date: str):
         with db_manager.engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT hour, AVG(coeff) AS v, COUNT(*) AS n
-                    FROM strategy_hourly_coeff
+                    FROM {t_coeff}
                     WHERE record_date >= :start AND record_date < :end AND coeff IS NOT NULL
                     GROUP BY hour
                     """
@@ -2812,9 +3135,9 @@ async def strategy_review_diagnose(date: str):
         with db_manager.engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT hour, AVG(declared_energy) AS v, COUNT(*) AS n
-                    FROM strategy_declared_hourly
+                    FROM {t_declared}
                     WHERE record_date >= :start AND record_date < :end AND declared_energy IS NOT NULL
                     GROUP BY hour
                     """
@@ -2829,22 +3152,22 @@ async def strategy_review_diagnose(date: str):
         pass
 
     # Prefer settlement actuals if we have coverage; otherwise fallback to strategy_actual_hourly.
-    actual_table = "strategy_settlement_actual_hourly"
+    actual_table = t_settle
     try:
         with db_manager.engine.connect() as conn:
             total = conn.execute(
                 text(
-                    """
-                    SELECT COUNT(*) FROM strategy_settlement_actual_hourly
+                    f"""
+                    SELECT COUNT(*) FROM {t_settle}
                     WHERE record_date >= :start AND record_date < :end AND actual_energy IS NOT NULL
                     """
                 ),
                 {"start": start, "end": end},
             ).scalar()
         if not total or int(total) < 24:
-            actual_table = "strategy_actual_hourly"
+            actual_table = t_actual
     except Exception:
-        actual_table = "strategy_actual_hourly"
+        actual_table = t_actual
 
     try:
         with db_manager.engine.connect() as conn:
@@ -2906,8 +3229,8 @@ async def strategy_review_diagnose(date: str):
 
     # Day series.
     try:
-        actual_map_settlement = _read_settlement_actual_hourly(d)
-        actual_map_forecast = _read_actual_hourly(d)
+        actual_map_settlement = _read_settlement_actual_hourly(d, platform=p)
+        actual_map_forecast = _read_actual_hourly(d, platform=p)
         actual_map = actual_map_settlement if len(actual_map_settlement) >= 24 else actual_map_forecast
     except Exception:
         actual_map = {}
@@ -2916,8 +3239,10 @@ async def strategy_review_diagnose(date: str):
     forecast = None
     coeff_hourly = [None] * 24
     try:
-        forecast = _compute_weighted_forecast(d)
-        computed = _compute_declared_from_forecast(d, forecast["hourly"], _read_day_settings(d).get("strategy_coeff"))
+        forecast = _compute_weighted_forecast(d, platform=p)
+        computed = _compute_declared_from_forecast(
+            d, forecast["hourly"], _read_day_settings(d, platform=p).get("strategy_coeff"), platform=p
+        )
         coeff_hourly = computed["coeff_hourly"]
         computed_declared_hourly = computed["declared_hourly"]
     except Exception:
@@ -2926,7 +3251,7 @@ async def strategy_review_diagnose(date: str):
     # Declared: prefer imported actual-submitted if complete; otherwise computed.
     declared_hourly = None
     try:
-        declared_override = _read_declared_hourly(d)
+        declared_override = _read_declared_hourly(d, platform=p)
         override_complete = sum(1 for h in range(24) if declared_override.get(h) is not None) >= 24
         if override_complete:
             declared_hourly = [round(float(declared_override[h]), 3) for h in range(24)]
@@ -2972,7 +3297,7 @@ async def strategy_review_diagnose(date: str):
         cache = {}
 
     # Use the same diff mapping as the rest of the strategy logic (cache first).
-    diff_map = _read_price_diff(d)
+    diff_map = _read_price_diff(d, platform=p)
 
     hours = []
     gap_hours = []
@@ -3078,12 +3403,14 @@ async def strategy_review_diagnose(date: str):
 
     # Use cached daily metrics for consistent headline numbers if available.
     try:
-        dm = _compute_daily_metrics(d)
+        dm = _compute_daily_metrics(d, platform=p)
     except Exception:
         dm = {"record_date": d}
 
     return {
         "status": "success",
+        "platform": p,
+        "platform_label": _STRATEGY_PLATFORM_LABELS.get(p),
         "date": d.isoformat(),
         "month": start.isoformat()[:7],
         "baseline": {"actual_table": actual_table, "hours": [baseline[h] for h in range(24)]},
@@ -3093,7 +3420,7 @@ async def strategy_review_diagnose(date: str):
 
 
 @app.post("/api/strategy/review/refresh")
-async def strategy_review_refresh(month: str = Form(...)):
+async def strategy_review_refresh(month: str = Form(...), platform: Optional[str] = Form(None)):
     """
     强制刷新某月的 strategy_daily_metrics（用于“页面复盘数据更新”）。
 
@@ -3107,21 +3434,24 @@ async def strategy_review_refresh(month: str = Form(...)):
         raise HTTPException(status_code=400, detail="month 格式应为 YYYY-MM") from e
     end = Date(start.year + 1, 1, 1) if start.month == 12 else Date(start.year, start.month + 1, 1)
 
-    _ensure_strategy_tables()
+    p = _normalize_platform(platform)
+    _ensure_strategy_tables(p)
+    t_settings = _strategy_table("strategy_day_settings", p)
+    t_coeff = _strategy_table("strategy_hourly_coeff", p)
     with db_manager.engine.connect() as conn:
         dates = [
             r[0]
             for r in conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT record_date
                     FROM (
                         SELECT DISTINCT record_date
-                        FROM strategy_day_settings
+                        FROM {t_settings}
                         WHERE record_date >= :start AND record_date < :end
                         UNION
                         SELECT DISTINCT record_date
-                        FROM strategy_hourly_coeff
+                        FROM {t_coeff}
                         WHERE record_date >= :start AND record_date < :end
                     ) t
                     ORDER BY record_date
@@ -3131,8 +3461,8 @@ async def strategy_review_refresh(month: str = Form(...)):
             ).fetchall()
         ]
 
-    _refresh_daily_metrics_for_dates(dates)
-    return {"status": "success", "month": month, "refreshed_days": len(dates)}
+    _refresh_daily_metrics_for_dates(dates, platform=p)
+    return {"status": "success", "platform": p, "platform_label": _STRATEGY_PLATFORM_LABELS.get(p), "month": month, "refreshed_days": len(dates)}
 
 
 @app.post("/api/update-weather")
@@ -4927,20 +5257,23 @@ async def multi_day_compare_page(request: Request):
     return templates.TemplateResponse("multi_day_compare.html", {"request": request})
 
 @app.get("/strategy_quote", response_class=HTMLResponse)
-async def strategy_quote_page(request: Request):
+async def strategy_quote_page(request: Request, platform: Optional[str] = None):
     """报价/申报页面（策略系数 + 申报电量计算）"""
-    return templates.TemplateResponse("strategy_quote.html", {"request": request})
+    p = _normalize_platform(platform)
+    return templates.TemplateResponse("strategy_quote.html", {"request": request, "default_platform": p, "default_platform_label": _STRATEGY_PLATFORM_LABELS.get(p)})
 
 @app.get("/strategy_review", response_class=HTMLResponse)
-async def strategy_review_page(request: Request):
+async def strategy_review_page(request: Request, platform: Optional[str] = None):
     """复盘页面（月度胜率/收益/预测偏差）"""
-    return templates.TemplateResponse("strategy_review.html", {"request": request})
+    p = _normalize_platform(platform)
+    return templates.TemplateResponse("strategy_review.html", {"request": request, "default_platform": p, "default_platform_label": _STRATEGY_PLATFORM_LABELS.get(p)})
 
 
 @app.get("/strategy_review_diag", response_class=HTMLResponse)
-async def strategy_review_diag_page(request: Request, date: Optional[str] = None):
+async def strategy_review_diag_page(request: Request, date: Optional[str] = None, platform: Optional[str] = None):
     """复盘诊断页面（按日期对比 cache_daily_hourly 与当月基线，定位异常小时）。"""
-    return templates.TemplateResponse("strategy_review_diag.html", {"request": request, "date": date})
+    p = _normalize_platform(platform)
+    return templates.TemplateResponse("strategy_review_diag.html", {"request": request, "date": date, "default_platform": p, "default_platform_label": _STRATEGY_PLATFORM_LABELS.get(p)})
 
 @app.get("/api/cache-available-dates")
 async def cache_available_dates(

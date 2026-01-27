@@ -93,6 +93,10 @@
           <div class="small muted">对比 `cache_daily_hourly` 的分时序列（价差/负荷预测/温度等）与当月基线（均值±1σ），定位异常小时。</div>
         </div>
         <div class="d-flex align-items-center gap-2">
+          <select id="platformSelect" class="form-select form-select-sm" style="width: 120px;">
+            <option value="tianlang">天朗</option>
+            <option value="huihua">辉华</option>
+          </select>
           <input id="diagDate" class="form-control form-control-sm mono" style="width: 140px;" placeholder="选择日期" readonly />
           <button id="btnLoad" type="button" class="btn btn-primary btn-sm"><i class="bi bi-play-fill"></i> 查看</button>
         </div>
@@ -202,11 +206,61 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script>
-    let chartDiff = null;
-    let chartLoad = null;
-    let chartTemp = null;
+	  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+	  <script>
+	    const SERVER_DEFAULT_PLATFORM = "{{ default_platform|default('tianlang') }}";
+
+	    let chartDiff = null;
+	    let chartLoad = null;
+	    let chartTemp = null;
+
+	    function normalizePlatform(v) {
+	      const s = String(v || "").trim();
+	      if (s === "huihua" || s === "辉华" || s === "HH" || s === "hh") return "huihua";
+	      return "tianlang";
+	    }
+
+	    function getPlatform() {
+	      const el = document.getElementById("platformSelect");
+	      return normalizePlatform(el ? el.value : "tianlang");
+	    }
+
+	    function syncPlatformToUrl(platform) {
+	      try {
+	        const url = new URL(window.location.href);
+	        url.searchParams.set("platform", platform);
+	        window.history.replaceState({}, "", url.toString());
+	      } catch {}
+	    }
+
+	    function applyPlatformToLinks(platform) {
+	      // Keep navigation shareable (not only localStorage).
+	      document.querySelectorAll('a[href^="/strategy_"]').forEach((a) => {
+	        try {
+	          const url = new URL(a.getAttribute("href"), window.location.origin);
+	          url.searchParams.set("platform", platform);
+	          a.setAttribute("href", url.pathname + "?" + url.searchParams.toString());
+	        } catch {}
+	      });
+	    }
+
+	    function initPlatform() {
+	      const sel = document.getElementById("platformSelect");
+	      if (!sel) return;
+	      const qp = new URLSearchParams(window.location.search).get("platform");
+	      const stored = localStorage.getItem("strategy_platform");
+	      const initial = normalizePlatform(qp || stored || SERVER_DEFAULT_PLATFORM || "tianlang");
+	      sel.value = initial;
+	      localStorage.setItem("strategy_platform", initial);
+	      syncPlatformToUrl(initial);
+	      applyPlatformToLinks(initial);
+	      sel.addEventListener("change", () => {
+	        const p = getPlatform();
+	        localStorage.setItem("strategy_platform", p);
+	        syncPlatformToUrl(p);
+	        applyPlatformToLinks(p);
+	      });
+	    }
 
     function fmt(n, digits=2) {
       if (n === null || n === undefined || Number.isNaN(Number(n))) return "-";
@@ -344,19 +398,20 @@
       }
     }
 
-    async function load() {
-      clearError();
-      const date = document.getElementById("diagDate").value;
-      if (!date) return;
-      const btn = document.getElementById("btnLoad");
-      const old = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>加载中';
-      try {
-        const res = await fetch(`/api/strategy/review/diagnose?date=${encodeURIComponent(date)}`);
-        const json = await res.json();
-        if (!res.ok) {
-          showError(json.detail || "加载失败");
+	    async function load() {
+	      clearError();
+	      const date = document.getElementById("diagDate").value;
+	      if (!date) return;
+	      const platform = getPlatform();
+	      const btn = document.getElementById("btnLoad");
+	      const old = btn.innerHTML;
+	      btn.disabled = true;
+	      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>加载中';
+	      try {
+	        const res = await fetch(`/api/strategy/review/diagnose?date=${encodeURIComponent(date)}&platform=${encodeURIComponent(platform)}`);
+	        const json = await res.json();
+	        if (!res.ok) {
+	          showError(json.detail || "加载失败");
           return;
         }
         render(json);
@@ -367,9 +422,10 @@
     }
 
     // init date picker with query param (server renders it into template var)
-    const initialDate = "{{ date or '' }}";
-    flatpickr("#diagDate", {
-      locale: "zh",
+	    const initialDate = "{{ date or '' }}";
+	    initPlatform();
+	    flatpickr("#diagDate", {
+	      locale: "zh",
       dateFormat: "Y-m-d",
       defaultDate: initialDate || null,
       allowInput: false,
@@ -381,4 +437,3 @@
   </script>
 </body>
 </html>
-

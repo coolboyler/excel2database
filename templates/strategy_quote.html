@@ -182,6 +182,15 @@
           </div>
 
           <div class="mb-3">
+            <label class="form-label muted">平台</label>
+            <select id="platformSelect" class="form-select">
+              <option value="tianlang">天朗</option>
+              <option value="huihua">辉华</option>
+            </select>
+            <div class="form-text">两套平台数据完全隔离：报价/申报/复盘/实际分时维护互不影响。</div>
+          </div>
+
+          <div class="mb-3">
             <label class="form-label muted">目标日期 (D)</label>
             <input id="targetDate" class="form-control" placeholder="选择日期" readonly />
             <div class="form-text">通常在 D-1 11:30-12:00 做预测；系统用 D-7/14/21 实际分时电量加权。</div>
@@ -209,24 +218,59 @@
 
           <div class="mb-2">
             <div class="muted mb-1"><i class="bi bi-upload"></i> 导入/更新数据</div>
-            <div class="mb-2">
-              <label class="form-label muted mb-1">实际分时电量一键粘贴（24个时刻，用于更新 D-5）</label>
-              <textarea id="actualPaste" class="form-control" rows="2" placeholder="从Excel或文本复制连续24个数值后，直接 Ctrl+V 粘贴到这里（支持Tab/换行/逗号分隔）"></textarea>
-              <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
-                <button id="btnSaveActual" type="button" class="btn btn-outline-secondary btn-sm">
-                  粘贴入库（写入 D-5）
-                </button>
-                <div id="actualPasteHint" class="form-text mb-0"></div>
+            <div id="dailyReminder" class="form-text mb-2"></div>
+
+            <div class="d-flex align-items-end gap-2 flex-wrap mb-2">
+              <div style="min-width: 160px;">
+                <label class="form-label muted mb-1">范围开始</label>
+                <input id="actualRangeStart" class="form-control form-control-sm" type="date" />
               </div>
+              <div style="min-width: 160px;">
+                <label class="form-label muted mb-1">范围结束</label>
+                <input id="actualRangeEnd" class="form-control form-control-sm" type="date" />
+              </div>
+              <button id="btnRefreshActualSummary" type="button" class="btn btn-outline-secondary btn-sm">
+                刷新台账
+              </button>
+              <button id="btnPickD5" type="button" class="btn btn-outline-secondary btn-sm">
+                选中 D-5
+              </button>
             </div>
-            <div class="d-flex gap-2 flex-wrap">
-              <label class="btn btn-outline-secondary btn-sm mb-0">
-                上传实际分时电量（每天更新：D-5）
-                <input id="uploadActual" type="file" accept=".xlsx" hidden />
-              </label>
+
+            <div class="table-responsive" style="max-height: 220px;">
+              <table class="table table-sm table-hover align-middle mb-0">
+                <thead class="table-light sticky-top">
+                  <tr>
+                    <th style="width: 110px;">日期</th>
+                    <th style="width: 90px;">分时</th>
+                    <th style="width: 90px;">策略</th>
+                    <th style="width: 150px;">更新时间</th>
+                  </tr>
+                </thead>
+                <tbody id="actualSummaryBody"></tbody>
+              </table>
             </div>
-            <div id="dailyReminder" class="form-text"></div>
-            <div id="uploadHint" class="form-text"></div>
+
+            <div class="mt-2">
+              <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                <div class="small muted">维护日期：<span id="actualEditDate">-</span></div>
+                <div class="d-flex gap-2 flex-wrap">
+                  <button id="btnLoadActualForDate" type="button" class="btn btn-outline-secondary btn-sm">加载</button>
+                  <button id="btnSaveActualForDate" type="button" class="btn btn-outline-secondary btn-sm">保存实际（24）</button>
+                  <button id="btnSaveCoeffForDate" type="button" class="btn btn-outline-secondary btn-sm">保存策略系数（24）</button>
+                  <label class="btn btn-outline-secondary btn-sm mb-0">
+                    上传xlsx写入该日
+                    <input id="uploadActualForDate" type="file" accept=".xlsx" hidden />
+                  </label>
+                </div>
+              </div>
+              <label class="form-label muted small mt-2 mb-1">实际分时电量（24个，00-23）</label>
+              <textarea id="actualEditPaste" class="form-control" rows="2" placeholder="实际分时电量：从Excel复制连续24个数值，直接 Ctrl+V 粘贴（支持Tab/换行/逗号分隔）"></textarea>
+              <label class="form-label muted small mt-2 mb-1">策略系数（24个，00-23）</label>
+              <textarea id="coeffEditPaste" class="form-control" rows="2" placeholder="策略系数：从Excel复制连续24个系数，直接 Ctrl+V 粘贴（支持Tab/换行/逗号分隔）"></textarea>
+              <div id="actualEditHint" class="form-text"></div>
+              <div id="uploadHint" class="form-text"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -286,6 +330,8 @@
   </div>
 
   <script>
+    const SERVER_DEFAULT_PLATFORM = "{{ default_platform|default('tianlang') }}";
+
     function fmt(n, digits=6) {
       if (n === null || n === undefined || Number.isNaN(Number(n))) return "-";
       const v = Number(n);
@@ -303,7 +349,41 @@
       coeffHourly: null,        // length 24
       copiedDeclByDate: {},     // date -> { [hour]: true }
       executedStrategyByDate: {}, // date -> true (persist until refresh)
+      // Actual hourly maintenance (台账/补数)
+      actualSelectedDate: null,
+      actualSummaryDays: [], // [{date,count,has_24,updated_at}]
+      lastActualDefaultsKey: null,
     };
+
+    function normalizePlatform(v) {
+      const s = String(v || "").trim();
+      if (s === "huihua" || s === "辉华" || s === "HH" || s === "hh") return "huihua";
+      return "tianlang";
+    }
+
+    function getPlatform() {
+      const el = document.getElementById("platformSelect");
+      return normalizePlatform(el ? el.value : "tianlang");
+    }
+
+    function syncPlatformToUrl(platform) {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("platform", platform);
+        window.history.replaceState({}, "", url.toString());
+      } catch {}
+    }
+
+    function applyPlatformToLinks(platform) {
+      // Keep navigation shareable (not only localStorage).
+      document.querySelectorAll('a[href^="/strategy_"]').forEach((a) => {
+        try {
+          const url = new URL(a.getAttribute("href"), window.location.origin);
+          url.searchParams.set("platform", platform);
+          a.setAttribute("href", url.pathname + "?" + url.searchParams.toString());
+        } catch {}
+      });
+    }
 
     function showError(msg) {
       const el = document.getElementById("errorBox");
@@ -319,6 +399,27 @@
     function normalizeCoeff(v) {
       const n = Number(v);
       return Number.isFinite(n) ? n : 1.0;
+    }
+
+    function initPlatform() {
+      const sel = document.getElementById("platformSelect");
+      if (!sel) return;
+      const qp = new URLSearchParams(window.location.search).get("platform");
+      const stored = localStorage.getItem("strategy_platform");
+      const initial = normalizePlatform(qp || stored || SERVER_DEFAULT_PLATFORM || "tianlang");
+      sel.value = initial;
+      localStorage.setItem("strategy_platform", initial);
+      syncPlatformToUrl(initial);
+      applyPlatformToLinks(initial);
+      sel.addEventListener("change", () => {
+        const p = getPlatform();
+        localStorage.setItem("strategy_platform", p);
+        syncPlatformToUrl(p);
+        applyPlatformToLinks(p);
+        // Platform switch should refresh maintenance defaults even if target date is unchanged.
+        state.lastActualDefaultsKey = null;
+        compute();
+      });
     }
 
     function roundTo(v, digits) {
@@ -427,6 +528,7 @@
       computeAbort = new AbortController();
       const date = document.getElementById("targetDate").value;
       if (!date) return;
+      ensureActualMaintenanceDefaults(date);
 
       // Keep "implemented" state visible until refresh; only reset when switching to a non-implemented date.
       const execHint = document.getElementById("executeHint");
@@ -453,7 +555,8 @@
       // Load forecast + coefficients from DB; UI can edit hourly coefficients client-side.
       let res;
       try {
-        res = await fetch(`/api/strategy/quote?date=${encodeURIComponent(date)}`, { signal: computeAbort.signal });
+        const platform = getPlatform();
+        res = await fetch(`/api/strategy/quote?date=${encodeURIComponent(date)}&platform=${encodeURIComponent(platform)}`, { signal: computeAbort.signal });
       } catch (e) {
         if (computeAbort.signal.aborted) return;
         showError("计算失败（网络/连接异常）");
@@ -513,6 +616,7 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>实施中...';
       }
       const date = document.getElementById("targetDate").value;
+      const platform = getPlatform();
       const note = document.getElementById("strategyNote").value;
       if (!date) return;
       const hourly = (state.coeffHourly && state.coeffHourly.length === 24)
@@ -523,7 +627,7 @@
         res = await fetch("/api/strategy/day-settings", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({date, strategy_coeff_hourly: hourly, revenue_transfer: 0.0, note}),
+          body: JSON.stringify({date, platform, strategy_coeff_hourly: hourly, revenue_transfer: 0.0, note}),
           signal: saveAbort.signal,
         });
       } catch (e) {
@@ -575,63 +679,239 @@
       await compute();
     }
 
-    async function uploadActual(file) {
-      const hint = document.getElementById("uploadHint");
-      hint.textContent = "正在上传...";
-      const fd = new FormData();
-      fd.append("file", file);
-      const date = document.getElementById("targetDate").value;
-      if (date) fd.append("target_date", date);
-      const res = await fetch("/api/strategy/actual-hourly/upload", {method: "POST", body: fd});
-      const json = await res.json();
-      if (!res.ok) {
-        hint.textContent = (json.detail || "上传失败");
-        return;
-      }
-      if (json.expected_date) {
-        hint.textContent = `上传成功：已按日常规则仅写入 D-5（${json.expected_date}）数据，共 ${json.inserted} 条。`;
-      } else {
-        hint.textContent = `上传成功：写入 ${json.inserted} 条实际分时记录。`;
-      }
-      // Refresh reminder state after upload
-      compute();
+    function setActualSelectedDate(d) {
+      state.actualSelectedDate = d || null;
+      const label = document.getElementById("actualEditDate");
+      if (label) label.textContent = state.actualSelectedDate || "-";
+      renderActualSummary();
     }
 
-    async function pasteActualToDb() {
-      clearError();
-      const hint = document.getElementById("actualPasteHint");
-      const date = document.getElementById("targetDate").value;
-      if (!date) return;
+    function renderActualSummary() {
+      const body = document.getElementById("actualSummaryBody");
+      if (!body) return;
+      body.innerHTML = "";
+      const days = state.actualSummaryDays || [];
+      for (const day of days) {
+        const tr = document.createElement("tr");
+        tr.dataset.date = day.date;
+        tr.style.cursor = "pointer";
+        if (day.date === state.actualSelectedDate) tr.classList.add("table-active");
 
-      const updateDate = addDays(date, -5);
-      const text = document.getElementById("actualPaste").value;
-      const parsed = parsePastedActual(text);
-      if (!parsed.ok) {
-        hint.textContent = parsed.message;
-        hint.classList.add("text-danger");
+        const cnt = Number(day.count || 0);
+        let badgeClass = "bg-light text-dark";
+        if (cnt >= 24) badgeClass = "bg-success";
+        else if (cnt > 0) badgeClass = "bg-warning text-dark";
+        const badge = `<span class="badge ${badgeClass}">${Math.min(24, cnt)}/24</span>`;
+        const ccnt = Number(day.coeff_count || 0);
+        let cBadgeClass = "bg-light text-dark";
+        if (ccnt >= 24) cBadgeClass = "bg-success";
+        else if (ccnt > 0) cBadgeClass = "bg-warning text-dark";
+        const cBadge = `<span class="badge ${cBadgeClass}">${Math.min(24, ccnt)}/24</span>`;
+        const updated = day.updated_at ? String(day.updated_at) : "-";
+        tr.innerHTML = `
+          <td class="mono">${day.date}</td>
+          <td>${badge}</td>
+          <td>${cBadge}</td>
+          <td class="small muted">${updated}</td>
+        `;
+        body.appendChild(tr);
+      }
+    }
+
+    async function refreshActualSummary() {
+      const hint = document.getElementById("actualEditHint");
+      const start = document.getElementById("actualRangeStart")?.value;
+      const end = document.getElementById("actualRangeEnd")?.value;
+      if (!start || !end) return;
+      const platform = getPlatform();
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.textContent = "正在刷新台账...";
+      }
+      let res;
+      try {
+        res = await fetch(`/api/strategy/actual-hourly/summary?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&platform=${encodeURIComponent(platform)}`);
+      } catch (e) {
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = "刷新失败（网络/连接异常）";
+        }
         return;
       }
-      hint.classList.remove("text-danger");
-      hint.textContent = "正在入库...";
+      const json = await res.json();
+      if (!res.ok) {
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = (json.detail || "刷新失败");
+        }
+        return;
+      }
+      state.actualSummaryDays = json.days || [];
+      renderActualSummary();
+      if (hint) hint.textContent = "";
+    }
 
+    async function loadActualForDate(d) {
+      const hint = document.getElementById("actualEditHint");
+      const ta = document.getElementById("actualEditPaste");
+      const cta = document.getElementById("coeffEditPaste");
+      if (!d) return;
+      const platform = getPlatform();
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.textContent = "正在加载...";
+      }
+      const [resA, resC] = await Promise.all([
+        fetch(`/api/strategy/actual-hourly?date=${encodeURIComponent(d)}&platform=${encodeURIComponent(platform)}`),
+        fetch(`/api/strategy/day-settings?date=${encodeURIComponent(d)}&platform=${encodeURIComponent(platform)}`),
+      ]);
+      const jsonA = await resA.json();
+      const jsonC = await resC.json();
+      if (!resA.ok) {
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = (jsonA.detail || "加载失败");
+        }
+        return;
+      }
+      const hourly = (jsonA.hourly && jsonA.hourly.length === 24) ? jsonA.hourly : Array.from({length:24}, () => null);
+      if (ta) ta.value = hourly.map((v) => (v === null || v === undefined) ? "" : String(v)).join("\t");
+      // Coeff may not exist yet; treat as optional.
+      const coeff = (jsonC && jsonC.strategy_coeff_hourly && jsonC.strategy_coeff_hourly.length === 24)
+        ? jsonC.strategy_coeff_hourly
+        : Array.from({length:24}, () => null);
+      if (cta) cta.value = coeff.map((v) => (v === null || v === undefined) ? "" : String(v)).join("\t");
+      if (hint) {
+        hint.classList.remove("text-danger");
+        const aCnt = (jsonA && jsonA.count) ? jsonA.count : 0;
+        const cCnt = (jsonC && jsonC.coeff_count) ? jsonC.coeff_count : 0;
+        hint.textContent = `已加载：${d}（实际 ${aCnt}/24，策略 ${cCnt}/24）`;
+      }
+    }
+
+    async function saveActualForDate(d) {
+      clearError();
+      const hint = document.getElementById("actualEditHint");
+      const ta = document.getElementById("actualEditPaste");
+      if (!d || !ta) return;
+      const platform = getPlatform();
+      const parsed = parsePastedActual(ta.value);
+      if (!parsed.ok) {
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = parsed.message;
+        }
+        return;
+      }
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.textContent = "正在入库...";
+      }
       const res = await fetch("/api/strategy/actual-hourly", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({date: updateDate, source: "both", hourly: parsed.values}),
+        body: JSON.stringify({date: d, platform, source: "both", hourly: parsed.values}),
       });
       const json = await res.json();
       if (!res.ok) {
-        hint.textContent = (json.detail || "入库失败");
-        hint.classList.add("text-danger");
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = (json.detail || "入库失败");
+        }
         return;
       }
-      hint.classList.remove("text-danger");
-      hint.textContent = `入库成功：${updateDate}（共 24 条）`;
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.textContent = `保存成功：${d}（实际 24 条）`;
+      }
+      await refreshActualSummary();
+      // Refresh reminder state if this is D-5 for current D.
       compute();
+    }
+
+    async function saveCoeffForDate(d) {
+      clearError();
+      const hint = document.getElementById("actualEditHint");
+      const ta = document.getElementById("coeffEditPaste");
+      if (!d || !ta) return;
+      const platform = getPlatform();
+      const parsed = parsePastedCoefficients(ta.value);
+      if (!parsed.ok) {
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = parsed.message;
+        }
+        return;
+      }
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.textContent = "正在保存策略系数...";
+      }
+      const res = await fetch("/api/strategy/day-settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({date: d, platform, strategy_coeff_hourly: parsed.values, revenue_transfer: 0.0, note: null}),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        if (hint) {
+          hint.classList.add("text-danger");
+          hint.textContent = (json.detail || "保存失败");
+        }
+        return;
+      }
+      if (hint) {
+        hint.classList.remove("text-danger");
+        hint.textContent = `保存成功：${d}（策略系数 24 条）`;
+      }
+      await refreshActualSummary();
+      compute();
+    }
+
+    async function uploadActualForDate(d, file) {
+      const hint = document.getElementById("uploadHint");
+      if (!d || !file) return;
+      const platform = getPlatform();
+      if (hint) hint.textContent = "正在上传...";
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("record_date", d);
+      fd.append("platform", platform);
+      const res = await fetch("/api/strategy/actual-hourly/upload", {method: "POST", body: fd});
+      const json = await res.json();
+      if (!res.ok) {
+        if (hint) hint.textContent = (json.detail || "上传失败");
+        return;
+      }
+      if (hint) {
+        hint.textContent = `上传成功：已写入 ${d}，共 ${json.inserted} 条。`;
+      }
+      await refreshActualSummary();
+      compute();
+    }
+
+    function ensureActualMaintenanceDefaults(targetDate) {
+      if (!targetDate) return;
+      const key = `${getPlatform()}|${targetDate}`;
+      if (state.lastActualDefaultsKey === key) return;
+      state.lastActualDefaultsKey = key;
+
+      const start = addDays(targetDate, -30);
+      const end = addDays(targetDate, -1);
+      const sEl = document.getElementById("actualRangeStart");
+      const eEl = document.getElementById("actualRangeEnd");
+      if (sEl) sEl.value = start;
+      if (eEl) eEl.value = end;
+
+      const d5 = addDays(targetDate, -5);
+      setActualSelectedDate(d5);
+      refreshActualSummary();
+      loadActualForDate(d5);
     }
 
     // Init
     // Default target date = tomorrow (D day). Forecast is typically made on D-1.
+    initPlatform();
     const d = new Date();
     d.setDate(d.getDate() + 1);
     const iso = d.toISOString().split("T")[0];
@@ -645,7 +925,25 @@
       onChange: () => compute(),
     });
     document.getElementById("btnExecute").addEventListener("click", saveSettings);
-    document.getElementById("btnSaveActual").addEventListener("click", pasteActualToDb);
+    document.getElementById("btnRefreshActualSummary").addEventListener("click", refreshActualSummary);
+    document.getElementById("btnPickD5").addEventListener("click", () => {
+      const date = document.getElementById("targetDate").value;
+      if (!date) return;
+      const d5 = addDays(date, -5);
+      setActualSelectedDate(d5);
+      loadActualForDate(d5);
+    });
+    document.getElementById("btnLoadActualForDate").addEventListener("click", () => loadActualForDate(state.actualSelectedDate));
+    document.getElementById("btnSaveActualForDate").addEventListener("click", () => saveActualForDate(state.actualSelectedDate));
+    document.getElementById("btnSaveCoeffForDate").addEventListener("click", () => saveCoeffForDate(state.actualSelectedDate));
+    document.getElementById("actualSummaryBody").addEventListener("click", (e) => {
+      const tr = e.target.closest("tr");
+      if (!tr) return;
+      const d = tr.dataset.date;
+      if (!d) return;
+      setActualSelectedDate(d);
+      loadActualForDate(d);
+    });
 
     document.getElementById("coeffPaste").addEventListener("paste", (e) => {
       // Excel 24 cells copy: "v1\tv2\t...\tv24"
@@ -734,8 +1032,10 @@
       state.coeffHourly[h] = v;
       renderHourlyTable();
     });
-    document.getElementById("uploadActual").addEventListener("change", (e) => {
-      if (e.target.files && e.target.files[0]) uploadActual(e.target.files[0]);
+    document.getElementById("uploadActualForDate").addEventListener("change", (e) => {
+      if (e.target.files && e.target.files[0]) uploadActualForDate(state.actualSelectedDate, e.target.files[0]);
+      // Allow re-uploading the same file by resetting the input value.
+      e.target.value = "";
     });
 
     compute();
