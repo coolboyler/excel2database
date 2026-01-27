@@ -514,6 +514,14 @@
       return d.toISOString().split("T")[0];
     }
 
+    function todayIsoLocal() {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    }
+
     async function compute() {
       clearError();
       computeReqId += 1;
@@ -868,12 +876,13 @@
 
     function ensureActualMaintenanceDefaults(targetDate) {
       if (!targetDate) return;
-      const key = `${getPlatform()}|${targetDate}`;
+      const today = todayIsoLocal();
+      const key = `${getPlatform()}|${targetDate}|${today}`;
       if (state.lastActualDefaultsKey === key) return;
       state.lastActualDefaultsKey = key;
 
-      const start = addDays(targetDate, -30);
-      const end = addDays(targetDate, -1);
+      const start = `${today.slice(0, 4)}-01-01`;
+      const end = addDays(today, 1);
       const sEl = document.getElementById("actualRangeStart");
       const eEl = document.getElementById("actualRangeEnd");
       if (sEl) sEl.value = start;
