@@ -9,8 +9,7 @@ config_remote.py
 download.py
 import_dayahead_realtime.py
 import_via_api.py
-state/
-temp_cos_downloads/
 cos_daily_auto_import.log
 .env
 *.env
+*.xlsx

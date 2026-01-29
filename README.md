@@ -95,6 +95,86 @@ POST /api/update-weather
 GET /api/cos_daily/status
 ```
 
+## 接口清单（详细）
+
+说明：
+- `Form` 表示 `multipart/form-data`
+- `Query` 表示 URL 查询参数
+- `JSON` 表示请求体 JSON
+
+### 页面（HTML）
+- `GET /` 首页
+- `GET /table_query`（Query: `table_name`）
+- `GET /join_query`
+- `GET /daily_hourly`
+- `GET /similar_day`
+- `GET /multi_day_compare`
+- `GET /strategy_quote`
+- `GET /strategy_review`
+- `GET /strategy_review_diag`（Query: `date`, `platform`）
+
+### 系统/状态
+- `GET /health`
+- `GET /api/cos_daily/status`
+
+### 文件与导入
+- `GET /files`
+- `POST /upload`（Form: `file`）
+- `POST /import`（Form: `filename`）
+- `POST /import-all`
+- `DELETE /files/{filename}`
+- `DELETE /files`
+- `GET /download/{filename}`
+
+### 数据表
+- `GET /tables`
+- `GET /tables/{table_name}`（Query: `limit`）
+- `GET /tables/{table_name}/schema`
+- `GET /tables/{table_name}/query`（Query: `offset`, `limit`, `conditions` JSON 字符串）
+- `GET /tables/{table_name}/export`（Query: `conditions` JSON 字符串）
+- `DELETE /tables/{table_name}`
+- `DELETE /tables`
+
+### 缓存 / 天气 / 日历
+- `POST /api/generate-daily-hourly-cache`
+- `POST /api/generate-price-cache`
+- `POST /api/update-weather`
+- `GET /api/cache-available-dates`（Query: `limit`, `require_load`）
+
+### 日均 / 价差
+- `POST /daily-averages`（Form: `dates` JSON, `data_type_keyword`, `station_name?`, `city?`）
+- `GET /daily-averages/export`（Query: `dates` JSON, `data_type_keyword`）
+- `POST /daily-averages/export-from-result`（Form: `query_result` JSON）
+- `POST /price-difference`（Form: `dates` JSON, `region?`, `station_name?`, `city?`）
+- `POST /price-difference/export-from-result`（Form: `query_result` JSON, `region?`）
+
+### 分时 / 多日对比 / 缓存导出
+- `GET /api/daily-hourly-data`（Query: `date`）
+- `GET /api/multi-day-compare-data`（Query: `start`, `end`）
+- `POST /api/multi-day-compare-data-by-dates`（JSON: `dates[]`）
+- `POST /api/daily-hourly-cache/export`（Form: `dates` JSON）
+- `POST /api/daily-averages/export-dr-compare`（Form: `dates` JSON）
+- `POST /api/daily-averages/export-new-energy-forecast`（Form: `dates` JSON）
+
+### 价差缓存表
+- `POST /api/price-diff-cache`（JSON: `dates[]`, `sort_by?`, `sort_order?`）
+- `POST /api/price-diff-cache/export`（JSON: `dates[]`, `sort_by?`, `sort_order?`）
+
+### 策略/复盘
+- `POST /api/strategy/import-workbook`（Form: `file`, `platform?`）
+- `POST /api/strategy/actual-hourly/upload`（Form: `file`, `sheet_name?`, `target_date?`, `record_date?`, `platform?`）
+- `GET /api/strategy/actual-hourly/summary`（Query: `start?`, `end?`, `platform?`）
+- `GET /api/strategy/actual-hourly`（Query: `date`, `platform?`, `source?`）
+- `POST /api/strategy/actual-hourly`（JSON: `date`, `hourly[24]`, `platform?`, `source?`）
+- `POST /api/strategy/actual-hourly/batch`（JSON: 多天列表）
+- `POST /api/strategy/day-settings`（JSON: `date`, `strategy_coeff?`, `strategy_coeff_hourly?`, `revenue_transfer?`, `note?`, `platform?`）
+- `GET /api/strategy/day-settings`（Query: `date`, `platform?`）
+- `GET /api/strategy/quote`（Query: `date`, `platform?`, `strategy_coeff?`）
+- `GET /api/strategy/review`（Query: `start?`, `end?`, `platform?`）
+- `GET /api/strategy/review/latest-month`（Query: `platform?`）
+- `GET /api/strategy/review/diagnose`（Query: `date`, `platform?`）
+- `POST /api/strategy/review/refresh`（Form/Query: `month`, `platform?`）
+
 ## 支持的 Excel 类型
 
 - 负荷实际信息
