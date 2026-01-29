@@ -1,16 +1,18 @@
 # api.py
 
 from io import BytesIO
+from contextlib import asynccontextmanager
 import json
 import time
 import threading
-from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, logger
+from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import os
 import glob
 import shutil
+import logging
 from typing import List, Optional, Literal
 import warnings
 from pathlib import Path
@@ -34,11 +36,20 @@ warnings.filterwarnings(
 # 初始化导入器和数据库管理器
 importer = PowerDataImporter()
 db_manager = DatabaseManager()
+logger = logging.getLogger("uvicorn.error")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _start_cos_daily_scheduler()
+    _start_weather_scheduler()
+    yield
+
 
 app = FastAPI(
     title="Excel2SQL API",
     description="API for importing Excel data to SQL database",
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 # 挂载静态文件 (use absolute path to avoid CWD issues in scripts)
@@ -77,6 +88,7 @@ async def health_check():
 # COS daily import status (used by the web UI reminder)
 _BASE_DIR = Path(__file__).resolve().parent
 _COS_DAILY_CONFIG = _BASE_DIR / "cos_daily_import.config.json"
+_WEATHER_STATE_DEFAULT = _BASE_DIR / "state" / "weather_update_state.json"
 
 
 def _cos_scheduler_enabled() -> bool:
@@ -84,7 +96,7 @@ def _cos_scheduler_enabled() -> bool:
     return str(val).strip().lower() not in {"0", "false", "off", "no"}
 
 
-def _try_acquire_cos_lock(lock_path: str):
+def _try_acquire_lock(lock_path: str):
     try:
         import fcntl  # Unix only
     except Exception:
@@ -112,7 +124,7 @@ def _start_cos_daily_scheduler():
         return
 
     lock_path = os.getenv("COS_DAILY_SCHEDULER_LOCK", "/tmp/excel2sql_cos_daily.lock")
-    lock_fd = _try_acquire_cos_lock(lock_path)
+    lock_fd = _try_acquire_lock(lock_path)
     if lock_fd is None:
         logger.info("COS daily scheduler lock busy; skip starting scheduler thread.")
         return
@@ -194,9 +206,131 @@ def _start_cos_daily_scheduler():
     t.start()
 
 
-@app.on_event("startup")
-async def _startup_cos_scheduler():
-    _start_cos_daily_scheduler()
+def _weather_scheduler_enabled() -> bool:
+    val = os.getenv("WEATHER_AUTO_SCHEDULER", "1")
+    return str(val).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _weather_update_interval_days() -> int:
+    raw = os.getenv("WEATHER_UPDATE_INTERVAL_DAYS", "10")
+    try:
+        days = int(raw)
+        return days if days > 0 else 10
+    except Exception:
+        return 10
+
+
+def _resolve_weather_state_path() -> Path:
+    raw = os.getenv("WEATHER_SCHEDULER_STATE")
+    if not raw:
+        return _WEATHER_STATE_DEFAULT
+    p = Path(raw)
+    return p if p.is_absolute() else (_BASE_DIR / p)
+
+
+def _load_weather_state(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _write_weather_state(path: Path, payload: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _parse_iso_dt(value: str):
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _run_weather_update():
+    import calendar_weather
+
+    today = datetime.date.today()
+    start_date = today - datetime.timedelta(days=30)
+    end_date = today + datetime.timedelta(days=15)
+    logger.info("Weather auto update start: %s -> %s", start_date, end_date)
+    calendar_weather.update_calendar(start_date, end_date)
+    logger.info("Weather auto update done: %s -> %s", start_date, end_date)
+    return start_date, end_date
+
+
+def _start_weather_scheduler():
+    if not _weather_scheduler_enabled():
+        logger.info("Weather scheduler disabled via env.")
+        return
+
+    lock_path = os.getenv("WEATHER_SCHEDULER_LOCK", "/tmp/excel2sql_weather_update.lock")
+    lock_fd = _try_acquire_lock(lock_path)
+    if lock_fd is None:
+        logger.info("Weather scheduler lock busy; skip starting scheduler thread.")
+        return
+
+    state_path = _resolve_weather_state_path()
+
+    def _loop():
+        while True:
+            try:
+                if not _weather_scheduler_enabled():
+                    time.sleep(60)
+                    continue
+
+                interval_days = _weather_update_interval_days()
+                state = _load_weather_state(state_path)
+                last_success_at = _parse_iso_dt(state.get("last_success_at"))
+                now = datetime.datetime.now()
+
+                due = True
+                if last_success_at:
+                    due = now >= (last_success_at + datetime.timedelta(days=interval_days))
+
+                if due:
+                    try:
+                        start_date, end_date = _run_weather_update()
+                        now = datetime.datetime.now()
+                        state = {
+                            "last_success_at": now.isoformat(),
+                            "interval_days": interval_days,
+                            "last_success_range": {
+                                "start": start_date.isoformat(),
+                                "end": end_date.isoformat(),
+                            },
+                        }
+                        _write_weather_state(state_path, state)
+                        last_success_at = now
+                    except Exception as e:
+                        logger.error("Weather scheduler update error: %s", e)
+                        state = state or {}
+                        state["last_error_at"] = datetime.datetime.now().isoformat()
+                        state["last_error"] = str(e)
+                        _write_weather_state(state_path, state)
+
+                # Sleep until next due, but cap to re-check config periodically.
+                if last_success_at:
+                    next_due = last_success_at + datetime.timedelta(days=interval_days)
+                    sleep_s = (next_due - datetime.datetime.now()).total_seconds()
+                else:
+                    sleep_s = 3600
+                time.sleep(max(60.0, min(sleep_s, 6 * 3600)))
+            except Exception as e:
+                logger.error("Weather scheduler loop error: %s", e)
+                time.sleep(60)
+
+    t = threading.Thread(target=_loop, name="weather_scheduler", daemon=True)
+    t.start()
 
 
 def _load_cos_daily_state():

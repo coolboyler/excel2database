@@ -252,6 +252,21 @@ python3 cos_daily_auto_import.py
 COS_DAILY_SCHEDULER_LOCK=/tmp/excel2sql_cos_daily.lock
 ```
 
+### 天气数据自动更新（每 10 天）
+
+应用启动后自动更新天气数据（无需系统 cron）：
+
+- 默认启用：`WEATHER_AUTO_SCHEDULER=1`
+- 关闭：`WEATHER_AUTO_SCHEDULER=0`
+- 间隔天数：`WEATHER_UPDATE_INTERVAL_DAYS=10`
+- 状态文件：`WEATHER_SCHEDULER_STATE=state/weather_update_state.json`
+
+多实例部署建议加锁（同机单实例执行）：
+
+```
+WEATHER_SCHEDULER_LOCK=/tmp/excel2sql_weather_update.lock
+```
+
 ## 目录说明
 
 - `data/`：上传的 Excel
