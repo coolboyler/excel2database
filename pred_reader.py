@@ -9,7 +9,260 @@ from database import DatabaseManager
 class PowerDataImporter:
     def __init__(self):
         self.db_manager = DatabaseManager()
+        self._city_mapping = None
+        self._city_mapping_loaded = False
         pass
+
+    # ===============================
+    # 城市映射相关 (节点电价 -> 城市)
+    # ===============================
+    _CITY_LIST_GD = [
+        "广州", "深圳", "佛山", "东莞", "中山", "珠海", "江门", "惠州", "汕头", "汕尾",
+        "揭阳", "潮州", "梅州", "河源", "清远", "韶关", "湛江", "茂名", "阳江", "云浮", "肇庆"
+    ]
+    _CITY_LIST_YN = [
+        "云南", "昆明", "曲靖", "玉溪", "保山", "昭通", "丽江", "普洱", "临沧", "楚雄",
+        "红河", "文山", "西双版纳", "大理", "德宏", "怒江", "迪庆"
+    ]
+
+    def _city_channel_name(self, city: str) -> str:
+        return f"{city}_节点均价"
+
+    def _normalize_node_name(self, name: str) -> str:
+        if not name:
+            return ""
+        s = str(name).strip()
+        # 去掉城市前缀
+        for c in self._CITY_LIST_GD:
+            if s.startswith(c):
+                s = s[len(c):]
+                break
+        # 去掉“其他”前缀
+        if s.startswith("其他"):
+            s = s[2:]
+        # 统一大小写/符号
+        s = s.replace("ＫＶ", "kV").replace("KV", "kV").replace("kv", "kV")
+        s = s.replace("＃", "#")
+        # 去掉常见分隔符与单位/标识
+        s = re.sub(r"[\\.·。/\\\\\\-\\s_()（）]+", "", s)
+        s = s.replace("kV", "")
+        s = s.replace("母线", "")
+        s = s.replace("M", "").replace("m", "")
+        # 仅保留汉字/数字/# 方便匹配
+        s = re.sub(r"[^\u4e00-\u9fff0-9#]", "", s)
+        return s
+
+    def _extract_city_prefix(self, name: str):
+        if not name:
+            return None
+        s = str(name).strip()
+        for c in self._CITY_LIST_GD:
+            if s.startswith(c):
+                return c
+        return None
+
+    def _load_city_mapping(self):
+        if self._city_mapping_loaded:
+            return self._city_mapping or {}
+
+        mapping = {}
+        # 优先读取缓存
+        base_dir = os.path.dirname(__file__)
+        cache_path = os.path.join(base_dir, "state", "node_city_mapping.json")
+        try:
+            if os.path.exists(cache_path):
+                import json
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    mapping = json.load(f)
+        except Exception:
+            mapping = {}
+
+        # 若缓存为空，尝试从 2025-06-28 文件构建
+        if not mapping or len(mapping) < 200:
+            candidates = [
+                os.path.join(base_dir, "实时节点电价查询(2025-06-28).xlsx"),
+                os.path.join(base_dir, "data", "实时节点电价查询(2025-06-28).xlsx"),
+            ]
+            source_path = next((p for p in candidates if os.path.exists(p)), None)
+            if source_path:
+                try:
+                    xls = pd.ExcelFile(source_path)
+                    sheet_name = xls.sheet_names[0]
+                    df = pd.read_excel(source_path, sheet_name=sheet_name, usecols=[0])
+                    for raw_name in df.iloc[:, 0].dropna().astype(str).tolist():
+                        city = self._extract_city_prefix(raw_name)
+                        if not city:
+                            continue
+                        key = self._normalize_node_name(raw_name)
+                        if key:
+                            mapping.setdefault(key, city)
+                    if mapping:
+                        try:
+                            import json
+                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                            with open(cache_path, "w", encoding="utf-8") as f:
+                                json.dump(mapping, f, ensure_ascii=False)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"⚠️ 城市映射构建失败: {e}")
+
+        self._city_mapping = mapping
+        self._city_mapping_loaded = True
+        return mapping
+
+    def _get_city_from_node(self, node_name: str):
+        if not node_name:
+            return None
+        node_str = str(node_name).strip()
+        # 明确排除云南节点，避免误映射为广东城市
+        for kw in self._CITY_LIST_YN:
+            if kw and kw in node_str:
+                return None
+        city = self._extract_city_prefix(node_str)
+        if city:
+            return city
+        mapping = self._load_city_mapping()
+        key = self._normalize_node_name(node_str)
+        return mapping.get(key)
+
+    def _extract_hour(self, time_val):
+        if time_val is None or (isinstance(time_val, float) and np.isnan(time_val)):
+            return None
+        # datetime.time
+        if hasattr(time_val, "hour"):
+            try:
+                return int(time_val.hour)
+            except Exception:
+                pass
+        # timedelta
+        if hasattr(time_val, "total_seconds"):
+            try:
+                return int(time_val.total_seconds() // 3600)
+            except Exception:
+                pass
+        # number
+        if isinstance(time_val, (int, float, np.number)) and not isinstance(time_val, bool):
+            val = int(time_val)
+            if val >= 3600:
+                return val // 3600
+            if 0 <= val < 24:
+                return val
+            if 100 <= val <= 2400:
+                return val // 100
+            if val == 0:
+                return 0
+        # string
+        try:
+            s = str(time_val).strip()
+            if ":" in s:
+                return int(s.split(":")[0])
+            val = int(float(s))
+            if val >= 3600:
+                return val // 3600
+            if 0 <= val < 24:
+                return val
+            if 100 <= val <= 2400:
+                return val // 100
+        except Exception:
+            return None
+        return None
+
+    def ensure_city_means_for_date(self, date_str, data_type_keyword, city=None, insert=True):
+        """
+        为指定日期生成城市节点均价（可选插入到 power_data_YYYYMMDD）
+        city=None 表示生成所有城市
+        """
+        try:
+            date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except Exception:
+            print(f"⚠️ 日期格式错误: {date_str}")
+            return []
+
+        table_name = f"power_data_{date_obj.strftime('%Y%m%d')}"
+        existing_tables = self.db_manager.get_tables()
+        if table_name not in existing_tables:
+            return []
+
+        # 查询节点记录（排除均值/城市均价行）
+        type_like = f"%{data_type_keyword}%"
+        sql = text(f"""
+            SELECT record_time, channel_name, value, sheet_name, type
+            FROM {table_name}
+            WHERE type LIKE :type_like
+              AND channel_name NOT LIKE '%均值%'
+              AND channel_name NOT LIKE '%节点均价%'
+        """)
+        with self.db_manager.engine.connect() as conn:
+            rows = conn.execute(sql, {"type_like": type_like}).fetchall()
+
+        if not rows:
+            return []
+
+        # 聚合
+        city_hour_values = {}
+        sheet_name = None
+        type_value = None
+        for row in rows:
+            row_dict = dict(row._mapping)
+            sheet_name = sheet_name or row_dict.get("sheet_name")
+            type_value = type_value or row_dict.get("type")
+            node_city = self._get_city_from_node(row_dict.get("channel_name"))
+            if not node_city:
+                continue
+            if city and node_city != city:
+                continue
+            hour = self._extract_hour(row_dict.get("record_time"))
+            if hour is None or hour < 0 or hour > 23:
+                continue
+            city_hour_values.setdefault(node_city, {}).setdefault(hour, []).append(row_dict.get("value"))
+
+        records = []
+        for city_name, hour_map in city_hour_values.items():
+            for hour, vals in hour_map.items():
+                vals = [v for v in vals if v is not None]
+                if not vals:
+                    continue
+                mean_val = sum(vals) / len(vals)
+                records.append({
+                    "record_date": date_obj,
+                    "record_time": f"{hour:02d}:00",
+                    "channel_name": self._city_channel_name(city_name),
+                    "value": round(mean_val, 2),
+                    "type": type_value or data_type_keyword,
+                    "sheet_name": sheet_name or data_type_keyword,
+                })
+
+        if insert and records:
+            with self.db_manager.engine.begin() as conn:
+                if city:
+                    conn.execute(
+                        text(f"""
+                            DELETE FROM {table_name}
+                            WHERE record_date = :d
+                              AND channel_name = :cn
+                              AND type LIKE :type_like
+                        """),
+                        {"d": date_obj, "cn": self._city_channel_name(city), "type_like": type_like}
+                    )
+                else:
+                    conn.execute(
+                        text(f"""
+                            DELETE FROM {table_name}
+                            WHERE record_date = :d
+                              AND channel_name LIKE '%节点均价%'
+                              AND type LIKE :type_like
+                        """),
+                        {"d": date_obj, "type_like": type_like}
+                    )
+                insert_stmt = text(f"""
+                    INSERT INTO {table_name}
+                    (record_date, record_time, type, channel_name, value, sheet_name)
+                    VALUES (:record_date, :record_time, :type, :channel_name, :value, :sheet_name)
+                """)
+                conn.execute(insert_stmt, records)
+
+        return records
 
     # ===============================
     # 主入口：导入所有sheet
@@ -782,8 +1035,10 @@ class PowerDataImporter:
             print(f"\n🔹 正在处理 Sheet {i+1}: {sheet_name}")
 
             # 统一识别日期
-            match = re.search(r"\((\d{4}-\d{2}-\d{2})\)", sheet_name)
-            data_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+            data_date = self._extract_date_from_text(sheet_name) or self._extract_date_from_text(file_name)
+            if not data_date:
+                print(f"⚠️ 未识别到日期: {sheet_name}，跳过")
+                continue
             # 根据sheet序号调用不同映射函数
             if i in [0, 3, 4]:  # 第1,4,5个sheet：时刻→channel_name
                 records = self._process_time_as_channel(df, data_date, sheet_name, data_type)
@@ -792,9 +1047,17 @@ class PowerDataImporter:
             elif i in [6]:
                 records = self._process_fsc_as_channel(df, data_date, sheet_name, data_type)
             elif i in [-2]:
-                outage_records = self._process_outage_as_table(df, data_date, sheet_name)
+                try:
+                    outage_records = self._process_outage_as_table(df, data_date, sheet_name)
+                except Exception as e:
+                    print(f"⚠️ 停电信息解析失败，已跳过: {e}")
+                    outage_records = []
             elif i in [-1]:
-                ineternal_records = self._process_internal_as_table(df, data_date, sheet_name)
+                try:
+                    ineternal_records = self._process_internal_as_table(df, data_date, sheet_name)
+                except Exception as e:
+                    print(f"⚠️ 机组内部信息解析失败，已跳过: {e}")
+                    ineternal_records = []
             else:
                 print(f"⚠️ 第{i+1}个sheet未定义处理规则，跳过")
                 continue
@@ -802,19 +1065,48 @@ class PowerDataImporter:
             print(f"✅ Sheet{i+1} 处理完成，共 {len(records)} 条记录")
             all_records.extend(records)
         
-        if not outage_records:
-            print("❌ 没有生成任何停电记录")
-            return False
         if not all_records:
             print("❌ 没有生成任何有效记录")
             return False
 
         success1, table_name1, count1, preview_data1 = self.save_to_database(all_records, data_date)
-        success2, table_name2, count2, preview_data2 = self.save_to_outage_database(outage_records, data_date)
-        success3, table_name3, count3, preview_data3 = self.save_to_internal_database(ineternal_records, data_date)
+        if outage_records:
+            success2, table_name2, count2, preview_data2 = self.save_to_outage_database(outage_records, data_date)
+        else:
+            success2, table_name2, count2, preview_data2 = True, None, 0, []
+        if ineternal_records:
+            success3, table_name3, count3, preview_data3 = self.save_to_internal_database(ineternal_records, data_date)
+        else:
+            success3, table_name3, count3, preview_data3 = True, None, 0, []
         
         # 返回两个操作的结果
         return (success1, table_name1, count1, preview_data1), (success2, table_name2, count2, preview_data2),(success3, table_name3, count3, preview_data3)
+
+    def _extract_date_from_text(self, text_value):
+        """
+        从文本中提取日期（支持括号/中文括号/无括号的 YYYY-MM-DD 或 YYYYMMDD）
+        返回 date 或 None
+        """
+        if not text_value:
+            return None
+        text = str(text_value)
+        patterns = [
+            r"[（(]\s*(\d{4}-\d{1,2}-\d{1,2})\s*[)）]",
+            r"(\d{4}-\d{1,2}-\d{1,2})",
+            r"(\d{8})",
+        ]
+        for p in patterns:
+            m = re.search(p, text)
+            if not m:
+                continue
+            s = m.group(1)
+            if len(s) == 8 and s.isdigit():
+                s = f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+            try:
+                return datetime.datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception:
+                continue
+        return None
     def _process_time_as_channel(self, df, data_date, sheet_name, data_type):
         """将时刻列名映射为channel_name"""
         records = []
@@ -1157,9 +1449,10 @@ class PowerDataImporter:
                 print(f"❌ 无法读取Excel: {e}")
                 return False
             file_name = str(excel_file)
-            single_match = re.search(r"\((\d{4}-\d{1,2}-\d{1,2})", file_name)
-            single_data_date_str = single_match.group(1)
-            single_data_date = datetime.datetime.strptime(single_data_date_str, "%Y-%m-%d").date()
+            single_data_date = self._extract_date_from_text(file_name)
+            if not single_data_date:
+                print(f"⚠️ 未识别到日期：{file_name}，跳过")
+                return False
             print("识别到的日期：", single_data_date)
             chinese_match = re.search(r'([\u4e00-\u9fff]+)', file_name)
             if chinese_match:
@@ -1193,12 +1486,8 @@ class PowerDataImporter:
                 print(f"\n🔹 正在处理 Sheet {i+1}: {sheet_name}")
 
                 # 统一识别日期
-                match = re.search(r"\((\d{4}-\d{1,2}-\d{1,2})", sheet_name)
-
-                if match:
-                    # 提取捕获的日期字符串并转换为date类型
-                    data_date_str = match.group(1)
-                    data_date = datetime.datetime.strptime(data_date_str, "%Y-%m-%d").date()
+                data_date = self._extract_date_from_text(sheet_name) or single_data_date
+                if data_date:
                     print("识别到的日期：", data_date)  # 输出：识别到的日期：2025-09-01（若输入是2025-09-1，会自动补0为2025-09-01）
                 else:
                     print("未识别到日期格式")
@@ -1735,12 +2024,14 @@ class PowerDataImporter:
         # 先保存原有的数据（按小时分组）
         # 预先计算每行每小时的均值
         hourly_means = {}  # {(row_index, hour): mean_value}
+        city_hour_values = {}  # {city: {hour: [values]}}
         
         for _, row in df.iterrows():
             # 检查第一列是否有有效数据，如果没有则跳过（处理标题行）
             channel_name = row.iloc[0]  # 第一列作为通道名称
             if pd.isna(channel_name) or channel_name == "":
                 continue
+            city_name = self._get_city_from_node(channel_name)
                 
             # 为每行每小时计算均值
             for hour, times in time_groups.items():
@@ -1766,6 +2057,8 @@ class PowerDataImporter:
                         "created_at": pd.Timestamp.now(),
                     }
                     records.append(record)
+                    if city_name:
+                        city_hour_values.setdefault(city_name, {}).setdefault(hour, []).append(hourly_mean)
 
         for hour, times in time_groups.items():
             values = []
@@ -1784,6 +2077,24 @@ class PowerDataImporter:
                     "created_at": pd.Timestamp.now(),
                 }
                 records.append(record)
+
+        # 生成城市节点均价
+        if city_hour_values:
+            for city_name, hour_map in city_hour_values.items():
+                for hour, vals in hour_map.items():
+                    vals = [v for v in vals if v is not None]
+                    if not vals:
+                        continue
+                    city_mean = sum(vals) / len(vals)
+                    records.append({
+                        "record_date": pd.to_datetime(data_date).date(),
+                        "record_time": f"{hour}:00",
+                        "channel_name": self._city_channel_name(city_name),
+                        "value": round(city_mean, 2),
+                        "type": data_type,
+                        "sheet_name": sheet_name,
+                        "created_at": pd.Timestamp.now(),
+                    })
 
         print(f"✅ {data_type} 均值生成 {len(records)} 条记录")
         return records
@@ -2058,9 +2369,13 @@ class PowerDataImporter:
         
         # 识别时间列
         time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        # 过滤掉“类型”等非指标行，避免通道名称被污染
+        if "类型" in df.columns and "通道名称" in df.columns:
+            df = df[df["类型"].astype(str).str.strip().isin(["实际"])]
         
         for _, row in df.iterrows():
-            # 假设 '类型' 列是指标名称
+            # 统一使用“通道名称”作为指标
             channel_name = str(row.get('通道名称', 'Unknown')).strip()
             
             for t in time_cols:
@@ -2086,6 +2401,10 @@ class PowerDataImporter:
         
         # 识别时间列
         time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        # 过滤掉“类型”等非指标行，避免通道名称被污染
+        if "类型" in df.columns and "通道名称" in df.columns:
+            df = df[df["类型"].astype(str).str.strip().isin(["实际"])]
         
         for _, row in df.iterrows():
             # 假设 '类型' 列是指标名称
@@ -2114,6 +2433,10 @@ class PowerDataImporter:
         
         # 识别时间列
         time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        # 过滤掉“类型”等非指标行，避免通道名称被污染
+        if "类型" in df.columns and "通道名称" in df.columns:
+            df = df[df["类型"].astype(str).str.strip().isin(["实际"])]
         
         for _, row in df.iterrows():
             # 假设 '类型' 列是指标名称
@@ -2413,7 +2736,7 @@ class PowerDataImporter:
                 })
         return records
     
-    def query_daily_averages(self, date_list, data_type_keyword="日前节点电价", station_name=None):
+    def query_daily_averages(self, date_list, data_type_keyword="日前节点电价", station_name=None, city=None):
         """
         查询多天的均值数据（适用于已计算好的均值记录）
         
@@ -2421,11 +2744,16 @@ class PowerDataImporter:
             date_list (list): 日期列表，格式为 "YYYY-MM-DD"
             data_type_keyword (str): 数据类型关键字，用于筛选特定类型的数据
             station_name (str): 站点名称，如果提供则按照站点名称模糊匹配，否则默认匹配'均值'
+            city (str): 城市名称（可选），优先于站点名称
             
         Returns:
             dict: 包含查询结果的字典
         """
         try:
+            # 如果指定城市，走城市均价查询
+            if city and str(city).strip():
+                return self.query_city_daily_averages(date_list, data_type_keyword, city)
+
             # 构造表名列表
             table_names = []
             for date_str in date_list:
@@ -2479,7 +2807,59 @@ class PowerDataImporter:
             traceback.print_exc()
             return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
 
-    def query_price_difference(self, date_list, region="", station_name=None):
+    def query_city_daily_averages(self, date_list, data_type_keyword, city):
+        """
+        按城市查询节点均价（会在缺失时自动按节点聚合并写回）
+        """
+        try:
+            city = str(city).strip()
+            if not city:
+                return {"data": [], "total": 0, "message": "城市为空"}
+
+            table_names = []
+            for date_str in date_list:
+                date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                table_names.append(f"power_data_{date_obj.strftime('%Y%m%d')}")
+
+            existing_tables = self.db_manager.get_tables()
+            valid_tables = [t for t in table_names if t in existing_tables]
+            if not valid_tables:
+                return {"data": [], "total": 0, "message": "没有找到有效的数据表"}
+
+            all_rows = []
+            for table in valid_tables:
+                # 先查已有城市均价
+                type_like = f"%{data_type_keyword}%"
+                city_label = self._city_channel_name(city)
+                sql = text(f"""
+                    SELECT * FROM {table}
+                    WHERE channel_name = :cn AND type LIKE :type_like
+                """)
+                with self.db_manager.engine.connect() as conn:
+                    rows = conn.execute(sql, {"cn": city_label, "type_like": type_like}).fetchall()
+                if rows and len(rows) >= 12:
+                    all_rows.extend([dict(r._mapping) for r in rows])
+                    continue
+
+                # 不足则按节点重新计算（并写回）
+                date_str = table.replace("power_data_", "")
+                date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                computed = self.ensure_city_means_for_date(date_str, data_type_keyword, city=city, insert=True)
+                all_rows.extend(computed)
+
+            all_rows.sort(key=lambda r: (str(r.get("record_date", "")), str(r.get("record_time", ""))), reverse=True)
+            return {
+                "data": all_rows,
+                "total": len(all_rows),
+                "message": "查询成功"
+            }
+        except Exception as e:
+            print(f"❌ 城市均值查询失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"data": [], "total": 0, "message": f"查询失败: {str(e)}"}
+
+    def query_price_difference(self, date_list, region="", station_name=None, city=None):
         """
         查询价差数据（日前节点电价 - 实时节点电价）
         
@@ -2487,6 +2867,7 @@ class PowerDataImporter:
             date_list (list): 日期列表，格式为 "YYYY-MM-DD"
             region (str): 地区前缀，如"云南_"，默认为空
             station_name (str): 站点名称
+            city (str): 城市名称（可选）
             
         Returns:
             dict: 包含价差查询结果的字典
@@ -2503,13 +2884,15 @@ class PowerDataImporter:
             print(f"  - 实时节点电价关键词: {realtime_keyword}")
             print(f"  - 日期列表: {date_list}")
             print(f"  - 站点筛选: {station_name or '默认(均值)'}")
+            if city:
+                print(f"  - 城市筛选: {city}")
             
             # 查询日前节点电价数据
-            dayahead_result = self.query_daily_averages(date_list, dayahead_keyword, station_name)
+            dayahead_result = self.query_daily_averages(date_list, dayahead_keyword, station_name, city)
             dayahead_data = dayahead_result.get("data", [])
             
             # 查询实时节点电价数据
-            realtime_result = self.query_daily_averages(date_list, realtime_keyword, station_name)
+            realtime_result = self.query_daily_averages(date_list, realtime_keyword, station_name, city)
             realtime_data = realtime_result.get("data", [])
             
             # 检查是否有两个数据
@@ -3326,6 +3709,10 @@ class PowerDataImporter:
         
         # 识别时间列
         time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        # 过滤掉“类型”等非指标行，避免通道名称被污染
+        if "类型" in df.columns and "通道名称" in df.columns:
+            df = df[df["类型"].astype(str).str.strip().isin(["预测"])]
         
         for _, row in df.iterrows():
             # 假设 '类型' 列是指标名称
@@ -3354,6 +3741,10 @@ class PowerDataImporter:
         
         # 识别时间列
         time_cols = [c for c in df.columns if re.match(r'^\d{1,2}:\d{2}$', c)]
+
+        # 过滤掉“类型”等非指标行，避免通道名称被污染
+        if "类型" in df.columns and "通道名称" in df.columns:
+            df = df[df["类型"].astype(str).str.strip().isin(["预测"])]
         
         for _, row in df.iterrows():
             # 假设 '类型' 列是指标名称

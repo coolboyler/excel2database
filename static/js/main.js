@@ -1054,20 +1054,35 @@ function deleteTable(tableName) {
 
 // 显示提示信息
 function showAlert(message, type) {
-    const alertsContainer = document.getElementById('alerts');
-    if (!alertsContainer) return;
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.style.position = 'fixed';
+        container.style.top = '16px';
+        container.style.right = '16px';
+        container.style.zIndex = '1080';
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.gap = '8px';
+        document.body.appendChild(container);
+    }
 
     const alert = document.createElement('div');
     alert.className = `alert alert-${type}`;
     alert.textContent = message;
+    alert.style.minWidth = '240px';
+    alert.style.boxShadow = '0 6px 20px rgba(0,0,0,0.12)';
 
-    alertsContainer.appendChild(alert);
+    container.appendChild(alert);
 
     // 3秒后自动消失
     setTimeout(() => {
         alert.style.opacity = '0';
         setTimeout(() => {
-            alertsContainer.removeChild(alert);
+            if (alert.parentNode) {
+                alert.parentNode.removeChild(alert);
+            }
         }, 300);
     }, 3000);
 }

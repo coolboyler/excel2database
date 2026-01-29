@@ -369,7 +369,7 @@
   <!-- 顶部导航 -->
   <nav class="navbar navbar-expand-lg navbar-light mb-4">
     <div class="container-fluid">
-      <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+<a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
       <div class="collapse navbar-collapse">
         <ul class="navbar-nav me-auto">
           <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
@@ -403,6 +403,13 @@
               <input type="radio" class="btn-check" name="region" id="region-yn" value="云南">
               <label class="btn btn-outline-primary" for="region-yn">云南</label>
             </div>
+          </div>
+
+          <!-- 城市 (新增) -->
+          <div class="control-group">
+            <label class="form-label">城市</label>
+            <input type="text" class="form-control" id="city-input" placeholder="如：东莞（可选）">
+            <div class="form-text text-muted">填写城市时，将查询该城市节点均价（优先于站点名称）</div>
           </div>
 
           <!-- 站点名称 (新增) -->
@@ -958,6 +965,7 @@
       const region = document.querySelector('input[name="region"]:checked').value;
       const dataTypeFull = document.getElementById("data-type-select").value;
       const stationName = document.getElementById("station-name-input").value;
+      const city = document.getElementById("city-input").value;
       let dates = [];
 
       // 根据当前模式收集日期
@@ -1011,7 +1019,9 @@
 
       const formData = new FormData();
       formData.append("dates", JSON.stringify(dates));
-      if (stationName && stationName.trim()) {
+      if (city && city.trim()) {
+        formData.append("city", city.trim());
+      } else if (stationName && stationName.trim()) {
         formData.append("station_name", stationName.trim());
       }
       

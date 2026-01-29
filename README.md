@@ -1,147 +1,185 @@
-# Excel to SQL 导入工具
+# Excel2SQL
 
-这是一个可以将各种格式的Excel文件导入到MySQL数据库的工具，支持Web界面操作和脚本自动导入两种方式。
+把电力/信息披露类 Excel 导入 MySQL，并提供 Web 看板与自动化导入能力。
 
-## 功能特点
+## 功能概览
 
-- 支持多种Excel格式文件导入
-- 自动生成数据库表结构
-- 提供Web界面可视化操作
-- 支持脚本自动导入（新增）
-- 支持批量导入多个文件（新增）
-- 提供浏览器自动化测试接口（新增）
-
-## 技术栈
-
-- **后端**：Python + FastAPI
-- **数据库**：MySQL
-- **前端**：HTML + CSS + JavaScript
-- **数据处理**：Pandas
-- **数据库ORM**：SQLAlchemy
+- Web 界面上传/导入 Excel
+- API 导入与批量导入
+- 自动生成日表：`power_data_YYYYMMDD`
+- 生成/更新缓存表：`cache_daily_hourly`
+- COS 每日自动拉取 + 导入 + 写缓存
+- 首页“每日数据监控”banner（读取 COS 运行状态）
+- 应用内自动调度（部署到服务器即可按时自动执行）
 
 ## 环境要求
 
 - Python 3.7+
 - MySQL 5.7+
-- pip (Python包管理工具)
+- pip
 
-## 安装部署
+## 安装与启动
 
-1. 安装依赖：
+1. 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
 
-2. 配置数据库连接：
-修改 `config.py` 文件中的数据库连接配置
+2. 配置数据库连接  
+   编辑 `config.py` 中 `DB_CONFIG`
 
-3. 启动服务：
-```bash
-python main.py
-```
-或者
-```bash
-uvicorn api:app --reload
-```
+3. 启动服务
 
-## Web界面使用
-
-启动服务后，访问 `http://localhost:8000` 即可使用Web界面进行文件上传和导入操作。
-
-## 脚本自动导入使用方法（新增功能）
-
-除了Web界面，还提供了命令行脚本支持自动导入，无需人工干预。
-
-### 使用方法
-
-1. 确保API服务正在运行：
 ```bash
 uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-2. 使用script_import.py脚本进行导入：
+打开：`http://localhost:8000`
 
-查看可用的文件列表：
+## 核心 API
+
+### 上传与导入
+
+- 上传文件到 `data/`：
+
+```
+POST /upload
+form-data: file
+```
+
+- 按文件名导入（文件需在 `data/` 内）：
+
+```
+POST /import
+form-data: filename
+```
+
+- 导入 `data/` 下全部文件：
+
+```
+POST /import-all
+```
+
+- 查看 `data/` 文件列表：
+
+```
+GET /files
+```
+
+### 缓存相关
+
+- 生成电价缓存（按已有日表批量更新 `cache_daily_hourly`）：
+
+```
+POST /api/generate-price-cache
+```
+
+- 全量天气+缓存更新：
+
+```
+POST /api/generate-daily-hourly-cache
+```
+
+- 手动更新天气（会同步缓存天气字段）：
+
+```
+POST /api/update-weather
+```
+
+### COS 运行状态
+
+- 读取每日监控状态（首页 banner 使用）：
+
+```
+GET /api/cos_daily/status
+```
+
+## 支持的 Excel 类型
+
+- 负荷实际信息
+- 负荷预测信息
+- 信息披露查询实际信息
+- 信息披露查询预测信息
+- 实时节点电价查询
+- 日前节点电价查询
+
+## COS 每日自动拉取 + 导入 + 写缓存
+
+自动从 COS 下载 4 类 Excel（日前/实时节点电价、信息披露预测/实际），导入数据库并更新 `cache_daily_hourly`，状态写入 `state/cos_daily_state.json`。
+
+### 配置文件
+
+`cos_daily_import.config.json`
+
+- `polling.start_hhmm` / `polling.end_hhmm`：时间窗（默认 11:20–12:00）
+- `polling.interval_seconds`：每次轮询间隔（默认 60s）
+- `targets.*.date_offsets_days_priority`：文件日期偏移策略
+
+### COS 机密信息放在环境变量（推荐）
+
+建议使用 `.env`（项目根目录）：
+
+```
+TENCENT_COS_REGION=ap-guangzhou
+TENCENT_COS_BUCKET=gaungdong-1327310319
+TENCENT_SECRET_ID=...
+TENCENT_SECRET_KEY=...
+```
+
+读取顺序：
+
+1. `tencent_cos.dotenv_path` 指向的 .env（若存在）
+2. 环境变量
+
+可选：
+
+```
+TENCENT_COS_DOTENV=/path/to/.env
+```
+
+### 手动运行
+
+只命中不下载：
+
 ```bash
-python script_import.py --list
+python3 cos_daily_auto_import.py --once --dry-run
 ```
 
-导入特定文件：
+立刻跑一次（下载 → 导入 → 更新缓存）：
+
 ```bash
-python script_import.py --file "负荷实际信息(2023-01-01).xlsx"
+python3 cos_daily_auto_import.py --once
 ```
 
-导入所有可用文件：
+按时间窗运行（11:20–12:00，每分钟一次，完成即停）：
+
 ```bash
-python script_import.py --all
+python3 cos_daily_auto_import.py
 ```
 
-指定API服务器地址（默认为http://localhost:8000）：
-```bash
-python script_import.py --all --url http://your-server-address:port
-```
+## 应用内自动调度（服务器部署推荐）
 
-### 脚本参数说明
+应用启动后自动运行每日任务（无需系统 cron）：
 
-- `--url`: API服务器地址，默认为 `http://localhost:8000`
-- `--file` 或 `-f`: 指定要导入的特定文件名
-- `--all` 或 `-a`: 导入所有可用文件
-- `--list` 或 `-l`: 列出所有可用文件
+- 默认启用：`COS_DAILY_SCHEDULER=1`
+- 关闭：`COS_DAILY_SCHEDULER=0`
+- 每分钟执行一次，全部目标完成后自动停止
 
-## 浏览器自动化接口（新增功能）
-
-为支持浏览器自动化测试，提供了专门的API接口：
-
-### 单文件导入接口
+多实例部署建议加锁（同机单实例执行）：
 
 ```
-POST /script_import
-参数: filename (表单数据)
-说明: 导入指定的Excel文件
+COS_DAILY_SCHEDULER_LOCK=/tmp/excel2sql_cos_daily.lock
 ```
 
-示例：
-```python
-import requests
+## 目录说明
 
-response = requests.post('http://localhost:8000/script_import', data={'filename': '负荷实际信息(2023-01-01).xlsx'})
-result = response.json()
-```
+- `data/`：上传的 Excel
+- `state/cos_daily_state.json`：COS 每日状态
+- `temp_cos_downloads/`：临时下载目录（自动清理）
+- `static/`、`templates/`：前端资源
 
-### 全自动导入接口
+## 备注
 
-```
-POST /auto_import
-说明: 自动导入data目录下的所有Excel文件
-```
-
-示例：
-```python
-import requests
-
-response = requests.post('http://localhost:8000/auto_import')
-result = response.json()
-```
-
-## 支持的Excel文件格式
-
-1. 负荷实际信息
-2. 负荷预测信息
-3. 信息披露(区域)查询实际信息
-4. 信息披露(区域)查询预测信息
-5. 实时节点电价查询
-6. 日前节点电价查询
-
-## 注意事项
-
-- Excel文件需要放置在 `data` 目录下
-- 确保数据库连接配置正确
-- 脚本自动导入需要API服务正常运行
-
-## 贡献
-
-欢迎提交Issue和Pull Request来改进这个项目。
-
-## 许可证
-
-本项目仅供学习和参考使用。
+- COS 与数据库为核心依赖，建议先确认连通性。
+- 首页“每日数据监控”只展示状态，实际导入由自动任务驱动。

@@ -13,6 +13,7 @@ import glob
 import shutil
 from typing import List, Optional, Literal
 import warnings
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -40,8 +41,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# 挂载静态文件 (use absolute path to avoid CWD issues in scripts)
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR), check_dir=False), name="static")
 
 # 设置模板
 templates = Jinja2Templates(directory="templates")
@@ -71,6 +73,213 @@ async def health_check():
         "status": "healthy" if db_status else "unhealthy",
         "database": "connected" if db_status else "disconnected"
     }
+
+# COS daily import status (used by the web UI reminder)
+_BASE_DIR = Path(__file__).resolve().parent
+_COS_DAILY_CONFIG = _BASE_DIR / "cos_daily_import.config.json"
+
+
+def _cos_scheduler_enabled() -> bool:
+    val = os.getenv("COS_DAILY_SCHEDULER", "1")
+    return str(val).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _try_acquire_cos_lock(lock_path: str):
+    try:
+        import fcntl  # Unix only
+    except Exception:
+        return None
+    try:
+        fd = open(lock_path, "w")
+    except Exception:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd.write(str(os.getpid()))
+        fd.flush()
+        return fd
+    except Exception:
+        try:
+            fd.close()
+        except Exception:
+            pass
+        return None
+
+
+def _start_cos_daily_scheduler():
+    if not _cos_scheduler_enabled():
+        logger.info("COS daily scheduler disabled via env.")
+        return
+
+    lock_path = os.getenv("COS_DAILY_SCHEDULER_LOCK", "/tmp/excel2sql_cos_daily.lock")
+    lock_fd = _try_acquire_cos_lock(lock_path)
+    if lock_fd is None:
+        logger.info("COS daily scheduler lock busy; skip starting scheduler thread.")
+        return
+
+    def _loop():
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Asia/Shanghai")
+        except Exception:
+            tz = None
+
+        while True:
+            try:
+                if not _cos_scheduler_enabled():
+                    time.sleep(60)
+                    continue
+
+                try:
+                    cfg = json.loads(_COS_DAILY_CONFIG.read_text(encoding="utf-8"))
+                except Exception as e:
+                    logger.error("COS daily scheduler: invalid config: %s", e)
+                    time.sleep(300)
+                    continue
+
+                poll = cfg.get("polling") or {}
+                start_hhmm = poll.get("start_hhmm", "11:20")
+                end_hhmm = poll.get("end_hhmm", "12:00")
+                interval_seconds = int(poll.get("interval_seconds", 60))
+
+                now = datetime.datetime.now(tz) if tz else datetime.datetime.now()
+                base_date = now.date()
+
+                def _parse_hhmm(s: str):
+                    parts = str(s).split(":")
+                    return int(parts[0]), int(parts[1])
+
+                sh, sm = _parse_hhmm(start_hhmm)
+                eh, em = _parse_hhmm(end_hhmm)
+                start_dt = datetime.datetime.combine(base_date, datetime.time(sh, sm, tzinfo=tz) if tz else datetime.time(sh, sm))
+                end_dt = datetime.datetime.combine(base_date, datetime.time(eh, em, tzinfo=tz) if tz else datetime.time(eh, em))
+
+                if now < start_dt:
+                    sleep_s = (start_dt - now).total_seconds()
+                    time.sleep(max(1.0, sleep_s))
+                    continue
+                if now >= end_dt:
+                    # sleep to next day's start window
+                    next_day = base_date + datetime.timedelta(days=1)
+                    next_start = datetime.datetime.combine(next_day, datetime.time(sh, sm, tzinfo=tz) if tz else datetime.time(sh, sm))
+                    sleep_s = (next_start - now).total_seconds()
+                    time.sleep(max(60.0, sleep_s))
+                    continue
+
+                # Within window: run once per tick
+                from cos_daily_auto_import import run_once as _cos_run_once, _all_targets_done  # noqa: E402
+
+                _cos_run_once(cfg, base_date=base_date, dry_run=False)
+
+                # Stop early when all targets are done
+                try:
+                    state_path = (_BASE_DIR / (cfg.get("local", {}).get("state_file") or "./state/cos_daily_state.json")).resolve()
+                    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"days": {}}
+                    if _all_targets_done(state, base_date.strftime("%Y-%m-%d"), cfg.get("targets") or {}):
+                        # sleep to next day start
+                        next_day = base_date + datetime.timedelta(days=1)
+                        next_start = datetime.datetime.combine(next_day, datetime.time(sh, sm, tzinfo=tz) if tz else datetime.time(sh, sm))
+                        sleep_s = (next_start - now).total_seconds()
+                        time.sleep(max(60.0, sleep_s))
+                        continue
+                except Exception:
+                    pass
+
+                time.sleep(max(5, interval_seconds))
+            except Exception as e:
+                logger.error("COS daily scheduler loop error: %s", e)
+                time.sleep(60)
+
+    t = threading.Thread(target=_loop, name="cos_daily_scheduler", daemon=True)
+    t.start()
+
+
+@app.on_event("startup")
+async def _startup_cos_scheduler():
+    _start_cos_daily_scheduler()
+
+
+def _load_cos_daily_state():
+    if not _COS_DAILY_CONFIG.exists():
+        return {
+            "status": "missing_config",
+            "message": f"config not found: {_COS_DAILY_CONFIG}",
+        }
+    try:
+        with _COS_DAILY_CONFIG.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception as e:
+        return {"status": "invalid_config", "message": str(e)}
+
+    state_rel = (cfg.get("local") or {}).get("state_file") or "./state/cos_daily_state.json"
+    state_path = (_BASE_DIR / state_rel).resolve()
+    if not state_path.exists():
+        return {
+            "status": "no_state",
+            "state_file": str(state_path),
+            "days": {},
+        }
+
+    try:
+        with state_path.open("r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception as e:
+        return {
+            "status": "invalid_state",
+            "state_file": str(state_path),
+            "message": str(e),
+        }
+
+    days = state.get("days", {}) or {}
+    if not days:
+        return {
+            "status": "empty",
+            "state_file": str(state_path),
+            "days": {},
+        }
+
+    latest_day = sorted(days.keys())[-1]
+    latest_state = days.get(latest_day, {}) or {}
+    targets = latest_state.get("targets", {}) or {}
+
+    def _parse_iso(s):
+        if not s:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    last_success_at = None
+    last_success_targets = []
+    for day_key, day_state in days.items():
+        for target_name, t in (day_state.get("targets") or {}).items():
+            if str(t.get("status")) != "done":
+                continue
+            t_time = _parse_iso(t.get("attempted_at"))
+            if not t_time:
+                continue
+            if last_success_at is None or t_time > last_success_at:
+                last_success_at = t_time
+                last_success_targets = [target_name]
+            elif last_success_at and t_time == last_success_at:
+                last_success_targets.append(target_name)
+
+    return {
+        "status": "ok",
+        "server_time": datetime.datetime.now().isoformat(),
+        "state_file": str(state_path),
+        "day": latest_day,
+        "total_attempts": latest_state.get("total_attempts", 0),
+        "targets": targets,
+        "last_success_at": last_success_at.isoformat() if last_success_at else None,
+        "last_success_targets": sorted(set(last_success_targets)),
+    }
+
+
+@app.get("/api/cos_daily/status")
+async def cos_daily_status():
+    return _load_cos_daily_state()
 
 @app.get("/files")
 async def list_files():
@@ -3551,9 +3760,17 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
                 target_date = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
             else:
                 target_date = d_str
+
+        # 触发缓存更新：电价或负荷导入都会影响 cache_daily_hourly
+        should_update_cache = False
+        if target_date:
+            if method in (importer.import_power_data, importer.import_point_data, importer.import_point_data_new):
+                should_update_cache = True
+            # 保持原有行为：信息披露类文件也会尝试更新缓存
+            elif "信息披露" in filename:
+                should_update_cache = True
         
-        # 只有在导入了节点电价相关文件或信息披露文件，且能提取到日期时，才触发更新
-        if target_date and ("节点电价" in filename or "信息披露" in filename):
+        if should_update_cache:
             print(f"🚀 自动触发缓存更新任务: {target_date}")
             background_tasks.add_task(update_price_cache_for_date, target_date)
             
@@ -4394,7 +4611,8 @@ async def calculate_daily_hourly_data(date: str):
 async def query_daily_averages(
     dates: str = Form(..., description="日期列表，JSON格式，例如: [\"2023-09-18\", \"2023-09-19\"]"),
     data_type_keyword: str = Form("日前节点电价", description="数据类型关键字"),
-    station_name: str = Form(None, description="站点名称（可选）")
+    station_name: str = Form(None, description="站点名称（可选）"),
+    city: str = Form(None, description="城市名称（可选）")
 ):
     """
     查询多天的均值数据
@@ -4413,7 +4631,13 @@ async def query_daily_averages(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
 
-    # 如果有具体站点名称，查询数据库
+    # 如果有城市或具体站点名称，查询数据库
+    if city and str(city).strip():
+        result = importer.query_daily_averages(date_list, data_type_keyword, station_name=None, city=city)
+        if result["total"] == 0:
+            return {"total": 0, "data": []}
+        return result
+
     if station_name and station_name.strip():
         result = importer.query_daily_averages(date_list, data_type_keyword, station_name)
         if result["total"] == 0:
@@ -4905,7 +5129,8 @@ async def export_daily_averages_from_result(
 async def query_price_difference(
     dates: str = Form(..., description="日期列表，JSON格式，例如: [\"2023-09-18\", \"2023-09-19\"]"),
     region: str = Form("", description="地区前缀，如'云南_'，默认为空"),
-    station_name: str = Form(None, description="站点名称（可选）")
+    station_name: str = Form(None, description="站点名称（可选）"),
+    city: str = Form(None, description="城市名称（可选）")
 ):
     """
     查询价差数据（日前节点电价 - 实时节点电价）
@@ -4924,7 +5149,11 @@ async def query_price_difference(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"日期格式错误: {str(e)}")
 
-    # 如果有具体站点名称，查询数据库
+    # 如果有城市或具体站点名称，查询数据库
+    if city and str(city).strip():
+        result = importer.query_price_difference(date_list, region, station_name=None, city=city)
+        return result
+
     if station_name and station_name.strip():
         result = importer.query_price_difference(date_list, region, station_name)
         return result

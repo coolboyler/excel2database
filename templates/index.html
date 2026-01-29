@@ -325,6 +325,16 @@
   <div class="container">
     <div id="alerts"></div>
 
+    <div id="refresh-banner" class="alert alert-info d-flex align-items-start gap-2" role="alert">
+      <div class="mt-1"><i class="bi bi-bell"></i></div>
+      <div class="flex-grow-1">
+        <div class="fw-semibold">每日数据监控</div>
+        <div id="refresh-status-text" class="small">正在读取最新数据状态...</div>
+        <div id="refresh-status-details" class="small text-muted"></div>
+      </div>
+      <span id="refresh-status-dot" class="ms-2 align-self-center" style="width:10px;height:10px;border-radius:999px;background:#94a3b8;display:inline-block;"></span>
+    </div>
+
     <div class="dashboard-card">
       <div class="card-header-custom">
         <h5 class="card-title"><i class="bi bi-upload"></i> 上传Excel文件</h5>
@@ -436,6 +446,7 @@
     </div>
   </footer>
 
+  <script src="/static/js/cos_status.js"></script>
   <script src="/static/js/main.js"></script>
   <script>
 
