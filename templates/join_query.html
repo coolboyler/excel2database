@@ -249,6 +249,9 @@
       display: grid;
       grid-template-columns: repeat(2, 1fr);
       gap: 6px;
+      /* Prevent grid tracks/items from stretching taller when there are only a few dates. */
+      align-content: start;
+      align-items: start;
     }
     
     .date-item-label {
@@ -528,24 +531,27 @@
     <!-- 右侧展示区 -->
     <div class="content-area">
       <!-- 顶部工具栏 -->
-      <div class="content-toolbar">
-        <div class="btn-toolbar d-flex gap-2">
-           <button type="submit" form="daily-averages-form" class="btn btn-primary btn-sm shadow-sm px-3">
-             <i class="bi bi-search"></i> 开始查询
-           </button>
-           <button type="button" class="btn btn-success btn-sm shadow-sm hidden px-3" id="export-btn" onclick="exportDailyAveragesData()">
-             <i class="bi bi-file-earmark-excel"></i> 导出Excel
-           </button>
-           <button type="button" class="btn btn-info btn-sm shadow-sm px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时对比数据（带颜色样式）">
-             <i class="bi bi-database-export"></i> 导出日前-实时对比
-           </button>
-           <button type="button" class="btn btn-warning btn-sm shadow-sm px-3" id="export-ne-btn" onclick="exportNewEnergyForecast()" title="导出选中日期的新能源D日预测（从缓存表查询）">
-             <i class="bi bi-file-earmark-excel"></i> 导出新能源D日预测
-           </button>
-        </div>
-        <div class="vr opacity-25"></div>
-        <div id="selected-count-info" class="text-secondary small fw-bold">已选择 0 个日期</div>
-      </div>
+	      <div class="content-toolbar">
+	        <div class="btn-toolbar d-flex gap-2">
+	           <button type="submit" form="daily-averages-form" class="btn btn-primary btn-sm shadow-sm px-3">
+	             <i class="bi bi-search"></i> 开始查询
+	           </button>
+	           <button type="button" class="btn btn-success btn-sm shadow-sm hidden px-3" id="export-btn" onclick="exportDailyAveragesData()">
+	             <i class="bi bi-file-earmark-excel"></i> 导出Excel
+	           </button>
+	           <button type="button" class="btn btn-info btn-sm shadow-sm px-3" id="export-cache-btn" onclick="exportCacheData()" title="导出选中日期的日前、实时对比数据（带颜色样式）">
+	             <i class="bi bi-database-export"></i> 导出日前-实时对比
+	           </button>
+	           <button type="button" class="btn btn-warning btn-sm shadow-sm px-3" id="export-ne-btn" onclick="exportNewEnergyForecast()" title="导出选中日期的新能源D日预测（从缓存表查询）">
+	             导出新能源D日预测
+	           </button>
+	           <button type="button" class="btn btn-dark btn-sm shadow-sm px-3" id="export-info-disclose-btn" onclick="exportInfoDiscloseForecastFull()" title="导出选中日期的信息披露查询预测信息全量（按小时透视）">
+	             导出信息披露预测全信息
+	           </button>
+	        </div>
+	        <div class="vr opacity-25"></div>
+	        <div id="selected-count-info" class="text-secondary small fw-bold">已选择 0 个日期</div>
+	      </div>
       
       <!-- Alert 容器 (Fixed Position) -->
       <div id="alert-container"></div>
@@ -1436,11 +1442,11 @@
     }
 
     // 导出新能源D日预测（从缓存表查询）
-    function exportNewEnergyForecast() {
-       const btn = document.getElementById("export-ne-btn");
-       const originalText = btn.innerHTML;
-       btn.disabled = true;
-       btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 导出中...';
+	    function exportNewEnergyForecast() {
+	       const btn = document.getElementById("export-ne-btn");
+	       const originalText = btn.innerHTML;
+	       btn.disabled = true;
+	       btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 导出中...';
 
        const dates = Array.from(manuallySelectedDates);
        if (dates.length === 0) {
@@ -1470,16 +1476,57 @@
             showAlert("导出成功", "success");
          })
          .catch(err => showAlert(err.message, "error"))
-         .finally(() => {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-         });
-    }
+	         .finally(() => {
+	            btn.disabled = false;
+	            btn.innerHTML = originalText;
+	         });
+	    }
 
-    // 提示框
-    function showAlert(msg, type) {
-      const container = document.getElementById("alert-container");
-      const alert = document.createElement("div");
+	    // 导出信息披露预测全信息（按小时透视）
+	    function exportInfoDiscloseForecastFull() {
+	       const btn = document.getElementById("export-info-disclose-btn");
+	       const originalText = btn.innerHTML;
+	       btn.disabled = true;
+	       btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 导出中...';
+
+	       const dates = Array.from(manuallySelectedDates);
+	       if (dates.length === 0) {
+	         showAlert("请先选择日期", "warning");
+	         btn.disabled = false;
+	         btn.innerHTML = originalText;
+	         return;
+	       }
+
+	       const formData = new FormData();
+	       formData.append("dates", JSON.stringify(dates));
+
+	       fetch("/api/daily-averages/export-info-disclose-forecast-full", { method: "POST", body: formData })
+	         .then(res => {
+	            if (res.ok) return res.blob();
+	            return res.json().then(j => { throw new Error(j.error || "导出失败"); });
+	         })
+	         .then(blob => {
+	            const url = window.URL.createObjectURL(blob);
+	            const a = document.createElement("a");
+	            a.href = url;
+	            a.download = `信息披露预测全信息_${new Date().getTime()}.xlsx`;
+	            document.body.appendChild(a);
+	            a.click();
+	            document.body.removeChild(a);
+	            window.URL.revokeObjectURL(url);
+	            showAlert("导出成功", "success");
+	         })
+	         .catch(err => showAlert(err.message, "error"))
+	         .finally(() => {
+	            btn.disabled = false;
+	            btn.innerHTML = originalText;
+	         });
+	    }
+
+	    // 提示框
+	    function showAlert(msg, type) {
+	      const container = document.getElementById("alert-container");
+	      const alert = document.createElement("div");
       alert.className = `alert alert-${type === 'error' ? 'danger' : type} alert-dismissible fade show py-2 small shadow-sm`;
       alert.innerHTML = `
         ${msg}
