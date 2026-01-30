@@ -212,6 +212,9 @@ TENCENT_SECRET_KEY=...
 1. `tencent_cos.dotenv_path` 指向的 .env（若存在）
 2. 环境变量
 
+说明：
+- `tencent_cos.dotenv_path` 支持相对路径；服务端若启动时工作目录不是项目根目录，会按“项目目录（api.py 所在目录）”解析相对路径。
+
 可选：
 
 ```

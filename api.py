@@ -90,6 +90,81 @@ _BASE_DIR = Path(__file__).resolve().parent
 _COS_DAILY_CONFIG = _BASE_DIR / "cos_daily_import.config.json"
 _WEATHER_STATE_DEFAULT = _BASE_DIR / "state" / "weather_update_state.json"
 
+def _load_dotenv_minimal(path: Path) -> dict:
+    """
+    Minimal .env parser (no external deps).
+    Keeps behavior aligned with cos_daily_auto_import._load_dotenv.
+    """
+    if not path.exists():
+        return {}
+    out: dict = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        out[k] = v
+    return out
+
+
+def _resolve_cos_env_from_config(cfg: dict) -> dict:
+    """
+    Resolve COS settings using the same precedence as cos_daily_auto_import.run_once:
+    1) tencent_cos.dotenv_path (if present)
+    2) environment variables
+    3) tencent_cos.region/bucket can still override if non-empty (via "or" chain)
+    """
+    tencent_cfg = (cfg or {}).get("tencent_cos") or {}
+    env = dict(os.environ)
+
+    dotenv_value = tencent_cfg.get("dotenv_path") or env.get("TENCENT_COS_DOTENV") or ""
+    dotenv_path = Path(dotenv_value).expanduser() if dotenv_value else None
+    # Resolve relative paths against the project directory (CWD may differ in systemd/docker).
+    if dotenv_path and not dotenv_path.is_absolute():
+        dotenv_path = (_BASE_DIR / dotenv_path).resolve()
+    if dotenv_path and dotenv_path.is_file():
+        env.update(_load_dotenv_minimal(dotenv_path))
+
+    region = (tencent_cfg.get("region") or env.get("TENCENT_COS_REGION") or env.get("COS_REGION") or "").strip()
+    bucket = (tencent_cfg.get("bucket") or env.get("TENCENT_COS_BUCKET") or env.get("COS_BUCKET") or "").strip()
+    secret_id = (env.get("TENCENT_SECRET_ID") or env.get("SECRET_ID") or "").strip()
+    secret_key = (env.get("TENCENT_SECRET_KEY") or env.get("SECRET_KEY") or "").strip()
+
+    return {
+        "dotenv_path": str(dotenv_path) if dotenv_path else None,
+        "region": region,
+        "bucket": bucket,
+        "secret_id": secret_id,
+        "secret_key": secret_key,
+    }
+
+
+def _cos_daily_missing_requirements(resolved: dict) -> List[str]:
+    missing: List[str] = []
+    if not (resolved.get("region") or ""):
+        missing.append("TENCENT_COS_REGION")
+    if not (resolved.get("bucket") or ""):
+        missing.append("TENCENT_COS_BUCKET")
+    if not (resolved.get("secret_id") or ""):
+        missing.append("TENCENT_SECRET_ID")
+    if not (resolved.get("secret_key") or ""):
+        missing.append("TENCENT_SECRET_KEY")
+    return missing
+
 
 def _cos_scheduler_enabled() -> bool:
     val = os.getenv("COS_DAILY_SCHEDULER", "1")
@@ -134,7 +209,11 @@ def _start_cos_daily_scheduler():
             from zoneinfo import ZoneInfo
             tz = ZoneInfo("Asia/Shanghai")
         except Exception:
-            tz = None
+            # Keep schedules stable even on minimal images without tzdata/zoneinfo DB.
+            tz = datetime.timezone(datetime.timedelta(hours=8))
+
+        last_missing_sig = None
+        last_missing_log_at = 0.0
 
         while True:
             try:
@@ -147,6 +226,24 @@ def _start_cos_daily_scheduler():
                 except Exception as e:
                     logger.error("COS daily scheduler: invalid config: %s", e)
                     time.sleep(300)
+                    continue
+
+                # If COS isn't configured, skip quietly (no noisy error loop).
+                resolved = _resolve_cos_env_from_config(cfg)
+                missing = _cos_daily_missing_requirements(resolved)
+                if missing:
+                    sig = "|".join(missing)
+                    now_ts = time.time()
+                    # Rate-limit log to avoid spamming (e.g. status polling every minute).
+                    if sig != last_missing_sig or (now_ts - last_missing_log_at) > 3600:
+                        logger.warning(
+                            "COS daily scheduler: missing config/credentials (%s). "
+                            "Set env vars or fill cos_daily_import.config.json, or disable via COS_DAILY_SCHEDULER=0.",
+                            ", ".join(missing),
+                        )
+                        last_missing_sig = sig
+                        last_missing_log_at = now_ts
+                    time.sleep(600)
                     continue
 
                 poll = cfg.get("polling") or {}
@@ -344,6 +441,24 @@ def _load_cos_daily_state():
             cfg = json.load(f)
     except Exception as e:
         return {"status": "invalid_config", "message": str(e)}
+
+    # Report missing COS settings early, so the UI doesn't look "broken" when COS is simply not configured.
+    if _cos_scheduler_enabled():
+        resolved = _resolve_cos_env_from_config(cfg)
+        missing = _cos_daily_missing_requirements(resolved)
+        if missing:
+            return {
+                "status": "missing_cos_config",
+                "enabled": True,
+                "missing": missing,
+                "message": "COS daily scheduler enabled but COS is not configured.",
+            }
+    else:
+        return {
+            "status": "disabled",
+            "enabled": False,
+            "message": "COS daily scheduler disabled via COS_DAILY_SCHEDULER=0.",
+        }
 
     state_rel = (cfg.get("local") or {}).get("state_file") or "./state/cos_daily_state.json"
     state_path = (_BASE_DIR / state_rel).resolve()

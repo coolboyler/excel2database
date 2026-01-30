@@ -291,7 +291,12 @@ def _should_attempt(day_state: dict, target_name: str, max_per_type: int) -> boo
     t = day_state.get("targets", {}).get(target_name)
     if not t:
         return True
-    return int(t.get("attempts", 0) or 0) < max_per_type and str(t.get("status")) != "done"
+    # Allow retry when the object changes (etag differs) even if we previously marked a failure / waiting state.
+    # Actual re-download prevention is handled later by the "same etag" guard.
+    status = str(t.get("status") or "").lower()
+    if status in {"failed", "waiting"}:
+        return True
+    return int(t.get("attempts", 0) or 0) < max_per_type and status != "done"
 
 
 def _all_targets_done(state: dict, day_key: str, targets: dict) -> bool:
@@ -313,6 +318,9 @@ def run_once(config: dict, base_date: dt.date, dry_run: bool = False) -> int:
     env = dict(os.environ)
     dotenv_value = tencent_cfg.get("dotenv_path") or env.get("TENCENT_COS_DOTENV") or ""
     dotenv_path = Path(dotenv_value).expanduser() if dotenv_value else None
+    # Resolve relative paths against the project directory (CWD may differ in systemd/docker).
+    if dotenv_path and not dotenv_path.is_absolute():
+        dotenv_path = (_HERE / dotenv_path).resolve()
     if dotenv_path and dotenv_path.is_file():
         env.update(_load_dotenv(dotenv_path))
 
@@ -380,6 +388,7 @@ def run_once(config: dict, base_date: dt.date, dry_run: bool = False) -> int:
             continue
 
         prefix = str(target_cfg["prefix"])
+        min_size_bytes = int(target_cfg.get("min_size_bytes") or 0)
         offsets = list(target_cfg.get("date_offsets_days_priority") or [])
         if not offsets:
             LOG.warning("Target %s has empty date_offsets_days_priority; skipping.", target_name)
@@ -399,6 +408,27 @@ def run_once(config: dict, base_date: dt.date, dry_run: bool = False) -> int:
 
         if prev and prev.get("etag") == candidate.etag and int(prev.get("attempts", 0) or 0) >= 1:
             # Avoid repeated downloads for the same object within the same day window.
+            continue
+
+        # Some COS exports briefly appear as tiny placeholder files (headers only).
+        # If configured, skip these without consuming daily quotas.
+        if min_size_bytes and int(candidate.size or 0) < min_size_bytes:
+            ds.setdefault("targets", {}).setdefault(target_name, {})
+            ds["targets"][target_name].update(
+                {
+                    "key": key,
+                    "etag": candidate.etag,
+                    "last_modified": candidate.last_modified.isoformat(),
+                    "size": int(candidate.size or 0),
+                    "min_size_bytes": int(min_size_bytes),
+                    "wanted_dates": wanted_dates,
+                    "attempted_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "attempts": max(1, int(prev.get("attempts", 0) or 0)),
+                    "status": "waiting",
+                    "error": f"Object too small (<{min_size_bytes} bytes); likely empty placeholder. Waiting for real file.",
+                }
+            )
+            _dump_json_atomic(state_file, state)
             continue
 
         LOG.info(

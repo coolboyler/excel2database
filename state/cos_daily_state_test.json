@@ -1,0 +1,23 @@
+{
+  "days": {
+    "2026-01-30": {
+      "targets": {
+        "realtime_node_price": {
+          "attempted_at": "2026-01-30T03:41:35.398968+00:00",
+          "attempts": 1,
+          "error": "Object too small (<100000 bytes); likely empty placeholder. Waiting for real file.",
+          "etag": "545ae241d5b1bad63686d6d064592ec0",
+          "key": "4、组织中心/6、实时节点电价查询/data/real_time/实时节点电价查询(2026-01-28).xlsx",
+          "last_modified": "2026-01-29T09:52:57+00:00",
+          "min_size_bytes": 100000,
+          "size": 6422,
+          "status": "waiting",
+          "wanted_dates": [
+            "2026-01-28"
+          ]
+        }
+      },
+      "total_attempts": 0
+    }
+  }
+}
