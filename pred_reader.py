@@ -3572,6 +3572,9 @@ class PowerDataImporter:
 
         power_data_records = []
         custom_table_records = []
+        # “必开必停”两张表建议单独入库（保留更多维度），避免塞进 power_data 导致字段丢失且导出不清晰
+        must_run_stop_group_constraint_records = []
+        must_run_stop_unit_info_records = []
         data_date = None
         
         # 尝试从文件名提取日期
@@ -3663,6 +3666,30 @@ class PowerDataImporter:
             base_sheet_name = re.sub(r'\(\d{4}[-/]?\d{1,2}[-/]?\d{1,2}\)', '', str(sheet_name))
             base_sheet_name = re.sub(r'\d{4}[-/]?\d{1,2}[-/]?\d{1,2}', '', base_sheet_name).strip()
 
+            # 必开必停（群）约束：包含机组群/电厂/机组/数据类型 + 15分钟曲线（值可能是台数/容量等）
+            if base_sheet_name == "必开必停机组（群）约束预测信息":
+                try:
+                    must_run_stop_group_constraint_records.extend(
+                        self._process_must_run_stop_group_constraint_sheet(
+                            sheet_dict[sheet_name], data_date, sheet_name, data_type
+                        )
+                    )
+                except Exception as e:
+                    print(f"⚠️ 处理 Sheet '{sheet_name}' (必开必停机组（群）约束预测信息) 时出错: {e}")
+                continue
+
+            # 必开必停机组信息：通常为“标签/类型/原因”等文本时序（15分钟）
+            if base_sheet_name == "必开必停机组信息预测信息":
+                try:
+                    must_run_stop_unit_info_records.extend(
+                        self._process_must_run_stop_unit_info_sheet(
+                            sheet_dict[sheet_name], data_date, sheet_name, data_type
+                        )
+                    )
+                except Exception as e:
+                    print(f"⚠️ 处理 Sheet '{sheet_name}' (必开必停机组信息预测信息) 时出错: {e}")
+                continue
+
             func, match_reason = resolve_handler(base_sheet_name, i)
             if not func:
                 print(f"⚠️ 未找到处理 Sheet '{sheet_name}' (基础名 '{base_sheet_name}') 的函数")
@@ -3682,8 +3709,10 @@ class PowerDataImporter:
                 print(f"⚠️ 处理 Sheet '{sheet_name}' (匹配 {match_reason}) 时出错: {e}")
 
         if not power_data_records and not custom_table_records:
-            print("❌ 没有生成任何有效记录")
-            return False, None, 0, []
+            # 允许“只有必开必停两张表”也能入库
+            if not must_run_stop_group_constraint_records and not must_run_stop_unit_info_records:
+                print("❌ 没有生成任何有效记录")
+                return False, None, 0, []
 
         results = []
         
@@ -3699,7 +3728,276 @@ class PowerDataImporter:
             res_custom = self.save_to_imformation_pred_database(custom_table_records, data_date)
             results.append(res_custom)
 
+        # 3. 保存“必开必停机组（群）约束预测信息”
+        if must_run_stop_group_constraint_records:
+            print(f"📊 保存 {len(must_run_stop_group_constraint_records)} 条必开必停机组（群）约束数据到独立表")
+            res_mrsc = self.save_must_run_stop_group_constraint_ts(must_run_stop_group_constraint_records, data_date)
+            results.append(res_mrsc)
+
+        # 4. 保存“必开必停机组信息预测信息”
+        if must_run_stop_unit_info_records:
+            print(f"📊 保存 {len(must_run_stop_unit_info_records)} 条必开必停机组信息数据到独立表")
+            res_mrui = self.save_must_run_stop_unit_info_ts(must_run_stop_unit_info_records, data_date)
+            results.append(res_mrui)
+
         return tuple(results) if len(results) > 1 else (results[0] if results else False)
+
+    def _process_must_run_stop_group_constraint_sheet(self, df, data_date, sheet_name, data_type):
+        """
+        解析“必开必停机组（群）约束预测信息”：
+        - 元数据列：机组群名/机组台数/电厂ID/电厂名称/机组ID/机组名称/数据类型
+        - 15分钟时间列：00:00..23:45
+        目标：保留维度，按 long 表入库，便于导出/透视。
+        """
+        records = []
+        df = df.dropna(how="all")
+        df.columns = [str(c).strip() for c in df.columns]
+
+        time_cols = [c for c in df.columns if re.match(r"^\d{2}:\d{2}$", str(c))]
+        if not time_cols:
+            return records
+
+        def _to_int(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return None
+            if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                return int(v)
+            if isinstance(v, float):
+                if np.isnan(v):
+                    return None
+                return int(v)
+            s = str(v).strip()
+            if not s:
+                return None
+            try:
+                return int(float(s.replace(",", "")))
+            except Exception:
+                return None
+
+        def _to_float(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return None
+            if isinstance(v, (int, float, np.number)) and not isinstance(v, bool):
+                return float(v)
+            s = str(v).strip()
+            if not s:
+                return None
+            try:
+                return float(s.replace(",", ""))
+            except Exception:
+                return None
+
+        for _, row in df.iterrows():
+            unit_group_name = str(row.get("机组群名", "")).strip()
+            if not unit_group_name:
+                continue
+
+            rec_base = {
+                "record_date": data_date,
+                "sheet_name": sheet_name,
+                "type": data_type,
+                "unit_group_name": unit_group_name,
+                "unit_count": _to_int(row.get("机组台数")),
+                "plant_id": _to_int(row.get("电厂ID")),
+                "plant_name": str(row.get("电厂名称", "")).strip() or None,
+                "unit_id": _to_int(row.get("机组ID")),
+                "unit_name": str(row.get("机组名称", "")).strip() or None,
+                "constraint_type": str(row.get("数据类型", "")).strip() or None,
+            }
+
+            for t in time_cols:
+                v = row.get(t)
+                if pd.isna(v):
+                    continue
+
+                v_num = _to_float(v)
+                v_text = None if v_num is not None else str(v).strip()
+
+                r = dict(rec_base)
+                r["record_time"] = str(t).strip()
+                r["value_num"] = v_num
+                r["value_text"] = v_text
+                records.append(r)
+
+        return records
+
+    def _process_must_run_stop_unit_info_sheet(self, df, data_date, sheet_name, data_type):
+        """
+        解析“必开必停机组信息预测信息”：
+        - 元数据列：电厂名称/机组名称/数据类型（标签/类型/原因...）
+        - 15分钟时间列：00:00..23:45
+        值通常为文本（必开/必停/原因等），按 long 表入库。
+        """
+        records = []
+        df = df.dropna(how="all")
+        df.columns = [str(c).strip() for c in df.columns]
+
+        time_cols = [c for c in df.columns if re.match(r"^\d{2}:\d{2}$", str(c))]
+        if not time_cols:
+            return records
+
+        for _, row in df.iterrows():
+            plant_name = str(row.get("电厂名称", "")).strip()
+            unit_name = str(row.get("机组名称", "")).strip()
+            row_type = str(row.get("数据类型", "")).strip()
+            if not (plant_name or unit_name):
+                continue
+
+            base = {
+                "record_date": data_date,
+                "sheet_name": sheet_name,
+                "type": data_type,
+                "plant_name": plant_name or None,
+                "unit_name": unit_name or None,
+                "row_type": row_type or None,
+            }
+
+            for t in time_cols:
+                v = row.get(t)
+                if pd.isna(v):
+                    continue
+
+                r = dict(base)
+                r["record_time"] = str(t).strip()
+                r["value_text"] = str(v).strip()
+                records.append(r)
+
+        return records
+
+    def save_must_run_stop_group_constraint_ts(self, records, data_date):
+        """入库：必开必停机组（群）约束预测信息（15分钟 long 表）。"""
+        table_name = "info_disclose_pred_must_run_stop_group_constraint_ts"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS `{table_name}` (
+                          `id` BIGINT NOT NULL AUTO_INCREMENT,
+                          `record_date` DATE NOT NULL,
+                          `record_time` TIME NOT NULL,
+                          `unit_group_name` VARCHAR(255) NULL,
+                          `unit_count` INT NULL,
+                          `plant_id` INT NULL,
+                          `plant_name` VARCHAR(255) NULL,
+                          `unit_id` INT NULL,
+                          `unit_name` VARCHAR(255) NULL,
+                          `constraint_type` VARCHAR(255) NULL,
+                          `value_num` DECIMAL(18,4) NULL,
+                          `value_text` VARCHAR(255) NULL,
+                          `sheet_name` VARCHAR(255) NULL,
+                          `type` VARCHAR(255) NULL,
+                          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                          PRIMARY KEY (`id`),
+                          KEY `idx_record_date` (`record_date`),
+                          KEY `idx_group` (`record_date`, `unit_group_name`(64))
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                        """
+                    )
+                )
+
+                # 同一天重导：删除旧数据再插入（避免重复）
+                conn.execute(text(f"DELETE FROM `{table_name}` WHERE record_date = :d"), {"d": data_date})
+
+                if not records:
+                    return True, table_name, 0, []
+
+                cols = [
+                    "record_date",
+                    "record_time",
+                    "unit_group_name",
+                    "unit_count",
+                    "plant_id",
+                    "plant_name",
+                    "unit_id",
+                    "unit_name",
+                    "constraint_type",
+                    "value_num",
+                    "value_text",
+                    "sheet_name",
+                    "type",
+                ]
+                stmt = text(
+                    f"INSERT INTO `{table_name}` ({', '.join('`'+c+'`' for c in cols)}) "
+                    f"VALUES ({', '.join(':'+c for c in cols)})"
+                )
+
+                batch_size = 500
+                for i in range(0, len(records), batch_size):
+                    conn.execute(stmt, records[i : i + batch_size])
+
+                preview_data = records[:10]
+
+            return True, table_name, len(records), preview_data
+        except Exception as e:
+            print(f"❌ 保存必开必停机组（群）约束数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, table_name, 0, []
+
+    def save_must_run_stop_unit_info_ts(self, records, data_date):
+        """入库：必开必停机组信息预测信息（15分钟 long 表，文本为主）。"""
+        table_name = "info_disclose_pred_must_run_stop_unit_info_ts"
+        preview_data = []
+
+        try:
+            with self.db_manager.engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS `{table_name}` (
+                          `id` BIGINT NOT NULL AUTO_INCREMENT,
+                          `record_date` DATE NOT NULL,
+                          `record_time` TIME NOT NULL,
+                          `plant_name` VARCHAR(255) NULL,
+                          `unit_name` VARCHAR(255) NULL,
+                          `row_type` VARCHAR(255) NULL,
+                          `value_text` TEXT NULL,
+                          `sheet_name` VARCHAR(255) NULL,
+                          `type` VARCHAR(255) NULL,
+                          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                          PRIMARY KEY (`id`),
+                          KEY `idx_record_date` (`record_date`),
+                          KEY `idx_unit` (`record_date`, `plant_name`(64), `unit_name`(64))
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                        """
+                    )
+                )
+
+                conn.execute(text(f"DELETE FROM `{table_name}` WHERE record_date = :d"), {"d": data_date})
+
+                if not records:
+                    return True, table_name, 0, []
+
+                cols = [
+                    "record_date",
+                    "record_time",
+                    "plant_name",
+                    "unit_name",
+                    "row_type",
+                    "value_text",
+                    "sheet_name",
+                    "type",
+                ]
+                stmt = text(
+                    f"INSERT INTO `{table_name}` ({', '.join('`'+c+'`' for c in cols)}) "
+                    f"VALUES ({', '.join(':'+c for c in cols)})"
+                )
+
+                batch_size = 500
+                for i in range(0, len(records), batch_size):
+                    conn.execute(stmt, records[i : i + batch_size])
+
+                preview_data = records[:10]
+
+            return True, table_name, len(records), preview_data
+        except Exception as e:
+            print(f"❌ 保存必开必停机组信息数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, table_name, 0, []
 
     def _process_imformation_pred_sheet_1(self, df, data_date, sheet_name, data_type):
         """自动生成的处理函数: 负荷预测信息(2025-12-23) (模式: time_series_matrix)"""

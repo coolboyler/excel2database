@@ -49,6 +49,7 @@
         const status = String(rawStatus || "").toLowerCase();
         if (status === "done") return { icon: "✅", text: "已完成" };
         if (status === "failed") return { icon: "❌", text: "失败" };
+        if (status === "waiting") return { icon: "⏳", text: "等待数据" };
         if (status === "attempting" || status === "running") return { icon: "⏳", text: "导入中" };
         if (!status) return { icon: "—", text: "未导入" };
         return { icon: "⚠️", text: "未知" };

@@ -13,7 +13,7 @@ import os
 import glob
 import shutil
 import logging
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 import warnings
 from pathlib import Path
 import numpy as np
@@ -22,6 +22,7 @@ from sqlalchemy import text
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 import uvicorn
 import datetime
 from pred_reader import PowerDataImporter
@@ -90,6 +91,81 @@ _BASE_DIR = Path(__file__).resolve().parent
 _COS_DAILY_CONFIG = _BASE_DIR / "cos_daily_import.config.json"
 _WEATHER_STATE_DEFAULT = _BASE_DIR / "state" / "weather_update_state.json"
 
+def _load_dotenv_minimal(path: Path) -> dict:
+    """
+    Minimal .env parser (no external deps).
+    Keeps behavior aligned with cos_daily_auto_import._load_dotenv.
+    """
+    if not path.exists():
+        return {}
+    out: dict = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        out[k] = v
+    return out
+
+
+def _resolve_cos_env_from_config(cfg: dict) -> dict:
+    """
+    Resolve COS settings using the same precedence as cos_daily_auto_import.run_once:
+    1) tencent_cos.dotenv_path (if present)
+    2) environment variables
+    3) tencent_cos.region/bucket can still override if non-empty (via "or" chain)
+    """
+    tencent_cfg = (cfg or {}).get("tencent_cos") or {}
+    env = dict(os.environ)
+
+    dotenv_value = tencent_cfg.get("dotenv_path") or env.get("TENCENT_COS_DOTENV") or ""
+    dotenv_path = Path(dotenv_value).expanduser() if dotenv_value else None
+    # Resolve relative paths against the project directory (CWD may differ in systemd/docker).
+    if dotenv_path and not dotenv_path.is_absolute():
+        dotenv_path = (_BASE_DIR / dotenv_path).resolve()
+    if dotenv_path and dotenv_path.is_file():
+        env.update(_load_dotenv_minimal(dotenv_path))
+
+    region = (tencent_cfg.get("region") or env.get("TENCENT_COS_REGION") or env.get("COS_REGION") or "").strip()
+    bucket = (tencent_cfg.get("bucket") or env.get("TENCENT_COS_BUCKET") or env.get("COS_BUCKET") or "").strip()
+    secret_id = (env.get("TENCENT_SECRET_ID") or env.get("SECRET_ID") or "").strip()
+    secret_key = (env.get("TENCENT_SECRET_KEY") or env.get("SECRET_KEY") or "").strip()
+
+    return {
+        "dotenv_path": str(dotenv_path) if dotenv_path else None,
+        "region": region,
+        "bucket": bucket,
+        "secret_id": secret_id,
+        "secret_key": secret_key,
+    }
+
+
+def _cos_daily_missing_requirements(resolved: dict) -> List[str]:
+    missing: List[str] = []
+    if not (resolved.get("region") or ""):
+        missing.append("TENCENT_COS_REGION")
+    if not (resolved.get("bucket") or ""):
+        missing.append("TENCENT_COS_BUCKET")
+    if not (resolved.get("secret_id") or ""):
+        missing.append("TENCENT_SECRET_ID")
+    if not (resolved.get("secret_key") or ""):
+        missing.append("TENCENT_SECRET_KEY")
+    return missing
+
 
 def _cos_scheduler_enabled() -> bool:
     val = os.getenv("COS_DAILY_SCHEDULER", "1")
@@ -134,7 +210,11 @@ def _start_cos_daily_scheduler():
             from zoneinfo import ZoneInfo
             tz = ZoneInfo("Asia/Shanghai")
         except Exception:
-            tz = None
+            # Keep schedules stable even on minimal images without tzdata/zoneinfo DB.
+            tz = datetime.timezone(datetime.timedelta(hours=8))
+
+        last_missing_sig = None
+        last_missing_log_at = 0.0
 
         while True:
             try:
@@ -147,6 +227,24 @@ def _start_cos_daily_scheduler():
                 except Exception as e:
                     logger.error("COS daily scheduler: invalid config: %s", e)
                     time.sleep(300)
+                    continue
+
+                # If COS isn't configured, skip quietly (no noisy error loop).
+                resolved = _resolve_cos_env_from_config(cfg)
+                missing = _cos_daily_missing_requirements(resolved)
+                if missing:
+                    sig = "|".join(missing)
+                    now_ts = time.time()
+                    # Rate-limit log to avoid spamming (e.g. status polling every minute).
+                    if sig != last_missing_sig or (now_ts - last_missing_log_at) > 3600:
+                        logger.warning(
+                            "COS daily scheduler: missing config/credentials (%s). "
+                            "Set env vars or fill cos_daily_import.config.json, or disable via COS_DAILY_SCHEDULER=0.",
+                            ", ".join(missing),
+                        )
+                        last_missing_sig = sig
+                        last_missing_log_at = now_ts
+                    time.sleep(600)
                     continue
 
                 poll = cfg.get("polling") or {}
@@ -344,6 +442,24 @@ def _load_cos_daily_state():
             cfg = json.load(f)
     except Exception as e:
         return {"status": "invalid_config", "message": str(e)}
+
+    # Report missing COS settings early, so the UI doesn't look "broken" when COS is simply not configured.
+    if _cos_scheduler_enabled():
+        resolved = _resolve_cos_env_from_config(cfg)
+        missing = _cos_daily_missing_requirements(resolved)
+        if missing:
+            return {
+                "status": "missing_cos_config",
+                "enabled": True,
+                "missing": missing,
+                "message": "COS daily scheduler enabled but COS is not configured.",
+            }
+    else:
+        return {
+            "status": "disabled",
+            "enabled": False,
+            "message": "COS daily scheduler disabled via COS_DAILY_SCHEDULER=0.",
+        }
 
     state_rel = (cfg.get("local") or {}).get("state_file") or "./state/cos_daily_state.json"
     state_path = (_BASE_DIR / state_rel).resolve()
@@ -7299,7 +7415,98 @@ async def export_new_energy_forecast(request: Request):
 
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            build_pivot("spot_ne_d_forecast").to_excel(writer, index=False, sheet_name="现货新能源D日预测")
+            sheet_name = "现货新能源D日预测"
+            out_df = build_pivot("spot_ne_d_forecast")
+            out_df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+            # Professional-looking formatting (lightweight for speed).
+            try:
+                ws = writer.book[sheet_name]
+                max_row = ws.max_row
+                max_col = ws.max_column
+
+                # Add an average row at the bottom (per-date).
+                if max_row >= 2 and max_col >= 2:
+                    avg_row = max_row + 1
+                    ws.cell(row=avg_row, column=1, value="算数均值").alignment = Alignment(
+                        horizontal="center", vertical="center"
+                    )
+                    for col in range(2, max_col + 1):
+                        vals = []
+                        for r in range(2, max_row + 1):
+                            v = ws.cell(row=r, column=col).value
+                            if v is None:
+                                continue
+                            if isinstance(v, (int, float, np.number)) and not isinstance(v, bool):
+                                vals.append(float(v))
+                                continue
+                            # Decimal or numeric-like string fallback
+                            try:
+                                vals.append(float(str(v).strip().replace(",", "")))
+                            except Exception:
+                                pass
+                        mean_v = (sum(vals) / len(vals)) if vals else None
+                        c = ws.cell(row=avg_row, column=col, value=mean_v)
+                        c.number_format = "0.00"
+
+                    # Avg row style
+                    yellow_fill = PatternFill("solid", fgColor="FFF2CC")
+                    bold_font = Font(bold=True)
+                    for col in range(1, max_col + 1):
+                        cell = ws.cell(row=avg_row, column=col)
+                        cell.fill = yellow_fill
+                        cell.font = bold_font
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+                    max_row = avg_row
+
+                # Freeze header + time column
+                ws.freeze_panes = "B2"
+
+                # Column widths (header-length aware; cap for readability)
+                ws.column_dimensions["A"].width = 10  # 时刻
+                for col in range(2, max_col + 1):
+                    ws.column_dimensions[get_column_letter(col)].width = 14
+
+                # Header style
+                header_fill = PatternFill("solid", fgColor="1F4E79")
+                header_font = Font(bold=True, color="FFFFFF")
+                header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                ws.row_dimensions[1].height = 22
+                for col in range(1, max_col + 1):
+                    cell = ws.cell(row=1, column=col)
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = header_align
+
+                # Data alignment + number formats
+                for r in range(2, max_row + 1):
+                    ws.cell(row=r, column=1).alignment = Alignment(horizontal="center", vertical="center")
+                    for col in range(2, max_col + 1):
+                        cell = ws.cell(row=r, column=col)
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        # Keep avg row's explicit number_format; otherwise set for data area.
+                        if r != max_row:
+                            cell.number_format = "0.00"
+
+                # Add an Excel table style (striped rows + filters)
+                ref = f"A1:{get_column_letter(max_col)}{max_row}"
+                stamp = datetime.datetime.now().strftime("%H%M%S%f")
+                tname = re.sub(r"[^A-Za-z0-9_]+", "_", f"NEForecast_{stamp}")
+                if not re.match(r"^[A-Za-z_]", tname):
+                    tname = f"T_{tname}"
+                tab = Table(displayName=tname, ref=ref)
+                tab.tableStyleInfo = TableStyleInfo(
+                    name="TableStyleMedium9",
+                    showFirstColumn=False,
+                    showLastColumn=False,
+                    showRowStripes=True,
+                    showColumnStripes=False,
+                )
+                ws.add_table(tab)
+                ws.auto_filter.ref = ref
+            except Exception:
+                pass
         output.seek(0)
 
         filename = f"新能源D日预测_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -7310,6 +7517,573 @@ async def export_new_energy_forecast(request: Request):
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
         )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/daily-averages/export-info-disclose-forecast-full", summary="导出信息披露预测全信息（按小时透视）")
+async def export_info_disclose_forecast_full(request: Request):
+    """
+    导出“信息披露查询预测信息”的全量数据（主要来自 power_data_YYYYMMDD），并按小时透视成一张表：
+    - 行：日期 + 时刻(00-23)
+    - 列：“Sheet:通道名称”的各指标列
+
+    输入：
+    - dates (Form) JSON list: ["YYYY-MM-DD", ...]
+
+    输出：
+    - Excel：
+      - 分时信息：可分时的数据（power_data_YYYYMMDD，按日期+小时展开）
+      - 非分时信息：不能分时的数据（imformation_pred_* 动态表，原样导出）
+    """
+    try:
+        form_data = await request.form()
+        dates_str = form_data.get("dates")
+        if not dates_str:
+            return JSONResponse(status_code=400, content={"error": "缺少 dates 参数"})
+
+        try:
+            date_list = json.loads(dates_str)
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "dates 格式错误"})
+
+        # 验证日期格式并排序
+        valid_dates: List[str] = []
+        for d in date_list:
+            try:
+                dt = pd.to_datetime(d).date()
+                valid_dates.append(dt.strftime("%Y-%m-%d"))
+            except Exception:
+                pass
+        valid_dates = sorted(set(valid_dates), key=lambda x: pd.to_datetime(x))
+        if not valid_dates:
+            return JSONResponse(status_code=400, content={"error": "日期格式错误"})
+
+        tables = set(db_manager.get_tables())
+
+        # 1) 汇总“可分时”数据（power_data_YYYYMMDD）
+        hourly_rows: List[Dict[str, Any]] = []
+        with db_manager.engine.connect() as conn:
+            for date_str in valid_dates:
+                d_obj = pd.to_datetime(date_str).date()
+                table_name = f"power_data_{d_obj.strftime('%Y%m%d')}"
+                if table_name not in tables:
+                    continue
+                sql = text(
+                    f"""
+                    SELECT record_date, record_time, sheet_name, channel_name, value
+                    FROM {table_name}
+                    WHERE record_date = :d
+                      AND type LIKE :t_info
+                      AND type LIKE :t_pred
+                      AND sheet_name NOT LIKE :skip_mr_group
+                      AND sheet_name NOT LIKE :skip_mr_unit
+                    ORDER BY record_time, sheet_name, channel_name
+                    """
+                )
+                rows = conn.execute(
+                    sql,
+                    {
+                        "d": date_str,
+                        "t_info": "%信息披露%",
+                        "t_pred": "%预测%",
+                        "skip_mr_group": "%必开必停机组（群）约束预测信息%",
+                        "skip_mr_unit": "%必开必停机组信息预测信息%",
+                    },
+                ).fetchall()
+                for row in rows:
+                    m = dict(row._mapping)
+                    # 标准化：日期/时间
+                    m["record_date"] = str(m.get("record_date") or date_str)
+                    m["hour"] = _hour_label_to_hour(m.get("record_time"))
+                    # _hour_label_to_hour 可能返回 None（异常时间），直接丢弃
+                    if m["hour"] is None:
+                        continue
+                    if not (0 <= int(m["hour"]) <= 23):
+                        continue
+                    hourly_rows.append(m)
+
+        # 2) 汇总“非分时”数据（imformation_pred_* 动态表）
+        non_hourly_rows: List[Dict[str, Any]] = []
+        imf_tables = sorted([t for t in tables if str(t).startswith("imformation_pred_")])
+        if imf_tables:
+            with db_manager.engine.connect() as conn:
+                placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+                params_base = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+                for tname in imf_tables:
+                    try:
+                        # 取列注释，尽量把“安全列名”还原成中文字段名（MySQL 支持 Comment）
+                        col_comment: Dict[str, str] = {}
+                        try:
+                            cols = conn.execute(text(f"SHOW FULL COLUMNS FROM `{tname}`")).mappings().fetchall()
+                            # Heuristic: tables that look like time-series (record_time + channel_name + value)
+                            # are already represented in other export sheets, so skip them here to avoid duplicates.
+                            ts_fields = {str(c.get("Field") or "").strip() for c in cols}
+                            if {"record_time", "channel_name", "value"}.issubset(ts_fields):
+                                continue
+                            for c in cols:
+                                field = str(c.get("Field") or "").strip()
+                                comment = str(c.get("Comment") or "").strip()
+                                if field:
+                                    col_comment[field] = comment
+                        except Exception:
+                            col_comment = {}
+
+                        q = text(
+                            f"""
+                            SELECT *
+                            FROM `{tname}`
+                            WHERE record_date IN ({placeholders})
+                              AND type LIKE :t_info
+                              AND type LIKE :t_pred
+                            ORDER BY record_date DESC, id DESC
+                            """
+                        )
+                        params = dict(params_base)
+                        params.update({"t_info": "%信息披露%", "t_pred": "%预测%"})
+                        rows = conn.execute(q, params).mappings().fetchall()
+                        if not rows:
+                            continue
+
+                        for r in rows:
+                            out_row: Dict[str, Any] = {
+                                "日期": str(r.get("record_date")),
+                                "Sheet": r.get("sheet_name"),
+                            }
+                            for k, v in r.items():
+                                if k in ("id", "record_date", "sheet_name", "type", "created_at"):
+                                    continue
+                                # 优先用列注释作为标题（更直观）
+                                label = (col_comment.get(k) or "").strip() or str(k)
+                                out_row[label] = v
+                            non_hourly_rows.append(out_row)
+                    except Exception:
+                        # 单表失败不影响其他表
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+        if not hourly_rows and not non_hourly_rows:
+            return JSONResponse(status_code=404, content={"error": "所选日期未找到信息披露预测数据"})
+
+        def _build_metric_column(df_in: pd.DataFrame) -> pd.Series:
+            """
+            Prefer channel_name as the column label to keep the sheet clean.
+            If the same channel_name appears across multiple sheet_name values, append a numeric suffix
+            (no sheet name included) to avoid silent overwrites in pivot.
+            """
+            ch = df_in["channel_name"].fillna("").astype(str).str.strip()
+            sh = df_in["sheet_name"].fillna("").astype(str).str.strip()
+
+            # Always include sheet name for a few commonly-confused renewable metrics so exports are unambiguous.
+            include_sheet_channels = {
+                "光伏(MW)",
+                "光伏出力预测(MW)",
+                "风电(MW)",
+                "风电出力预测(MW)",
+                "预测出力(MW)",
+            }
+
+            def _short_sheet_name(name: str) -> str:
+                s = str(name or "").strip()
+                # Drop trailing date like "(2026-01-31)" to reduce noise.
+                s = re.sub(r"\(\d{4}-\d{2}-\d{2}\)$", "", s).strip()
+                return s
+
+            pairs = pd.DataFrame({"sheet_name": sh, "channel_name": ch}).drop_duplicates()
+            dup = pairs.groupby("channel_name")["sheet_name"].nunique()
+            dup_channels = set(dup[dup > 1].index.tolist())
+            if not dup_channels:
+                def _label(row) -> str:
+                    sheet = _short_sheet_name(row.get("sheet_name"))
+                    channel = str(row.get("channel_name") or "").strip()
+                    if channel in include_sheet_channels and sheet:
+                        return f"{sheet}:{channel}"
+                    return channel
+
+                return df_in.apply(_label, axis=1)
+
+            mapping: Dict[tuple, str] = {}
+            for channel in sorted(dup_channels, key=lambda s: str(s)):
+                sheets = sorted(
+                    pairs[pairs["channel_name"] == channel]["sheet_name"].unique().tolist(),
+                    key=lambda s: str(s),
+                )
+                for i, sheet in enumerate(sheets, 1):
+                    mapping[(sheet, channel)] = f"{channel}_{i}"
+
+            def _label(row) -> str:
+                sheet_raw = str(row["sheet_name"] or "").strip()
+                sheet_short = _short_sheet_name(sheet_raw)
+                channel = str(row["channel_name"] or "").strip()
+                if channel in include_sheet_channels and sheet_short:
+                    return f"{sheet_short}:{channel}"
+                return mapping.get((sheet_raw, channel), channel)
+
+            return df_in.apply(_label, axis=1)
+
+        def _build_hourly_sheet(df_subset: pd.DataFrame) -> pd.DataFrame:
+            base = pd.DataFrame(
+                [(d, h) for d in valid_dates for h in range(24)],
+                columns=["record_date", "hour"],
+            )
+            base["时刻"] = base["hour"].apply(lambda h: f"{int(h):02d}:00")
+
+            df2 = df_subset.copy()
+            df2["sheet_name"] = df2["sheet_name"].fillna("").astype(str).str.strip()
+            df2["channel_name"] = df2["channel_name"].fillna("").astype(str).str.strip()
+            df2["metric"] = _build_metric_column(df2)
+            # Export requirement: per-hour value is the mean of 4x 15-minute values within that hour.
+            # Keep it robust in case values arrive as Decimal/object.
+            df2["value_num"] = pd.to_numeric(df2["value"], errors="coerce")
+            df2 = df2.dropna(subset=["value_num"])
+
+            pivot = df2.pivot_table(
+                index=["record_date", "hour"],
+                columns="metric",
+                values="value_num",
+                aggfunc="mean",
+            ).reset_index()
+
+            out = base.merge(pivot, on=["record_date", "hour"], how="left")
+            fixed_cols = ["record_date", "时刻"]
+
+            # Column rename: keep "D/D+1/D+2" explicit as renewable forecast.
+            # (Source sheet: 现货新能源总出力; user prefers clearer headers.)
+            rename_map = {
+                "D日(MW)": "新能源预测D日(MW)",
+                "D+1日(MW)": "新能源预测D+1日(MW)",
+                "D+2日(MW)": "新能源预测D+2日(MW)",
+            }
+            out = out.rename(columns=rename_map)
+
+            metric_cols = [c for c in out.columns if c not in fixed_cols and c != "hour"]
+            metric_cols = sorted(metric_cols, key=lambda s: str(s))
+            out = out[fixed_cols + metric_cols].rename(columns={"record_date": "日期"})
+            out = out.sort_values(["日期", "时刻"], ascending=[True, True])
+            return out.reset_index(drop=True)
+
+        # 3) 组织“分时信息”输出（每个日期固定 24 行，缺失指标列留空）
+        hourly_df: Optional[pd.DataFrame] = None
+        if hourly_rows:
+            df_all = pd.DataFrame(hourly_rows)
+            df_all["sheet_name"] = df_all["sheet_name"].fillna("").astype(str)
+            # 主要分时信息：剔除两张“必开必停”表（它们已单独入库并单独导出）
+            is_must_run_group = df_all["sheet_name"].str.contains("必开必停机组（群）约束预测信息", na=False)
+            is_must_run_unit = df_all["sheet_name"].str.contains("必开必停机组信息预测信息", na=False)
+            df_main = df_all[~(is_must_run_group | is_must_run_unit)].copy()
+
+            if not df_main.empty:
+                hourly_df = _build_hourly_sheet(df_main)
+        # 4) 从新表读取“必开必停”两张表（15分钟 long 表）
+        must_run_group_long_df: Optional[pd.DataFrame] = None
+        must_run_unit_long_df: Optional[pd.DataFrame] = None
+        with db_manager.engine.connect() as conn:
+            placeholders = ", ".join([f":d{i}" for i in range(len(valid_dates))])
+            params = {f"d{i}": d for i, d in enumerate(valid_dates)}
+
+            def _format_record_time(v) -> Optional[str]:
+                """Normalize MySQL TIME values (often returned as timedelta) into 'HH:MM'."""
+                try:
+                    if v is None or (isinstance(v, float) and np.isnan(v)):
+                        return None
+                    if isinstance(v, datetime.time):
+                        return v.strftime("%H:%M")
+                    if isinstance(v, datetime.timedelta):
+                        secs = int(v.total_seconds())
+                        h = (secs // 3600) % 24
+                        m = (secs % 3600) // 60
+                        return f"{h:02d}:{m:02d}"
+                    # pandas may coerce to Timedelta
+                    if isinstance(v, pd.Timedelta):
+                        secs = int(v.total_seconds())
+                        h = (secs // 3600) % 24
+                        m = (secs % 3600) // 60
+                        return f"{h:02d}:{m:02d}"
+                    s = str(v).strip()
+                    if not s:
+                        return None
+                    # e.g. '0 days 00:15:00' or '0:15:00'
+                    m = re.search(r"(\d{1,2}):(\d{2})", s)
+                    if m:
+                        return f"{int(m.group(1)):02d}:{m.group(2)}"
+                    return s[:5]
+                except Exception:
+                    return None
+
+            # 必开必停机组（群）约束预测信息
+            t1 = "info_disclose_pred_must_run_stop_group_constraint_ts"
+            if t1 in tables:
+                try:
+                    rows = conn.execute(
+                        text(
+                            f"""
+                            SELECT record_date, record_time,
+                                   unit_group_name, unit_count,
+                                   plant_id, plant_name,
+                                   unit_id, unit_name,
+                                   constraint_type,
+                                   value_num, value_text
+                            FROM `{t1}`
+                            WHERE record_date IN ({placeholders})
+                            ORDER BY record_date, record_time, unit_group_name, plant_name, unit_name, constraint_type
+                            """
+                        ),
+                        params,
+                    ).mappings().fetchall()
+
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        df["日期"] = df["record_date"].astype(str)
+                        df["时刻"] = df["record_time"].apply(_format_record_time)
+
+                        def _pick_value(r):
+                            v = r.get("value_num")
+                            if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                                return float(v)
+                            t = r.get("value_text")
+                            return None if t is None else str(t)
+
+                        def _extract_unit(s):
+                            if not s:
+                                return None
+                            s = str(s)
+                            m = re.search(r"\(([^)]+)\)", s)
+                            return m.group(1) if m else None
+
+                        df["单位"] = df["constraint_type"].apply(_extract_unit)
+                        df["值"] = df.apply(_pick_value, axis=1)
+
+                        must_run_group_long_df = df[
+                            [
+                                "日期",
+                                "时刻",
+                                "unit_group_name",
+                                "unit_count",
+                                "plant_id",
+                                "plant_name",
+                                "unit_id",
+                                "unit_name",
+                                "constraint_type",
+                                "单位",
+                                "值",
+                            ]
+                        ].rename(
+                            columns={
+                                "unit_group_name": "机组群名",
+                                "unit_count": "机组台数",
+                                "plant_id": "电厂ID",
+                                "plant_name": "电厂名称",
+                                "unit_id": "机组ID",
+                                "unit_name": "机组名称",
+                                "constraint_type": "数据类型",
+                            }
+                        )
+                except Exception:
+                    pass
+
+            # 必开必停机组信息预测信息
+            t2 = "info_disclose_pred_must_run_stop_unit_info_ts"
+            if t2 in tables:
+                try:
+                    rows = conn.execute(
+                        text(
+                            f"""
+                            SELECT record_date, record_time,
+                                   plant_name, unit_name,
+                                   row_type, value_text
+                            FROM `{t2}`
+                            WHERE record_date IN ({placeholders})
+                            ORDER BY record_date, record_time, plant_name, unit_name, row_type
+                            """
+                        ),
+                        params,
+                    ).mappings().fetchall()
+
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        df["日期"] = df["record_date"].astype(str)
+                        df["时刻"] = df["record_time"].apply(_format_record_time)
+                        must_run_unit_long_df = df[
+                            ["日期", "时刻", "plant_name", "unit_name", "row_type", "value_text"]
+                        ].rename(
+                            columns={
+                                "plant_name": "电厂名称",
+                                "unit_name": "机组名称",
+                                "row_type": "数据类型",
+                                "value_text": "值",
+                            }
+                        )
+                except Exception:
+                    pass
+
+        # 4) 组织“非分时信息”输出
+        non_hourly_df: Optional[pd.DataFrame] = None
+        if non_hourly_rows:
+            non_hourly_df = pd.DataFrame(non_hourly_rows)
+            # 固定列在前，其余列按字母序（但尽量保留中文字段的可读性）
+            fixed = ["日期", "Sheet"]
+            cols = [c for c in non_hourly_df.columns if c not in fixed]
+            cols = sorted(cols, key=lambda s: str(s))
+            non_hourly_df = non_hourly_df[fixed + cols]
+
+        # 5) 导出 Excel（美化）
+        def _sheet_safe_name(name: str) -> str:
+            s = str(name).strip().replace("/", "_").replace("\\", "_").replace(":", "_")
+            s = s[:31] if len(s) > 31 else s
+            return s or "Sheet"
+
+        def _apply_pretty_table(ws, table_name_prefix: str = "T"):
+            # Apply an Excel "table" with striping and autofilter.
+            max_row = ws.max_row
+            max_col = ws.max_column
+            if max_row < 2 or max_col < 1:
+                return
+
+            # Build A1 ref
+            ref = f"A1:{get_column_letter(max_col)}{max_row}"
+            # Table displayName must be unique and match [A-Za-z_][A-Za-z0-9_]+
+            stamp = datetime.datetime.now().strftime("%H%M%S%f")
+            tname = f"{table_name_prefix}_{stamp}"
+            tname = re.sub(r"[^A-Za-z0-9_]+", "_", tname)
+            if not re.match(r"^[A-Za-z_]", tname):
+                tname = f"T_{tname}"
+
+            tab = Table(displayName=tname, ref=ref)
+            style = TableStyleInfo(
+                name="TableStyleMedium9",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            tab.tableStyleInfo = style
+            ws.add_table(tab)
+
+            ws.freeze_panes = "C2" if max_col >= 3 else "A2"
+            ws.auto_filter.ref = ref
+
+            # Column widths (simple heuristic)
+            for col_idx in range(1, max_col + 1):
+                header = ws.cell(row=1, column=col_idx).value
+                header_s = str(header) if header is not None else ""
+                if header_s in ("日期", "record_date"):
+                    width = 12
+                elif header_s in ("时刻", "record_time"):
+                    width = 8
+                elif header_s in ("Sheet", "类型"):
+                    width = 18
+                else:
+                    width = 20
+                ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+            # Header look
+            header_fill = PatternFill("solid", fgColor="1F4E79")
+            header_font = Font(bold=True, color="FFFFFF")
+            center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            thin = Side(style="thin", color="D9D9D9")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            ws.row_dimensions[1].height = 22
+            for c in range(1, max_col + 1):
+                cell = ws.cell(row=1, column=c)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = center
+                cell.border = border
+
+            # Keep body styling minimal for performance (table style already provides readability).
+
+        def _auto_fit_headers_and_center_values(ws):
+            """
+            Sheet-level tweaks for '分时信息':
+            - widen columns based on header display width (so headers are fully visible or wrapped)
+            - center values (best-effort with a cap for very wide exports)
+            """
+            max_row = ws.max_row
+            max_col = ws.max_column
+            if max_row < 2 or max_col < 1:
+                return
+
+            def _display_width(s: str) -> int:
+                # Rough: ASCII=1, non-ASCII=2 (better than plain len for CJK headers)
+                w = 0
+                for ch in s:
+                    w += 1 if ord(ch) < 128 else 2
+                return w
+
+            # Header: wrap + taller row, and widen columns.
+            ws.row_dimensions[1].height = 36
+            header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            for col_idx in range(1, max_col + 1):
+                header = ws.cell(row=1, column=col_idx).value
+                header_s = "" if header is None else str(header)
+                ws.cell(row=1, column=col_idx).alignment = header_align
+                w = _display_width(header_s)
+                # Width range: 10..80
+                width = max(10, min(80, int(w * 1.1) + 4))
+                ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+            # Body: center values. Cap columns to avoid huge per-cell loops on very wide exports.
+            body_cells = (max_row - 1) * max_col
+            max_center_cols = max_col if body_cells <= 300_000 else min(max_col, 120)
+            body_align = Alignment(horizontal="center", vertical="center")
+            for r in range(2, max_row + 1):
+                for c in range(1, max_center_cols + 1):
+                    ws.cell(row=r, column=c).alignment = body_align
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            if hourly_df is not None:
+                hourly_df.to_excel(writer, index=False, sheet_name=_sheet_safe_name("分时信息"))
+                ws = writer.book[_sheet_safe_name("分时信息")]
+                _apply_pretty_table(ws, "Hourly")
+                _auto_fit_headers_and_center_values(ws)
+            else:
+                pd.DataFrame([{"提示": "所选日期没有可分时的数据（power_data_YYYYMMDD 未找到）"}]).to_excel(
+                    writer, index=False, sheet_name=_sheet_safe_name("分时信息")
+                )
+
+            if must_run_group_long_df is not None:
+                must_run_group_long_df.to_excel(writer, index=False, sheet_name=_sheet_safe_name("必开必停机组（群）约束"))
+                ws_m1 = writer.book[_sheet_safe_name("必开必停机组（群）约束")]
+                _apply_pretty_table(ws_m1, "MRGroup")
+            else:
+                pd.DataFrame([{"提示": "未找到必开必停机组（群）约束数据（请先导入更新后的信息披露预测）"}]).to_excel(
+                    writer, index=False, sheet_name=_sheet_safe_name("必开必停机组（群）约束")
+                )
+
+            if must_run_unit_long_df is not None:
+                must_run_unit_long_df.to_excel(writer, index=False, sheet_name=_sheet_safe_name("必开必停机组信息"))
+                ws_m2 = writer.book[_sheet_safe_name("必开必停机组信息")]
+                _apply_pretty_table(ws_m2, "MRUnit")
+            else:
+                pd.DataFrame([{"提示": "未找到必开必停机组信息数据（请先导入更新后的信息披露预测）"}]).to_excel(
+                    writer, index=False, sheet_name=_sheet_safe_name("必开必停机组信息")
+                )
+
+            if non_hourly_df is not None:
+                non_hourly_df.to_excel(writer, index=False, sheet_name=_sheet_safe_name("非分时信息"))
+                ws2 = writer.book[_sheet_safe_name("非分时信息")]
+                _apply_pretty_table(ws2, "NonHourly")
+            else:
+                pd.DataFrame([{"提示": "所选日期没有非分时数据（imformation_pred_* 未找到）"}]).to_excel(
+                    writer, index=False, sheet_name=_sheet_safe_name("非分时信息")
+                )
+
+        output.seek(0)
+        filename = f"信息披露预测全信息_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        import urllib.parse
+
+        encoded_filename = urllib.parse.quote(filename)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+        )
+
     except Exception as e:
         import traceback
         traceback.print_exc()

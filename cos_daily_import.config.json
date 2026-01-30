@@ -2,7 +2,7 @@
   "tencent_cos": {
     "region": "",
     "bucket": "",
-    "dotenv_path": ""
+    "dotenv_path": "./.env"
   },
   "polling": {
     "start_hhmm": "11:20",
@@ -22,6 +22,7 @@
     },
     "realtime_node_price": {
       "prefix": "4、组织中心/6、实时节点电价查询/data/real_time",
+      "min_size_bytes": 100000,
       "date_offsets_days_priority": [
         -2
       ]
