@@ -68,37 +68,83 @@
     .mono { font-variant-numeric: tabular-nums; }
     .table-sm td, .table-sm th { white-space: nowrap; }
 
-    /* Month quick choices (current month and previous 3 months) */
-    .month-choices {
-      display: inline-flex;
-      align-items: center;
-      gap: 0;
-      background: rgba(15, 23, 42, 0.03);
-      border: 1px solid rgba(15, 23, 42, 0.10);
-      border-radius: 999px;
-      overflow: hidden;
-      user-select: none;
+    /* Month selector */
+    .month-nav .btn.btn-outline-secondary {
+      border-color: rgba(15, 23, 42, 0.35);
+      border-radius: 0;
+      background: rgba(255,255,255,0.96);
+      color: #111827;
     }
-    .month-choice {
+    .month-nav .btn.btn-outline-secondary:hover {
+      border-color: rgba(15, 23, 42, 0.45);
+      background: rgba(15, 23, 42, 0.04);
+      color: #111827;
+    }
+    .month-nav .btn.btn-outline-secondary:active {
+      border-color: rgba(15, 23, 42, 0.55);
+      background: rgba(15, 23, 42, 0.06);
+      color: #111827;
+    }
+    #btnMonthPrev {
+      border-top-left-radius: 999px;
+      border-bottom-left-radius: 999px;
+    }
+    #btnMonthNext {
+      border-top-right-radius: 999px;
+      border-bottom-right-radius: 999px;
+    }
+    .month-nav .btn.btn-outline-secondary:focus {
+      box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.22);
+    }
+    #btnMonthMenu {
+      min-width: 150px;
+      justify-content: center;
+    }
+    .month-menu {
+      border-radius: 14px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.14);
+    }
+    #monthPicker {
+      border-color: rgba(15, 23, 42, 0.30);
+      color: #111827;
+    }
+    #monthPicker:focus {
+      border-color: rgba(59, 130, 246, 0.70);
+      box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.22);
+    }
+    .month-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .month-chip {
       appearance: none;
-      border: 0;
-      background: transparent;
-      padding: 8px 14px;
-      font-size: 0.9rem;
-      line-height: 1;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      background: rgba(15, 23, 42, 0.03);
       color: #374151;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 0.85rem;
+      line-height: 1;
+      text-align: center;
       cursor: pointer;
-      transition: background 0.15s, color 0.15s;
+      user-select: none;
+      transition: background 0.15s, transform 0.05s, border-color 0.15s;
       white-space: nowrap;
     }
-    .month-choice:hover { background: rgba(15, 23, 42, 0.04); }
-    .month-choice.is-active {
-      background: rgba(59, 130, 246, 0.18);
+    .month-chip:hover { background: rgba(15, 23, 42, 0.06); }
+    .month-chip:active { transform: scale(0.98); }
+    .month-chip:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .month-chip.is-active {
+      background: rgba(59, 130, 246, 0.16);
+      border-color: rgba(59, 130, 246, 0.45);
       color: #1d4ed8;
       font-weight: 700;
-    }
-    .month-choice + .month-choice {
-      border-left: 1px solid rgba(15, 23, 42, 0.10);
     }
 
     /* Floating loading toast (does not affect layout). */
@@ -157,10 +203,35 @@
             <option value="tianlang">天朗</option>
             <option value="huihua">辉华</option>
           </select>
-          <button id="btnRefresh" type="button" class="btn btn-outline-secondary btn-sm">
-            <i class="bi bi-arrow-repeat"></i> 强制刷新本月
-          </button>
-          <div id="monthChoices" class="month-choices" aria-label="月份快捷选择"></div>
+          <div class="btn-group btn-group-sm month-nav" role="group" aria-label="月份选择">
+            <button id="btnMonthPrev" class="btn btn-outline-secondary" type="button" title="上一月" aria-label="上一月">
+              <i class="bi bi-chevron-left"></i>
+            </button>
+
+            <div class="btn-group btn-group-sm" role="group">
+              <button id="btnMonthMenu" type="button" class="btn btn-outline-secondary dropdown-toggle d-inline-flex align-items-center gap-1"
+                data-bs-toggle="dropdown" aria-expanded="false" title="选择月份">
+                <i class="bi bi-calendar3"></i>
+                <span id="monthLabel" class="mono">-</span>
+              </button>
+              <div class="dropdown-menu dropdown-menu-end p-3 month-menu" style="min-width: 290px;">
+                <div class="d-flex align-items-center justify-content-between mb-1">
+                  <div class="fw-semibold">选择月份</div>
+                  <button id="btnMonthLatest" type="button" class="btn btn-link btn-sm p-0">跳到最新</button>
+                </div>
+                <div class="small muted mb-2">最新可用：<span id="latestMonthLabel" class="mono">-</span></div>
+                <input id="monthPicker" type="month" class="form-control form-control-sm mb-3" aria-label="手动选择月份" />
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                  <div class="small muted">快捷（最近12个月）</div>
+                </div>
+                <div id="monthGrid" class="month-grid" aria-label="月份快捷选择"></div>
+              </div>
+            </div>
+
+            <button id="btnMonthNext" class="btn btn-outline-secondary" type="button" title="下一月" aria-label="下一月">
+              <i class="bi bi-chevron-right"></i>
+            </button>
+          </div>
         </div>
       </div>
       <div id="errorBox" class="alert alert-danger mt-3 d-none"></div>
@@ -467,6 +538,7 @@
 		    let chartDiagLoad = null;
 		    let chartDiagTemp = null;
         let lastMonthByPlatform = {}; // platform -> YYYY-MM
+        let latestMonthByPlatform = {}; // platform -> YYYY-MM
 
 	    function normalizePlatform(v) {
 	      const s = String(v || "").trim();
@@ -524,11 +596,31 @@
           if (el) el.classList.toggle("d-none", !on);
           const sel = document.getElementById("platformSelect");
           if (sel) sel.disabled = !!on;
-          const btnRefresh = document.getElementById("btnRefresh");
-          if (btnRefresh) btnRefresh.disabled = !!on;
-          document.querySelectorAll("#monthChoices .month-choice").forEach((b) => {
+          const btnPrev = document.getElementById("btnMonthPrev");
+          if (btnPrev) btnPrev.disabled = !!on;
+          const btnNext = document.getElementById("btnMonthNext");
+          if (btnNext) btnNext.disabled = !!on;
+          const btnMenu = document.getElementById("btnMonthMenu");
+          if (btnMenu) btnMenu.disabled = !!on;
+          const picker = document.getElementById("monthPicker");
+          if (picker) picker.disabled = !!on;
+          const btnLatest = document.getElementById("btnMonthLatest");
+          if (btnLatest) {
+            if (on) {
+              btnLatest.disabled = true;
+            } else {
+              const latest = latestMonthByPlatform[getPlatform()] || null;
+              const baseMonth = normalizeYm(currentMonth || (picker && picker.value) || defaultMonth || getUrlMonth());
+              btnLatest.disabled = !!(!latest || (baseMonth && latest && baseMonth === latest));
+            }
+          }
+          document.querySelectorAll("#monthGrid .month-chip").forEach((b) => {
             b.disabled = !!on;
           });
+          if (!on) {
+            // Restore the correct nav state (e.g. disable "next" at latest month).
+            updateMonthNavButtons(currentMonth || (picker && picker.value) || defaultMonth || getUrlMonth());
+          }
         }
 
         function applyPlatformToLinks(platform) {
@@ -1085,32 +1177,6 @@
       }
     }
 
-    async function refreshMonth(month) {
-      clearError();
-      if (!month) return;
-      setMonthLoading(true, `正在刷新 ${month}...`);
-      const btn = document.getElementById("btnRefresh");
-      const oldHtml = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>刷新中`;
-      try {
-        const fd = new FormData();
-        fd.append("month", month);
-        fd.append("platform", getPlatform());
-        const res = await fetch("/api/strategy/review/refresh", { method: "POST", body: fd });
-        const json = await res.json();
-        if (!res.ok) {
-          showError(json.detail || "刷新失败");
-          return;
-        }
-        await loadMonth(month);
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = oldHtml;
-        setMonthLoading(false);
-      }
-    }
-
     function fmtYmFromDate(d) {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -1137,10 +1203,91 @@
       }
     }
 
-    function setActiveMonth(month) {
-      document.querySelectorAll("#monthChoices .month-choice").forEach(btn => {
-        btn.classList.toggle("is-active", btn.dataset.month === month);
-      });
+    function normalizeYm(ym) {
+      // Accept "YYYY-MM" or "YYYY-M" from manual input; return normalized "YYYY-MM" or null.
+      const s = String(ym || "").trim();
+      const m = s.match(/^(\d{4})-(\d{1,2})$/);
+      if (!m) return null;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return null;
+      return `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}`;
+    }
+
+    function hideMonthDropdown() {
+      // Best-effort: close the dropdown after the user picks a month.
+      const toggle = document.getElementById("btnMonthMenu");
+      if (!toggle) return;
+      try {
+        if (window.bootstrap && window.bootstrap.Dropdown) {
+          window.bootstrap.Dropdown.getOrCreateInstance(toggle).hide();
+        }
+      } catch {}
+    }
+
+    function setMonthLabel(activeMonth) {
+      const el = document.getElementById("monthLabel");
+      if (!el) return;
+      const m0 = normalizeYm(activeMonth);
+      el.textContent = m0 || "-";
+    }
+
+    function renderMonthGrid(activeMonth) {
+      const grid = document.getElementById("monthGrid");
+      if (!grid) return;
+      const m0 = normalizeYm(activeMonth);
+      if (!m0) {
+        grid.innerHTML = "";
+        return;
+      }
+      const latest = latestMonthByPlatform[getPlatform()] || null;
+      const end = (latest && m0 > latest) ? latest : m0;
+      const months = [];
+      for (let i = 0; i < 12; i++) {
+        const m = monthAddFromYm(end, -i);
+        if (!m) continue;
+        months.push(m);
+      }
+      grid.innerHTML = months.map((m) => (
+        `<button type="button" class="month-chip mono ${m === m0 ? "is-active" : ""}" data-month="${m}">${m}</button>`
+      )).join("");
+    }
+
+    function updateMonthNavButtons(activeMonth) {
+      const prev = document.getElementById("btnMonthPrev");
+      const next = document.getElementById("btnMonthNext");
+      if (!prev || !next) return;
+      const m0 = normalizeYm(activeMonth);
+      const latest = latestMonthByPlatform[getPlatform()] || null;
+      prev.disabled = false; // allow moving to older months even if there is no data
+      next.disabled = !!(latest && m0 && m0 >= latest);
+    }
+
+    function renderMonthControls(activeMonth) {
+      const m0 = normalizeYm(activeMonth);
+      setMonthLabel(m0);
+      const picker = document.getElementById("monthPicker");
+      if (picker && m0) picker.value = m0;
+      const latestLabel = document.getElementById("latestMonthLabel");
+      if (latestLabel) {
+        const latest = latestMonthByPlatform[getPlatform()] || null;
+        latestLabel.textContent = latest || "-";
+      }
+      const btnLatest = document.getElementById("btnMonthLatest");
+      if (btnLatest) {
+        const latest = latestMonthByPlatform[getPlatform()] || null;
+        btnLatest.disabled = !!(!latest || (m0 && latest && m0 === latest));
+      }
+      renderMonthGrid(m0);
+      updateMonthNavButtons(m0);
+    }
+
+    function selectMonth(month, closeMenu=false) {
+      const m0 = normalizeYm(month);
+      if (!m0) return;
+      renderMonthControls(m0);
+      if (closeMenu) hideMonthDropdown();
+      loadMonth(m0);
     }
 
     async function getLatestMonth() {
@@ -1156,51 +1303,83 @@
     }
 
     async function initMonthChoices(preferredMonth=null) {
-      const container = document.getElementById("monthChoices");
-      if (!container) return;
       const now = new Date();
-      const latest = await getLatestMonth();
-      const baseMonth = latest || monthAdd(now, 0);
-      // Show (preferred month if provided) + latest 3 months for quick selection.
-      const candidates = [
-        preferredMonth,
-        baseMonth,
-        monthAddFromYm(baseMonth, -1),
-        monthAddFromYm(baseMonth, -2),
-      ].filter(Boolean);
-      const months = [];
-      const seen = new Set();
-      for (const m of candidates) {
-        if (!m || seen.has(m)) continue;
-        seen.add(m);
-        months.push(m);
-      }
-      defaultMonth = (preferredMonth && months.includes(preferredMonth)) ? preferredMonth : (months[0] || monthAdd(now, 0));
-      container.innerHTML = months.map((m, idx) => (
-        `<button type="button" class="month-choice ${m === defaultMonth ? "is-active" : ""}" data-month="${m}">${m}</button>`
-      )).join("");
+      const platform = getPlatform();
+      const latest = normalizeYm(await getLatestMonth());
+      latestMonthByPlatform[platform] = latest || null;
 
-      if (!container.dataset.bound) {
-        container.addEventListener("click", (e) => {
-          const btn = e.target.closest(".month-choice");
+      const picker = document.getElementById("monthPicker");
+      if (picker) {
+        if (latest) picker.max = latest;
+        else picker.removeAttribute("max");
+        if (!picker.dataset.bound) {
+          picker.addEventListener("change", () => {
+            const m = normalizeYm(picker.value);
+            if (!m) return;
+            selectMonth(m, true);
+          });
+          picker.dataset.bound = "1";
+        }
+      }
+
+      const grid = document.getElementById("monthGrid");
+      if (grid && !grid.dataset.bound) {
+        grid.addEventListener("click", (e) => {
+          const btn = e.target.closest(".month-chip");
           if (!btn) return;
           const m = btn.dataset.month;
           if (!m) return;
-          setActiveMonth(m);
-          loadMonth(m);
+          selectMonth(m, true);
         });
-        container.dataset.bound = "1";
+        grid.dataset.bound = "1";
       }
 
-      // initial load = latest available month (fallback: current month)
-      loadMonth(defaultMonth);
+      const btnLatest = document.getElementById("btnMonthLatest");
+      if (btnLatest && !btnLatest.dataset.bound) {
+        btnLatest.addEventListener("click", () => {
+          const latest2 = latestMonthByPlatform[getPlatform()] || null;
+          if (!latest2) return;
+          selectMonth(latest2, true);
+        });
+        btnLatest.dataset.bound = "1";
+      }
+
+      const btnPrev = document.getElementById("btnMonthPrev");
+      if (btnPrev && !btnPrev.dataset.bound) {
+        btnPrev.addEventListener("click", () => {
+          const base = normalizeYm(currentMonth || (picker && picker.value) || defaultMonth || getUrlMonth() || monthAdd(new Date(), 0));
+          const m = base ? monthAddFromYm(base, -1) : null;
+          if (!m) return;
+          selectMonth(m);
+        });
+        btnPrev.dataset.bound = "1";
+      }
+      const btnNext = document.getElementById("btnMonthNext");
+      if (btnNext && !btnNext.dataset.bound) {
+        btnNext.addEventListener("click", () => {
+          const base = normalizeYm(currentMonth || (picker && picker.value) || defaultMonth || getUrlMonth() || monthAdd(new Date(), 0));
+          const m = base ? monthAddFromYm(base, 1) : null;
+          if (!m) return;
+          const latest2 = latestMonthByPlatform[getPlatform()] || null;
+          if (latest2 && m > latest2) return;
+          selectMonth(m);
+        });
+        btnNext.dataset.bound = "1";
+      }
+
+      const preferred = normalizeYm(preferredMonth);
+      defaultMonth = (preferred && latest && preferred > latest)
+        ? latest
+        : (preferred || latest || monthAdd(now, 0));
+
+      // Initial load = preferred month (if in URL) else latest available month (fallback: current month)
+      selectMonth(defaultMonth);
     }
 
 	    initPlatform();
 	    // Keep month shareable too: /strategy_review?platform=...&month=YYYY-MM
 	    initMonthChoices(getUrlMonth());
 	    document.getElementById("btnToggleReview").addEventListener("click", () => setReviewVisible(!reviewVisible));
-	    document.getElementById("btnRefresh").addEventListener("click", () => refreshMonth(currentMonth || defaultMonth));
 	    document.getElementById("outlierBody").addEventListener("click", (e) => {
 	      const tr = e.target.closest("tr");
 	      const d = tr && tr.dataset.date;
