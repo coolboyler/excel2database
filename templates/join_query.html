@@ -1398,6 +1398,20 @@
          });
     }
 
+    function yyyymmddLocal(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${y}${m}${dd}`;
+    }
+
+    function addDaysLocal(d, days) {
+      // Local midnight anchor to avoid timezone offset surprises.
+      const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      out.setDate(out.getDate() + days);
+      return out;
+    }
+
     // 导出缓存数据（日前、实时、均值对比）
     function exportCacheData() {
        const btn = document.getElementById("export-cache-btn");
@@ -1427,7 +1441,7 @@
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = `日前实时对比_${new Date().getTime()}.xlsx`;
+            a.download = `日前实时对比_${yyyymmddLocal(new Date())}.xlsx`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -1468,7 +1482,7 @@
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
-            a.download = `新能源D日预测_${new Date().getTime()}.xlsx`;
+            a.download = `新能源D日预测_${yyyymmddLocal(addDaysLocal(new Date(), 1))}.xlsx`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -1509,7 +1523,7 @@
 	            const url = window.URL.createObjectURL(blob);
 	            const a = document.createElement("a");
 	            a.href = url;
-	            a.download = `信息披露预测全信息_${new Date().getTime()}.xlsx`;
+	            a.download = `信息披露预测全信息_${yyyymmddLocal(addDaysLocal(new Date(), 1))}.xlsx`;
 	            document.body.appendChild(a);
 	            a.click();
 	            document.body.removeChild(a);

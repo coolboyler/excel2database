@@ -508,9 +508,16 @@
 
     function addDays(isoDate, days) {
       // Treat as local date (avoid timezone offset surprises).
-      const d = new Date(`${isoDate}T00:00:00`);
+      const parts = String(isoDate || "").split("-");
+      const y = Number(parts[0]);
+      const m = Number(parts[1]);
+      const dd = Number(parts[2]);
+      const d = new Date(y, m - 1, dd);
       d.setDate(d.getDate() + days);
-      return d.toISOString().split("T")[0];
+      const yy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const ddd = String(d.getDate()).padStart(2, "0");
+      return `${yy}-${mm}-${ddd}`;
     }
 
     function todayIsoLocal() {
@@ -896,9 +903,7 @@
     // Init
     // Default target date = tomorrow (D day). Forecast is typically made on D-1.
     initPlatform();
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    const iso = d.toISOString().split("T")[0];
+    const iso = addDays(todayIsoLocal(), 1);
     flatpickr("#targetDate", {
       locale: "zh",
       dateFormat: "Y-m-d",
