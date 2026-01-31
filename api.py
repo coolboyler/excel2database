@@ -7118,7 +7118,7 @@ async def export_dr_compare(request: Request):
 
             from fastapi.responses import StreamingResponse
             import urllib.parse
-            filename = f"日前实时均值对比_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filename = f"日前实时对比_{datetime.date.today().strftime('%Y%m%d')}.xlsx"
             encoded_filename = urllib.parse.quote(filename)
             return StreamingResponse(
                 iter([output.getvalue()]),
@@ -7149,7 +7149,7 @@ async def export_dr_compare(request: Request):
 
                 from fastapi.responses import StreamingResponse
                 import urllib.parse
-                filename = f"日前实时均值对比_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                filename = f"日前实时对比_{datetime.date.today().strftime('%Y%m%d')}.xlsx"
                 encoded_filename = urllib.parse.quote(filename)
                 return StreamingResponse(
                     iter([output.getvalue()]),
@@ -7319,7 +7319,7 @@ async def export_dr_compare(request: Request):
 
         from fastapi.responses import StreamingResponse
         import urllib.parse
-        filename = f"{title_text}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"日前实时对比_{datetime.date.today().strftime('%Y%m%d')}.xlsx"
         encoded_filename = urllib.parse.quote(filename)
         return StreamingResponse(
             iter([output.getvalue()]),
@@ -7388,7 +7388,8 @@ async def export_new_energy_forecast(request: Request):
                 df_empty.to_excel(writer, index=False, sheet_name="现货新能源D日预测")
             output.seek(0)
 
-            filename = f"新能源D日预测_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            suffix = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y%m%d")
+            filename = f"新能源D日预测_{suffix}.xlsx"
             import urllib.parse
             encoded_filename = urllib.parse.quote(filename)
             return StreamingResponse(
@@ -7489,27 +7490,14 @@ async def export_new_energy_forecast(request: Request):
                         if r != max_row:
                             cell.number_format = "0.00"
 
-                # Add an Excel table style (striped rows + filters)
-                ref = f"A1:{get_column_letter(max_col)}{max_row}"
-                stamp = datetime.datetime.now().strftime("%H%M%S%f")
-                tname = re.sub(r"[^A-Za-z0-9_]+", "_", f"NEForecast_{stamp}")
-                if not re.match(r"^[A-Za-z_]", tname):
-                    tname = f"T_{tname}"
-                tab = Table(displayName=tname, ref=ref)
-                tab.tableStyleInfo = TableStyleInfo(
-                    name="TableStyleMedium9",
-                    showFirstColumn=False,
-                    showLastColumn=False,
-                    showRowStripes=True,
-                    showColumnStripes=False,
-                )
-                ws.add_table(tab)
-                ws.auto_filter.ref = ref
+                # Do NOT add an Excel Table / AutoFilter here:
+                # user wants headers without the filter dropdown arrows.
             except Exception:
                 pass
         output.seek(0)
 
-        filename = f"新能源D日预测_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        suffix = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y%m%d")
+        filename = f"新能源D日预测_{suffix}.xlsx"
         import urllib.parse
         encoded_filename = urllib.parse.quote(filename)
         return StreamingResponse(
@@ -8074,7 +8062,8 @@ async def export_info_disclose_forecast_full(request: Request):
                 )
 
         output.seek(0)
-        filename = f"信息披露预测全信息_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        suffix = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y%m%d")
+        filename = f"信息披露预测全信息_{suffix}.xlsx"
         import urllib.parse
 
         encoded_filename = urllib.parse.quote(filename)
