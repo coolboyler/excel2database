@@ -5,6 +5,9 @@ from contextlib import asynccontextmanager
 import json
 import time
 import threading
+import subprocess
+import sys
+import anyio
 from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -215,6 +218,23 @@ def _start_cos_daily_scheduler():
 
         last_missing_sig = None
         last_missing_log_at = 0.0
+        proc: Optional[subprocess.Popen] = None
+        proc_log = None
+
+        def _targets_all_done(day_key: str, targets_cfg: dict) -> bool:
+            try:
+                state_path = (_BASE_DIR / (cfg.get("local", {}).get("state_file") or "./state/cos_daily_state.json")).resolve()
+                if not state_path.exists():
+                    return False
+                state = json.loads(state_path.read_text(encoding="utf-8")) or {"days": {}}
+                day_state = (state.get("days") or {}).get(day_key) or {}
+                tmap = day_state.get("targets") or {}
+                for name in (targets_cfg or {}).keys():
+                    if str((tmap.get(name) or {}).get("status")) != "done":
+                        return False
+                return bool(targets_cfg)
+            except Exception:
+                return False
 
         while True:
             try:
@@ -276,24 +296,67 @@ def _start_cos_daily_scheduler():
                     time.sleep(max(60.0, sleep_s))
                     continue
 
-                # Within window: run once per tick
-                from cos_daily_auto_import import run_once as _cos_run_once, _all_targets_done  # noqa: E402
+                # Within window: trigger importer without blocking the API.
+                #
+                # Default to running as a subprocess to avoid CPU/GIL contention with the API worker.
+                # (The importer is synchronous and can be heavy due to pandas/openpyxl.)
+                mode = str(os.getenv("COS_DAILY_RUN_MODE", "subprocess")).strip().lower()
 
-                _cos_run_once(cfg, base_date=base_date, dry_run=False)
+                # If all targets are done for the day, sleep to next day's start.
+                day_key = base_date.strftime("%Y-%m-%d")
+                if _targets_all_done(day_key, cfg.get("targets") or {}):
+                    next_day = base_date + datetime.timedelta(days=1)
+                    next_start = datetime.datetime.combine(next_day, datetime.time(sh, sm, tzinfo=tz) if tz else datetime.time(sh, sm))
+                    sleep_s = (next_start - now).total_seconds()
+                    time.sleep(max(60.0, sleep_s))
+                    continue
 
-                # Stop early when all targets are done
-                try:
-                    state_path = (_BASE_DIR / (cfg.get("local", {}).get("state_file") or "./state/cos_daily_state.json")).resolve()
-                    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"days": {}}
-                    if _all_targets_done(state, base_date.strftime("%Y-%m-%d"), cfg.get("targets") or {}):
-                        # sleep to next day start
-                        next_day = base_date + datetime.timedelta(days=1)
-                        next_start = datetime.datetime.combine(next_day, datetime.time(sh, sm, tzinfo=tz) if tz else datetime.time(sh, sm))
-                        sleep_s = (next_start - now).total_seconds()
-                        time.sleep(max(60.0, sleep_s))
-                        continue
-                except Exception:
-                    pass
+                if mode == "inline":
+                    from cos_daily_auto_import import run_once as _cos_run_once  # noqa: E402
+                    _cos_run_once(cfg, base_date=base_date, dry_run=False)
+                else:
+                    # Subprocess mode: only one running at a time.
+                    if proc is not None:
+                        rc = proc.poll()
+                        if rc is None:
+                            time.sleep(max(5, interval_seconds))
+                            continue
+                        try:
+                            logger.info("COS daily importer subprocess exited: rc=%s", rc)
+                        except Exception:
+                            pass
+                        proc = None
+                        try:
+                            if proc_log is not None:
+                                proc_log.close()
+                        except Exception:
+                            pass
+                        proc_log = None
+
+                    log_path = (_BASE_DIR / "state" / "cos_daily_auto_import.subprocess.log").resolve()
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    proc_log = open(log_path, "a", encoding="utf-8")
+                    cmd = [
+                        sys.executable,
+                        str((_BASE_DIR / "cos_daily_auto_import.py").resolve()),
+                        "--config",
+                        str(_COS_DAILY_CONFIG.resolve()),
+                        "--once",
+                        "--date",
+                        day_key,
+                        "--log-level",
+                        os.getenv("COS_DAILY_LOG_LEVEL", "INFO"),
+                    ]
+                    env = dict(os.environ)
+                    env.setdefault("PYTHONUNBUFFERED", "1")
+                    logger.info("Starting COS daily importer subprocess: %s", " ".join(cmd))
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(_BASE_DIR),
+                        env=env,
+                        stdout=proc_log,
+                        stderr=subprocess.STDOUT,
+                    )
 
                 time.sleep(max(5, interval_seconds))
             except Exception as e:
@@ -2535,95 +2598,101 @@ async def import_strategy_workbook(file: UploadFile = File(...), platform: Optio
     """
     if not file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="只支持 .xlsx")
-    p = _normalize_platform(platform)
+
     content = await file.read()
-    xl = pd.ExcelFile(BytesIO(content))
 
-    # Heuristics: pick first matching sheets, fallback to first/second sheet.
-    actual_sheet = None
-    strategy_sheet = None
-    for name in xl.sheet_names:
-        if actual_sheet is None and ("实际" in name and "分时" in name and "电量" in name):
-            actual_sheet = name
-        if strategy_sheet is None and ("报价" in name or "策略" in name):
-            strategy_sheet = name
-    if actual_sheet is None:
-        actual_sheet = xl.sheet_names[0]
-    if strategy_sheet is None and len(xl.sheet_names) >= 2:
-        strategy_sheet = xl.sheet_names[1]
+    def _run_sync() -> dict:
+        # Pandas/openpyxl parsing + SQL upserts can be slow; keep it off the event loop so other endpoints remain responsive.
+        p = _normalize_platform(platform)
+        xl = pd.ExcelFile(BytesIO(content))
 
-    profit_sheet_real = None
-    profit_sheet_expected = None
-    for name in xl.sheet_names:
-        if profit_sheet_real is None and ("收益测算" in name):
-            profit_sheet_real = name
-        if profit_sheet_expected is None and ("预期收益" in name or "无偏差" in name):
-            profit_sheet_expected = name
+        # Heuristics: pick first matching sheets, fallback to first/second sheet.
+        actual_sheet = None
+        strategy_sheet = None
+        for name in xl.sheet_names:
+            if actual_sheet is None and ("实际" in name and "分时" in name and "电量" in name):
+                actual_sheet = name
+            if strategy_sheet is None and ("报价" in name or "策略" in name):
+                strategy_sheet = name
+        if actual_sheet is None:
+            actual_sheet = xl.sheet_names[0]
+        if strategy_sheet is None and len(xl.sheet_names) >= 2:
+            strategy_sheet = xl.sheet_names[1]
 
-    inserted_actual = 0
-    inserted_settings = 0
-    inserted_price_hourly = 0
-    inserted_declared_hourly = 0
-    inserted_settlement_actual_hourly = 0
+        profit_sheet_real = None
+        profit_sheet_expected = None
+        for name in xl.sheet_names:
+            if profit_sheet_real is None and ("收益测算" in name):
+                profit_sheet_real = name
+            if profit_sheet_expected is None and ("预期收益" in name or "无偏差" in name):
+                profit_sheet_expected = name
 
-    # Actual hourly
-    try:
-        df_actual = pd.read_excel(BytesIO(content), sheet_name=actual_sheet, header=0, engine="openpyxl")
-        actual_records = _parse_actual_sheet_like_reference(df_actual)
-        inserted_actual = _upsert_actual_hourly(actual_records, platform=p)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"解析实际分时电量失败: {e}") from e
+        inserted_actual = 0
+        inserted_settings = 0
+        inserted_price_hourly = 0
+        inserted_declared_hourly = 0
+        inserted_settlement_actual_hourly = 0
 
-    # Strategy coeff
-    if strategy_sheet is not None:
+        # Actual hourly
         try:
-            df_strategy = pd.read_excel(BytesIO(content), sheet_name=strategy_sheet, header=0, engine="openpyxl")
-            settings = _parse_strategy_sheet_coeff(df_strategy)
-            for s in settings:
-                _upsert_day_settings(s["date"], s.get("strategy_coeff"), 0.0, s.get("note"), platform=p)
-                if s.get("strategy_coeff_hourly") is not None:
-                    _upsert_hourly_coeff(s["date"], s["strategy_coeff_hourly"], platform=p)
-            inserted_settings = len(settings)
-        except Exception:
-            # Not fatal: allow import actuals only.
-            inserted_settings = 0
+            df_actual = pd.read_excel(BytesIO(content), sheet_name=actual_sheet, header=0, engine="openpyxl")
+            actual_records = _parse_actual_sheet_like_reference(df_actual)
+            inserted_actual = _upsert_actual_hourly(actual_records, platform=p)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"解析实际分时电量失败: {e}") from e
 
-    # Hourly prices/diffs (from profit sheet)
-    if profit_sheet_real is not None:
-        try:
-            df_profit_price = pd.read_excel(BytesIO(content), sheet_name=profit_sheet_real, header=0, engine="openpyxl")
-            price_rows = _parse_price_hourly_from_profit_sheet(df_profit_price)
-            inserted_price_hourly = _upsert_price_hourly(price_rows, platform=p)
-        except Exception:
-            inserted_price_hourly = 0
+        # Strategy coeff
+        if strategy_sheet is not None:
+            try:
+                df_strategy = pd.read_excel(BytesIO(content), sheet_name=strategy_sheet, header=0, engine="openpyxl")
+                settings = _parse_strategy_sheet_coeff(df_strategy)
+                for s in settings:
+                    _upsert_day_settings(s["date"], s.get("strategy_coeff"), 0.0, s.get("note"), platform=p)
+                    if s.get("strategy_coeff_hourly") is not None:
+                        _upsert_hourly_coeff(s["date"], s["strategy_coeff_hourly"], platform=p)
+                inserted_settings = len(settings)
+            except Exception:
+                # Not fatal: allow import actuals only.
+                inserted_settings = 0
 
-        # Also import declared day-ahead energy (actual submitted) from the same sheet.
-        try:
-            declared_rows = _parse_declared_hourly_from_profit_sheet(df_profit_price)
-            inserted_declared_hourly = _upsert_declared_hourly(declared_rows, platform=p)
-        except Exception:
-            inserted_declared_hourly = 0
+        # Hourly prices/diffs (from profit sheet)
+        if profit_sheet_real is not None:
+            try:
+                df_profit_price = pd.read_excel(BytesIO(content), sheet_name=profit_sheet_real, header=0, engine="openpyxl")
+                price_rows = _parse_price_hourly_from_profit_sheet(df_profit_price)
+                inserted_price_hourly = _upsert_price_hourly(price_rows, platform=p)
+            except Exception:
+                inserted_price_hourly = 0
 
-        # Also import settlement actual hourly energy (real-time).
-        try:
-            rt_actual_rows = _parse_realtime_actual_hourly_from_profit_sheet(df_profit_price)
-            inserted_settlement_actual_hourly = _upsert_settlement_actual_hourly(rt_actual_rows, platform=p)
-        except Exception:
-            inserted_settlement_actual_hourly = 0
+            # Also import declared day-ahead energy (actual submitted) from the same sheet.
+            try:
+                declared_rows = _parse_declared_hourly_from_profit_sheet(df_profit_price)
+                inserted_declared_hourly = _upsert_declared_hourly(declared_rows, platform=p)
+            except Exception:
+                inserted_declared_hourly = 0
 
-    return {
-        "status": "success",
-        "platform": p,
-        "sheets": xl.sheet_names,
-        "used": {"actual_sheet": actual_sheet, "strategy_sheet": strategy_sheet},
-        "inserted": {
-            "actual_hourly": inserted_actual,
-            "day_settings": inserted_settings,
-            "price_hourly": inserted_price_hourly,
-            "declared_hourly": inserted_declared_hourly,
-            "settlement_actual_hourly": inserted_settlement_actual_hourly,
-        },
-    }
+            # Also import settlement actual hourly energy (real-time).
+            try:
+                rt_actual_rows = _parse_realtime_actual_hourly_from_profit_sheet(df_profit_price)
+                inserted_settlement_actual_hourly = _upsert_settlement_actual_hourly(rt_actual_rows, platform=p)
+            except Exception:
+                inserted_settlement_actual_hourly = 0
+
+        return {
+            "status": "success",
+            "platform": p,
+            "sheets": xl.sheet_names,
+            "used": {"actual_sheet": actual_sheet, "strategy_sheet": strategy_sheet},
+            "inserted": {
+                "actual_hourly": inserted_actual,
+                "day_settings": inserted_settings,
+                "price_hourly": inserted_price_hourly,
+                "declared_hourly": inserted_declared_hourly,
+                "settlement_actual_hourly": inserted_settlement_actual_hourly,
+            },
+        }
+
+    return await anyio.to_thread.run_sync(_run_sync)
 
 
 @app.post("/api/strategy/actual-hourly/upload")
@@ -3957,7 +4026,7 @@ async def update_weather(background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=f"启动天气更新任务失败: {str(e)}")
 
 @app.post("/import")
-async def import_file(filename: str = Form(...), background_tasks: BackgroundTasks = BackgroundTasks()):
+async def import_file(background_tasks: BackgroundTasks, filename: str = Form(...)):
     """导入指定的Excel文件到数据库"""
     data_folder = "data"
     file_path = os.path.join(data_folder, filename)
@@ -3970,27 +4039,43 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
     dated_realtime_pattern = r'\d{4}-\d{2}-\d{2}实时节点电价查询'
     dated_dayahead_pattern = r'\d{4}-\d{2}-\d{2}日前节点电价查询'
 
-    if "负荷实际信息" in filename or "负荷预测信息" in filename:
-        method = importer.import_power_data
-    # elif "信息披露(区域)查询实际信息" in filename:
-    #     method = importer.import_custom_excel
-    # elif "信息披露(区域)查询预测信息" in filename:
-    #     method = importer.import_custom_excel_pred
-    elif "信息披露查询预测信息" in filename:
-        method = importer.import_imformation_pred
-    elif "信息披露查询实际信息" in filename:
-        method = importer.import_imformation_true    
-    # 先处理带日期的特殊版本
-    elif re.search(dated_realtime_pattern, filename) or re.search(dated_dayahead_pattern, filename):
-        method = importer.import_point_data_new
-    # 然后处理不带日期的通用版本
-    elif "实时节点电价查询" in filename or "日前节点电价查询" in filename:
-        method = importer.import_point_data
-    else:
-        raise HTTPException(status_code=400, detail=f"无匹配的导入规则: {filename}")
+    def _detect_kind(name: str) -> str:
+        if "负荷实际信息" in name or "负荷预测信息" in name:
+            return "power"
+        if "信息披露查询预测信息" in name:
+            return "info_pred"
+        if "信息披露查询实际信息" in name:
+            return "info_true"
+        if re.search(dated_realtime_pattern, name) or re.search(dated_dayahead_pattern, name):
+            return "point_new"
+        if "实时节点电价查询" in name or "日前节点电价查询" in name:
+            return "point"
+        raise HTTPException(status_code=400, detail=f"无匹配的导入规则: {name}")
 
-    # 执行同步导入
-    result = method(file_path)
+    kind = _detect_kind(filename)
+
+    def _run_import_sync():
+        # Importing is CPU/IO heavy; run in a worker thread so the event loop can continue serving other requests.
+        imp = PowerDataImporter()
+        try:
+            if kind == "power":
+                return imp.import_power_data(file_path)
+            if kind == "info_pred":
+                return imp.import_imformation_pred(file_path)
+            if kind == "info_true":
+                return imp.import_imformation_true(file_path)
+            if kind == "point_new":
+                return imp.import_point_data_new(file_path)
+            if kind == "point":
+                return imp.import_point_data(file_path)
+            raise RuntimeError(f"Unknown import kind: {kind}")
+        finally:
+            try:
+                imp.db_manager.engine.dispose()
+            except Exception:
+                pass
+
+    result = await anyio.to_thread.run_sync(_run_import_sync)
     
     # 检查结果是否为 False (表示导入失败)
     if result is False:
@@ -4014,7 +4099,7 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
         # 触发缓存更新：电价或负荷导入都会影响 cache_daily_hourly
         should_update_cache = False
         if target_date:
-            if method in (importer.import_power_data, importer.import_point_data, importer.import_point_data_new):
+            if kind in ("power", "point", "point_new"):
                 should_update_cache = True
             # 保持原有行为：信息披露类文件也会尝试更新缓存
             elif "信息披露" in filename:
@@ -4027,7 +4112,7 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
     except Exception as e:
         print(f"⚠️ 自动触发缓存更新失败: {e}")
 
-    if method == importer.import_imformation_pred:
+    if kind == "info_pred":
         # 结果可能是单个四元组 (success, table, count, preview)
         # 也可能是多个四元组的元组 ((s1,t1,c1,p1), (s2,t2,c2,p2))
         
@@ -4051,7 +4136,7 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
         else:
              raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
     
-    elif method == importer.import_imformation_true:
+    elif kind == "info_true":
          if isinstance(result, tuple) and len(result) == 4:
              success, table_name, record_count, preview_data = result
          # 处理可能返回None的情况（例如导入过程报错了）
@@ -4074,7 +4159,7 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
              print(f"DEBUG: import_imformation_true returned: {type(result)} - {result}")
              raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
 
-    elif method == importer.import_custom_excel:
+    elif kind == "custom_actual":
         if isinstance(result, tuple) and len(result) == 3:
             # 解包三个结果元组
             (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2),(success3,table_name3,record_count3,preview_data3) = result
@@ -4086,7 +4171,7 @@ async def import_file(filename: str = Form(...), background_tasks: BackgroundTas
         else:
              raise HTTPException(status_code=500, detail=f"导入返回格式错误: {result}")
 
-    elif method == importer.import_custom_excel_pred:
+    elif kind == "custom_pred":
         if isinstance(result, tuple) and len(result) == 4:
             (success1, table_name1, record_count1, preview_data1), (success2, table_name2, record_count2, preview_data2), (success4, table_name4, record_count4, preview_data4), (success5, table_name5, record_count5, preview_data5) = result
             # 合并结果，这里我们使用四个结果的组合
@@ -4582,15 +4667,96 @@ async def import_all_files(background_tasks: BackgroundTasks):
     if not excel_files:
         raise HTTPException(status_code=404, detail=f"在 {data_folder} 文件夹中未找到任何Excel文件")
     
-    # 添加所有文件到后台任务
-    for excel_file in excel_files:
-        filename = os.path.basename(excel_file)
-        # 修复：正确传递参数
-        background_tasks.add_task(import_file, filename=filename)
+    filenames = [os.path.basename(p) for p in excel_files]
+
+    def _detect_kind(name: str) -> str:
+        dated_realtime_pattern = r"\d{4}-\d{2}-\d{2}实时节点电价查询"
+        dated_dayahead_pattern = r"\d{4}-\d{2}-\d{2}日前节点电价查询"
+
+        if "负荷实际信息" in name or "负荷预测信息" in name:
+            return "power"
+        if "信息披露查询预测信息" in name:
+            return "info_pred"
+        if "信息披露查询实际信息" in name:
+            return "info_true"
+        if re.search(dated_realtime_pattern, name) or re.search(dated_dayahead_pattern, name):
+            return "point_new"
+        if "实时节点电价查询" in name or "日前节点电价查询" in name:
+            return "point"
+        return "unknown"
+
+    def _maybe_extract_target_date(name: str) -> Optional[str]:
+        try:
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", name)
+            if not m:
+                m = re.search(r"(\d{8})", name)
+            if not m:
+                return None
+            d_str = m.group(1)
+            if len(d_str) == 8:
+                return f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+            return d_str
+        except Exception:
+            return None
+
+    def _run_import_sync(name: str) -> None:
+        kind = _detect_kind(name)
+        if kind == "unknown":
+            logger.warning("import-all: skip (no rule): %s", name)
+            return
+
+        file_path = os.path.join(data_folder, name)
+        if not os.path.exists(file_path):
+            logger.warning("import-all: skip (missing file): %s", file_path)
+            return
+
+        imp = PowerDataImporter()
+        try:
+            if kind == "power":
+                result = imp.import_power_data(file_path)
+            elif kind == "info_pred":
+                result = imp.import_imformation_pred(file_path)
+            elif kind == "info_true":
+                result = imp.import_imformation_true(file_path)
+            elif kind == "point_new":
+                result = imp.import_point_data_new(file_path)
+            elif kind == "point":
+                result = imp.import_point_data(file_path)
+            else:
+                logger.warning("import-all: skip (unknown kind): %s", name)
+                return
+
+            if result is False:
+                logger.error("import-all: failed: %s", name)
+                return
+        except Exception as e:
+            logger.exception("import-all: failed: %s | err=%s", name, e)
+            return
+        finally:
+            try:
+                imp.db_manager.engine.dispose()
+            except Exception:
+                pass
+
+        # Best-effort cache refresh. This runs in the background task thread, so it won't block the API event loop.
+        try:
+            target_date = _maybe_extract_target_date(name)
+            if target_date:
+                if kind in ("power", "point", "point_new") or ("信息披露" in name):
+                    update_price_cache_for_date(target_date)
+        except Exception as e:
+            logger.warning("import-all: cache update failed for %s: %s", name, e)
+
+    def _run_all_sync():
+        for name in sorted(filenames):
+            _run_import_sync(name)
+
+    # Run batch import in a background thread so other endpoints keep working during import.
+    background_tasks.add_task(_run_all_sync)
     
     return {
         "total": len(excel_files),
-        "files": [os.path.basename(file) for file in excel_files],
+        "files": filenames,
         "status": "importing"
     }
 
