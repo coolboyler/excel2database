@@ -256,6 +256,56 @@
         }
       },
       "total_attempts": 4
+    },
+    "2026-02-01": {
+      "targets": {
+        "dayahead_node_price": {
+          "attempted_at": "2026-02-01T09:28:03.872645+00:00",
+          "attempts": 1,
+          "etag": "347a185b912ea4bf3e6d02e3eeeff53b",
+          "key": "4、组织中心/5、日前节点电价查询/data/day_ahead/日前节点电价查询(2026-02-01).xlsx",
+          "last_modified": "2026-02-01T03:34:28+00:00",
+          "status": "done",
+          "wanted_dates": [
+            "2026-02-01"
+          ]
+        },
+        "info_disclose_actual": {
+          "attempted_at": "2026-02-01T09:28:33.558504+00:00",
+          "attempts": 1,
+          "etag": "349c4fe79bfced71855a7a257da77ae1",
+          "key": "3、披露中心/1、信息披露查询/data/info_disclose/实际/信息披露查询实际信息(2026-01-30).xlsx",
+          "last_modified": "2026-01-31T03:30:04+00:00",
+          "status": "done",
+          "wanted_dates": [
+            "2026-01-31",
+            "2026-01-30"
+          ]
+        },
+        "info_disclose_forecast": {
+          "attempted_at": "2026-02-01T09:28:30.988036+00:00",
+          "attempts": 1,
+          "etag": "1fbc484e4331a61ed149436ffa72805f",
+          "key": "3、披露中心/1、信息披露查询/data/info_disclose/预测/信息披露查询预测信息(2026-02-02).xlsx",
+          "last_modified": "2026-02-01T03:34:28+00:00",
+          "status": "done",
+          "wanted_dates": [
+            "2026-02-02"
+          ]
+        },
+        "realtime_node_price": {
+          "attempted_at": "2026-02-01T09:28:17.607413+00:00",
+          "attempts": 1,
+          "etag": "6a6cd77fba31891febf71f040f81bf14",
+          "key": "4、组织中心/6、实时节点电价查询/data/real_time/实时节点电价查询(2026-01-30).xlsx",
+          "last_modified": "2026-02-01T03:34:29+00:00",
+          "status": "done",
+          "wanted_dates": [
+            "2026-01-30"
+          ]
+        }
+      },
+      "total_attempts": 4
     }
   }
 }
