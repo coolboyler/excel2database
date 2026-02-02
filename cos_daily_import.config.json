@@ -7,7 +7,7 @@
   "polling": {
     "start_hhmm": "11:20",
     "end_hhmm": "12:00",
-    "interval_seconds": 60
+    "interval_seconds": 20
   },
   "local": {
     "download_dir": "./temp_cos_downloads",
