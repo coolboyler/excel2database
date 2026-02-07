@@ -523,8 +523,21 @@
         // Init Date
         const urlParams = new URLSearchParams(window.location.search);
         const dateParam = urlParams.get('date');
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('queryDate').value = dateParam || today;
+        
+        // 获取负荷实际信息有值的最新日期
+        async function getLatestDateWithLoadActual() {
+            try {
+                const res = await fetch('/api/cache-available-dates?require_load_actual=true&limit=1');
+                const json = await res.json();
+                if (json.status === 'success' && json.dates && json.dates.length > 0) {
+                    return json.dates[0]; // 返回最新日期
+                }
+            } catch (e) {
+                console.warn('获取最新负荷实际日期失败:', e);
+            }
+            //  fallback: 返回今天
+            return new Date().toISOString().split('T')[0];
+        }
 
         let charts = [];
 
@@ -826,7 +839,6 @@
         const queryDatePicker = flatpickr("#queryDate", {
             locale: "zh",
             dateFormat: "Y-m-d",
-            defaultDate: dateParam || new Date(), // Use URL param or today
             theme: "material_blue",
             allowInput: false,
             clickOpens: true,
@@ -937,8 +949,19 @@
 
         window.addEventListener('resize', () => charts.forEach(c => c.resize()));
         
-        // Initial load
-        queryData();
+        // Initial load - 先获取最新有负荷实际值的日期，再查询数据
+        async function init() {
+            const latestDate = await getLatestDateWithLoadActual();
+            const finalDate = dateParam || latestDate;
+            document.getElementById('queryDate').value = finalDate;
+            // 更新日期选择器的默认日期
+            if (queryDatePicker) {
+                queryDatePicker.setDate(finalDate);
+            }
+            queryData();
+        }
+        
+        init();
     </script>
 </body>
 </html>
