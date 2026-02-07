@@ -13,3 +13,5 @@ cos_daily_auto_import.log
 .env
 *.env
 *.xlsx
+state/cos_daily_state.json
+state/weather_update_state.json
