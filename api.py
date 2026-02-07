@@ -4108,6 +4108,12 @@ async def import_file(background_tasks: BackgroundTasks, filename: str = Form(..
         if should_update_cache:
             print(f"🚀 自动触发缓存更新任务: {target_date}")
             background_tasks.add_task(update_price_cache_for_date, target_date)
+            # [新增] 若导入了“实时节点电价”，同时更新广东城市日均缓存表（避免城市电价页面首次加载很慢）
+            if kind in ("point", "point_new") and ("实时节点" in filename):
+                background_tasks.add_task(update_gd_city_rt_price_daily_for_date, target_date)
+            # [新增] 导入节点电价(日前/实时)后，更新广东 DA/RT 小时曲线缓存表（用于城市电价页面快速切换日期）
+            if kind in ("point", "point_new") and ("节点电价" in filename):
+                background_tasks.add_task(update_gd_price_hourly_cache_for_date, target_date)
             
     except Exception as e:
         print(f"⚠️ 自动触发缓存更新失败: {e}")
@@ -4744,6 +4750,12 @@ async def import_all_files(background_tasks: BackgroundTasks):
             if target_date:
                 if kind in ("power", "point", "point_new") or ("信息披露" in name):
                     update_price_cache_for_date(target_date)
+                # If this import is a realtime node price sheet, also update Guangdong city daily cache.
+                if kind in ("point", "point_new") and ("实时节点" in name):
+                    update_gd_city_rt_price_daily_for_date(target_date)
+                # If this import is a node price sheet (DA/RT), update Guangdong hourly curve cache.
+                if kind in ("point", "point_new") and ("节点电价" in name):
+                    update_gd_price_hourly_cache_for_date(target_date)
         except Exception as e:
             logger.warning("import-all: cache update failed for %s: %s", name, e)
 
@@ -5907,6 +5919,11 @@ async def multi_day_compare_page(request: Request):
     """返回多日对比看板页面"""
     return templates.TemplateResponse("multi_day_compare.html", {"request": request})
 
+@app.get("/gd_city_price", response_class=HTMLResponse)
+async def gd_city_price_page(request: Request):
+    """返回广东各城市实时节点电价对比页面"""
+    return templates.TemplateResponse("gd_city_price.html", {"request": request})
+
 @app.get("/strategy_quote", response_class=HTMLResponse)
 async def strategy_quote_page(request: Request, platform: Optional[str] = None):
     """报价/申报页面（策略系数 + 申报电量计算）"""
@@ -5930,6 +5947,7 @@ async def strategy_review_diag_page(request: Request, date: Optional[str] = None
 async def cache_available_dates(
     limit: int = Query(400, ge=1, le=2000),
     require_load: bool = Query(False, description="仅返回负荷预测(load_forecast)有值的日期"),
+    require_load_actual: bool = Query(False, description="仅返回负荷实际(load_actual)有值的日期"),
 ):
     """返回缓存表 cache_daily_hourly 中可用的日期列表（倒序）"""
     try:
@@ -5943,18 +5961,37 @@ async def cache_available_dates(
 
         limit_int = max(1, min(int(limit), 2000))
         with db_manager.engine.connect() as conn:
-            if require_load:
-                sql = text(
-                    f"""
-                    SELECT record_date
-                    FROM {table_name}
-                    GROUP BY record_date
-                    HAVING SUM(CASE WHEN load_forecast IS NOT NULL AND load_forecast <> 0 THEN 1 ELSE 0 END) > 0
-                    ORDER BY record_date DESC
-                    LIMIT {limit_int}
-                    """
-                )
-            else:
+            # Prefer filtering in SQL; if column missing (older cache schema), fallback gracefully.
+            try:
+                if require_load or require_load_actual:
+                    having_parts = []
+                    if require_load:
+                        having_parts.append("SUM(CASE WHEN load_forecast IS NOT NULL AND load_forecast <> 0 THEN 1 ELSE 0 END) > 0")
+                    if require_load_actual:
+                        having_parts.append("SUM(CASE WHEN load_actual IS NOT NULL AND load_actual <> 0 THEN 1 ELSE 0 END) > 0")
+                    having_sql = " AND ".join(having_parts) if having_parts else "1=1"
+                    sql = text(
+                        f"""
+                        SELECT record_date
+                        FROM {table_name}
+                        GROUP BY record_date
+                        HAVING {having_sql}
+                        ORDER BY record_date DESC
+                        LIMIT {limit_int}
+                        """
+                    )
+                else:
+                    sql = text(
+                        f"""
+                        SELECT DISTINCT record_date
+                        FROM {table_name}
+                        ORDER BY record_date DESC
+                        LIMIT {limit_int}
+                        """
+                    )
+                result = conn.execute(sql).fetchall()
+            except Exception:
+                # Fallback: older cache table may not have load_actual/load_forecast columns.
                 sql = text(
                     f"""
                     SELECT DISTINCT record_date
@@ -5963,7 +6000,7 @@ async def cache_available_dates(
                     LIMIT {limit_int}
                     """
                 )
-            result = conn.execute(sql).fetchall()
+                result = conn.execute(sql).fetchall()
 
         dates = []
         for row in result:
@@ -5979,6 +6016,7 @@ async def cache_available_dates(
             "total": len(dates),
             "table": table_name,
             "require_load": require_load,
+            "require_load_actual": require_load_actual,
         }
     except Exception as e:
         import traceback
@@ -6092,6 +6130,468 @@ async def get_multi_day_compare_data_by_dates(request: MultiDayCompareDatesReque
             "segments": segments,
             "data": data,
             "requested_dates": valid_dates,
+        }
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+
+@app.get("/api/gd-city-price")
+async def get_gd_city_price(date: str = Query(..., description="目标日期 YYYY-MM-DD")):
+    """
+    广东各城市实时节点电价对比：
+    - 柱状图：各城市当日实时节点电价均值（按小时聚合后再求日均）
+    - 折线图：当日全省（或系统均值）日前/实时节点电价（来自 cache_daily_hourly）
+    - 价差异常：从 cache_daily_hourly 抽取价差最大小时，并附带信息披露/负荷/新能源等字段用于排查原因
+    """
+    try:
+        try:
+            d = datetime.date.fromisoformat(str(date))
+        except Exception:
+            d = pd.to_datetime(date).date()
+        date_str = d.strftime("%Y-%m-%d")
+
+        gd_city_daily_table = "gd_city_rt_price_daily"
+
+        # 1) 原始节点电价日表（用于城市对比）
+        power_table = f"power_data_{d.strftime('%Y%m%d')}"
+        try:
+            with db_manager.engine.connect() as conn:
+                conn.execute(text(f"SELECT 1 FROM {power_table} LIMIT 1")).fetchone()
+        except Exception:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "message": "当日 power_data 日表不存在", "date": date_str, "table": power_table},
+            )
+
+        # 注意：这里不再在“页面查询”时刷新 cache_daily_hourly。
+        # update_price_cache_for_date(...) 可能会扫描/聚合大量历史数据，会让“切换日期”非常慢。
+        # 缓存应在导入流程/定时任务中更新；页面侧只读（如缺失则降级显示）。
+
+        # ---- A. 广东各城市实时节点电价日均（优先从独立表读；缺失则从原始节点聚合并写回） ----
+        gd_cities = list(getattr(importer, "_CITY_LIST_GD", []) or [])
+        gd_set = set(gd_cities)
+
+        city_daily: List[Dict[str, Any]] = []
+        loaded_from_city_cache = False
+
+        # Try fast path from cache table first.
+        try:
+            with db_manager.engine.connect() as conn:
+                cached = (
+                    conn.execute(
+                        text(
+                            f"""
+                            SELECT city, rt_daily_mean, hours_with_data, raw_rows
+                            FROM `{gd_city_daily_table}`
+                            WHERE record_date = :d
+                            """
+                        ),
+                        {"d": date_str},
+                    )
+                    .mappings()
+                    .fetchall()
+                )
+            if cached:
+                city_daily = [
+                    {
+                        "city": r.get("city"),
+                        "rt_daily_mean": float(r["rt_daily_mean"]) if r.get("rt_daily_mean") is not None else None,
+                        "hours_with_data": int(r["hours_with_data"]) if r.get("hours_with_data") is not None else 0,
+                        "raw_rows": int(r["raw_rows"]) if r.get("raw_rows") is not None else 0,
+                    }
+                    for r in cached
+                    if r.get("city")
+                ]
+                # If we have most cities, trust cache for speed.
+                has_any_data = any((r.get("raw_rows") or 0) > 0 or (r.get("hours_with_data") or 0) > 0 for r in city_daily)
+                if has_any_data and len(city_daily) >= max(1, int(len(gd_cities) * 0.8)):
+                    loaded_from_city_cache = True
+        except Exception:
+            loaded_from_city_cache = False
+
+        # Cache miss: compute city daily means from the raw per-day table, then upsert cache.
+        #
+        # IMPORTANT for UX:
+        # - Avoid Python-side full table fetch/loops (can be tens of thousands of rows and slow over network).
+        # - Prefer small aggregates executed in MySQL.
+        if not loaded_from_city_cache:
+            # Quick short-circuit: if the day has no realtime node price at all, don't scan/aggregate.
+            try:
+                with db_manager.engine.connect() as conn:
+                    has_rt = conn.execute(
+                        text(
+                            f"""
+                            SELECT 1
+                            FROM {power_table}
+                            WHERE (type LIKE '%节点电价%' AND type LIKE '%实时%')
+                            LIMIT 1
+                            """
+                        )
+                    ).fetchone()
+                if not has_rt:
+                    city_daily = [{"city": c, "rt_daily_mean": None, "hours_with_data": 0, "raw_rows": 0} for c in gd_cities]
+                else:
+                    # Prefer ultra-fast path when "{city}_节点均价" rows exist (typically 21*24 rows).
+                    computed: Dict[str, Dict[str, Any]] = {}
+                    try:
+                        with db_manager.engine.connect() as conn:
+                            rows = conn.execute(
+                                text(
+                                    f"""
+                                    SELECT
+                                      SUBSTRING_INDEX(channel_name, '_', 1) AS city,
+                                      AVG(hour_avg) AS rt_daily_mean,
+                                      COUNT(*) AS hours_with_data,
+                                      SUM(cnt) AS raw_rows
+                                    FROM (
+                                      SELECT
+                                        channel_name,
+                                        HOUR(record_time) AS hour,
+                                        AVG(value) AS hour_avg,
+                                        COUNT(*) AS cnt
+                                      FROM {power_table}
+                                      WHERE channel_name LIKE :pat
+                                        AND (type LIKE '%节点电价%' AND type LIKE '%实时%')
+                                        AND record_time IS NOT NULL
+                                      GROUP BY channel_name, HOUR(record_time)
+                                    ) t
+                                    GROUP BY SUBSTRING_INDEX(channel_name, '_', 1)
+                                    """
+                                ),
+                                {"pat": "%\\_节点均价"},
+                            ).mappings().fetchall()
+                        # Only trust this path when it looks like we have enough hours.
+                        for r in rows or []:
+                            c = r.get("city")
+                            if not c:
+                                continue
+                            computed[str(c)] = {
+                                "rt_daily_mean": float(r["rt_daily_mean"]) if r.get("rt_daily_mean") is not None else None,
+                                "hours_with_data": int(r.get("hours_with_data") or 0),
+                                "raw_rows": int(r.get("raw_rows") or 0),
+                            }
+                        ok_fast = sum(1 for c in computed.values() if (c.get("hours_with_data") or 0) >= 12) >= max(1, int(len(gd_cities) * 0.6))
+                    except Exception:
+                        computed = {}
+                        ok_fast = False
+
+                    # Fallback: prefix-based city aggregation in SQL (still fast, avoids fetching all raw rows to Python).
+                    if not ok_fast:
+                        case_parts = ["CASE"]
+                        for c in gd_cities:
+                            case_parts.append(f"WHEN channel_name LIKE '{c}%' THEN '{c}'")
+                        case_parts.append("ELSE NULL END")
+                        case_city = "\n".join(case_parts)
+
+                        with db_manager.engine.connect() as conn:
+                            rows = conn.execute(
+                                text(
+                                    f"""
+                                    SELECT city,
+                                           AVG(hour_avg) AS rt_daily_mean,
+                                           COUNT(*) AS hours_with_data,
+                                           SUM(cnt) AS raw_rows
+                                    FROM (
+                                        SELECT
+                                            {case_city} AS city,
+                                            HOUR(record_time) AS hour,
+                                            AVG(value) AS hour_avg,
+                                            COUNT(*) AS cnt
+                                        FROM {power_table}
+                                        WHERE (type LIKE '%节点电价%' AND type LIKE '%实时%')
+                                          AND channel_name NOT LIKE '%均值%'
+                                          AND channel_name NOT LIKE '%节点均价%'
+                                          AND channel_name <> '节点电价'
+                                          AND record_time IS NOT NULL
+                                        GROUP BY city, hour
+                                    ) t
+                                    WHERE city IS NOT NULL
+                                    GROUP BY city
+                                    """
+                                )
+                            ).mappings().fetchall()
+
+                        computed = {}
+                        for r in rows or []:
+                            c = r.get("city")
+                            if not c:
+                                continue
+                            computed[str(c)] = {
+                                "rt_daily_mean": float(r["rt_daily_mean"]) if r.get("rt_daily_mean") is not None else None,
+                                "hours_with_data": int(r.get("hours_with_data") or 0),
+                                "raw_rows": int(r.get("raw_rows") or 0),
+                            }
+
+                    city_daily = []
+                    cache_rows_to_upsert = []
+                    for c in gd_cities:
+                        rr = computed.get(c) or {}
+                        city_daily.append(
+                            {
+                                "city": c,
+                                "rt_daily_mean": rr.get("rt_daily_mean"),
+                                "hours_with_data": int(rr.get("hours_with_data") or 0),
+                                "raw_rows": int(rr.get("raw_rows") or 0),
+                            }
+                        )
+                        cache_rows_to_upsert.append(
+                            {
+                                "record_date": date_str,
+                                "city": c,
+                                "rt_daily_mean": rr.get("rt_daily_mean"),
+                                "hours_with_data": int(rr.get("hours_with_data") or 0),
+                                "raw_rows": int(rr.get("raw_rows") or 0),
+                            }
+                        )
+
+                    # Upsert cache for future fast loads.
+                    try:
+                        with db_manager.engine.begin() as conn:
+                            conn.execute(
+                                text(
+                                    f"""
+                                    CREATE TABLE IF NOT EXISTS `{gd_city_daily_table}` (
+                                        `record_date` DATE NOT NULL,
+                                        `city` VARCHAR(50) NOT NULL,
+                                        `rt_daily_mean` FLOAT NULL,
+                                        `hours_with_data` TINYINT NULL,
+                                        `raw_rows` INT NULL,
+                                        `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                                        PRIMARY KEY (`record_date`, `city`),
+                                        KEY `idx_city` (`city`)
+                                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                                    """
+                                )
+                            )
+                            conn.execute(
+                                text(
+                                    f"""
+                                    INSERT INTO `{gd_city_daily_table}`
+                                    (`record_date`, `city`, `rt_daily_mean`, `hours_with_data`, `raw_rows`)
+                                    VALUES (:record_date, :city, :rt_daily_mean, :hours_with_data, :raw_rows)
+                                    ON DUPLICATE KEY UPDATE
+                                      `rt_daily_mean`=VALUES(`rt_daily_mean`),
+                                      `hours_with_data`=VALUES(`hours_with_data`),
+                                      `raw_rows`=VALUES(`raw_rows`)
+                                    """
+                                ),
+                                cache_rows_to_upsert,
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                # If anything goes wrong, keep endpoint alive; return empty bars for the day.
+                city_daily = [{"city": c, "rt_daily_mean": None, "hours_with_data": 0, "raw_rows": 0} for c in gd_cities]
+
+        # 默认按均值倒序（无数据放最后）
+        city_daily.sort(key=lambda x: (x["rt_daily_mean"] is not None, x["rt_daily_mean"] or -1e18), reverse=True)
+
+        # ---- B. 当日前/实时均价曲线（小时级）：优先读独立缓存表（切换日期更快）----
+        hours = list(range(24))
+        price_da = [None] * 24
+        price_rt = [None] * 24
+        price_diff = [None] * 24
+
+        curve_table = "gd_price_hourly_cache"
+
+        def _load_curve_from_cache() -> int:
+            """Returns number of rows loaded."""
+            try:
+                with db_manager.engine.connect() as conn:
+                    rows = conn.execute(
+                        text(
+                            f"""
+                            SELECT hour, price_da, price_rt, price_diff
+                            FROM `{curve_table}`
+                            WHERE record_date=:d
+                            ORDER BY hour ASC
+                            """
+                        ),
+                        {"d": date_str},
+                    ).fetchall()
+                if not rows:
+                    return 0
+                for h, da, rt, diff in rows:
+                    try:
+                        hh = int(h)
+                    except Exception:
+                        continue
+                    if 0 <= hh <= 23:
+                        price_da[hh] = float(da) if da is not None else None
+                        price_rt[hh] = float(rt) if rt is not None else None
+                        price_diff[hh] = float(diff) if diff is not None else None
+                return len(rows)
+            except Exception:
+                return 0
+
+        loaded = _load_curve_from_cache()
+        curve_cache_hit = loaded >= 20
+        # If missing, compute once and store. This makes subsequent date switches instant.
+        if loaded < 20:
+            try:
+                update_gd_price_hourly_cache_for_date(date_str, cache_table=curve_table)
+            except Exception:
+                pass
+            _load_curve_from_cache()
+
+        # 可选：从 cache_daily_hourly 补充“原因排查”字段（负荷/新能源/天气等）
+        cache_by_hour: Dict[int, Dict[str, Any]] = {}
+        cache_table = "cache_daily_hourly"
+        try:
+            needed_cols = [
+                "hour",
+                "load_forecast",
+                "load_actual",
+                "load_deviation",
+                "new_energy_forecast",
+                "ne_total_actual",
+                "ne_pv_forecast",
+                "ne_wind_forecast",
+                "spot_ne_d_forecast",
+                "temperature",
+                "weather",
+                "day_type",
+            ]
+            with db_manager.engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        f"""
+                        SELECT {', '.join(needed_cols)}
+                        FROM {cache_table}
+                        WHERE record_date=:d
+                        ORDER BY hour ASC
+                        """
+                    ),
+                    {"d": date_str},
+                ).mappings().fetchall()
+            for row in rows or []:
+                h = row.get("hour")
+                try:
+                    hh = int(h)
+                except Exception:
+                    continue
+                if 0 <= hh <= 23:
+                    cache_by_hour[hh] = dict(row)
+        except Exception:
+            cache_by_hour = {}
+
+        def _to_float(x):
+            try:
+                if x is None:
+                    return None
+                return float(x)
+            except Exception:
+                return None
+
+        def _nanmean(vals: List[Optional[float]]):
+            xs = [v for v in vals if isinstance(v, (int, float))]
+            return float(np.mean(xs)) if xs else None
+
+        daily_da_mean = _nanmean(price_da)
+        daily_rt_mean = _nanmean(price_rt)
+
+        # ---- C. 价差异常小时（附带信息披露实际/预测字段，供排查原因）----
+        # 选绝对价差最大的前 N 小时
+        diffs = []
+        for h in range(24):
+            v = price_diff[h]
+            if v is None:
+                continue
+            diffs.append((h, float(v)))
+        diffs.sort(key=lambda x: abs(x[1]), reverse=True)
+        top_hours = diffs[:8]
+
+        def _seg_name(h: int):
+            if 7 <= h <= 10:
+                return "早高峰"
+            if 11 <= h <= 14:
+                return "中午光伏大发"
+            if 18 <= h <= 21:
+                return "晚高峰"
+            return ""
+
+        def _reason_tags(h: int, row: Dict[str, Any]):
+            tags = []
+            diff = price_diff[h] if 0 <= int(h) <= 23 else None
+            if diff is None:
+                return tags
+            if abs(diff) >= 80:
+                tags.append("价差极大")
+            elif abs(diff) >= 50:
+                tags.append("价差偏大")
+
+            # 负荷偏差（若有）
+            lf = _to_float(row.get("load_forecast"))
+            la = _to_float(row.get("load_actual"))
+            ld = _to_float(row.get("load_deviation"))
+            if ld is None and lf is not None and la is not None:
+                ld = lf - la
+            if lf not in (None, 0.0) and ld is not None:
+                ratio = ld / lf
+                if ratio >= 0.02:
+                    tags.append("预测负荷偏高")
+                elif ratio <= -0.02:
+                    tags.append("预测负荷偏低")
+
+            # 新能源偏差（若有）
+            nef = _to_float(row.get("new_energy_forecast"))
+            nea = _to_float(row.get("ne_total_actual"))
+            if nef is not None and nea not in (None, 0.0):
+                ratio = (nef - nea) / max(abs(nea), 1.0)
+                if ratio >= 0.05:
+                    tags.append("新能源预测偏高")
+                elif ratio <= -0.05:
+                    tags.append("新能源预测偏低")
+
+            seg = _seg_name(h)
+            if seg:
+                tags.append(seg)
+            return tags
+
+        anomaly_rows = []
+        for h, _v in top_hours:
+            row = cache_by_hour.get(h) or {"hour": h}
+            row_out = {
+                "hour": h,
+                "segment": _seg_name(h),
+                "price_da": _to_float(row.get("price_da")) if row.get("price_da") is not None else price_da[h],
+                "price_rt": _to_float(row.get("price_rt")) if row.get("price_rt") is not None else price_rt[h],
+                "price_diff": _to_float(row.get("price_diff")) if row.get("price_diff") is not None else price_diff[h],
+                "load_forecast": _to_float(row.get("load_forecast")),
+                "load_actual": _to_float(row.get("load_actual")),
+                "load_deviation": _to_float(row.get("load_deviation")),
+                "new_energy_forecast": _to_float(row.get("new_energy_forecast")),
+                "ne_total_actual": _to_float(row.get("ne_total_actual")),
+                "ne_pv_forecast": _to_float(row.get("ne_pv_forecast")),
+                "ne_wind_forecast": _to_float(row.get("ne_wind_forecast")),
+                "spot_ne_d_forecast": _to_float(row.get("spot_ne_d_forecast")),
+                "temperature": _to_float(row.get("temperature")),
+                "weather": row.get("weather"),
+                "day_type": row.get("day_type"),
+                "tags": _reason_tags(h, row),
+            }
+            anomaly_rows.append(row_out)
+
+        return {
+            "status": "success",
+            "date": date_str,
+            "source": {
+                "city_rt": (f"{gd_city_daily_table} (cached)" if loaded_from_city_cache else f"{power_table} (聚合并写入 {gd_city_daily_table})"),
+                "da_rt_curve": (f"{curve_table} (cached)" if curve_cache_hit else f"{curve_table} (computed from {power_table})"),
+                "anomaly": "power_data 曲线 + cache_daily_hourly 补充字段(若存在: 负荷/新能源/天气等)",
+            },
+            "cities": city_daily,
+            "overall": {
+                "hours": hours,
+                "price_da": price_da,
+                "price_rt": price_rt,
+                "price_diff": price_diff,
+                "daily_da_mean": daily_da_mean,
+                "daily_rt_mean": daily_rt_mean,
+            },
+            "anomalies": anomaly_rows,
         }
     except Exception as e:
         import traceback
@@ -6676,6 +7176,299 @@ def update_price_cache_for_date(target_date_str: str, only_weather: bool = False
         return len(clean_batch)
     
     return 0
+
+def update_gd_city_rt_price_daily_for_date(target_date_str: str, cache_table: str = "gd_city_rt_price_daily") -> int:
+    """
+    更新指定日期的“广东各城市实时节点电价(日均)”缓存表。
+
+    - 来源：power_data_YYYYMMDD（原始节点记录，type 包含 实时 + 节点电价）
+    - 聚合方式：先按 (city, hour) 求均值，再对 24 小时均值求 AVG，保证每个小时等权重。
+    - 城市识别：节点名称前缀匹配（如 '广州xxx' -> '广州'），与现有导入文件命名习惯一致。
+    """
+    try:
+        d_obj = pd.to_datetime(target_date_str).date()
+        date_str = d_obj.strftime("%Y-%m-%d")
+    except Exception:
+        return 0
+
+    power_table = f"power_data_{d_obj.strftime('%Y%m%d')}"
+    try:
+        if power_table not in db_manager.get_tables():
+            return 0
+    except Exception:
+        # If table listing fails, still try; SQL will fail and be caught below.
+        pass
+
+    cities = list(getattr(importer, "_CITY_LIST_GD", []) or [])
+    if not cities:
+        return 0
+
+    # We prefer the importer city-mapping logic (prefix + cached mapping file) because many node names
+    # may not start with the city prefix. This runs in background tasks (non-blocking for UI).
+    with db_manager.engine.begin() as conn:
+        # Ensure cache table exists.
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{cache_table}` (
+                    `record_date` DATE NOT NULL,
+                    `city` VARCHAR(50) NOT NULL,
+                    `rt_daily_mean` FLOAT NULL,
+                    `hours_with_data` TINYINT NULL,
+                    `raw_rows` INT NULL,
+                    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`record_date`, `city`),
+                    KEY `idx_city` (`city`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+        )
+        # 1) Fast path: if city hourly means already exist in power table, use them (tiny scan).
+        city_hour_sum: Dict[str, Dict[int, float]] = {c: {} for c in cities}
+        city_hour_cnt: Dict[str, Dict[int, int]] = {c: {} for c in cities}
+        city_raw_rows: Dict[str, int] = {c: 0 for c in cities}
+
+        try:
+            res = conn.execute(
+                text(
+                    f"""
+                    SELECT record_time, channel_name, value
+                    FROM {power_table}
+                    WHERE channel_name LIKE :pat
+                      AND (type LIKE '%节点电价%' AND type LIKE '%实时%')
+                      AND record_time IS NOT NULL
+                    """
+                ),
+                {"pat": "%\\_节点均价"},
+            )
+            n_city_rows = 0
+            for row in res:
+                m = dict(row._mapping)
+                ch = m.get("channel_name")
+                if not ch:
+                    continue
+                # Expected format: "{city}_节点均价"
+                if "_节点均价" not in str(ch):
+                    continue
+                city = str(ch).split("_", 1)[0]
+                if city not in city_hour_sum:
+                    continue
+                hour = importer._extract_hour(m.get("record_time")) if hasattr(importer, "_extract_hour") else None
+                if hour is None or hour < 0 or hour > 23:
+                    continue
+                try:
+                    val = float(m.get("value"))
+                except Exception:
+                    continue
+                city_hour_sum[city][hour] = city_hour_sum[city].get(hour, 0.0) + val
+                city_hour_cnt[city][hour] = city_hour_cnt[city].get(hour, 0) + 1
+                city_raw_rows[city] += 1
+                n_city_rows += 1
+        except Exception:
+            n_city_rows = 0
+
+        # 2) Slow path: aggregate from raw node prices (streaming cursor) using city mapping.
+        if n_city_rows < 200:
+            try:
+                res = conn.execute(
+                    text(
+                        f"""
+                        SELECT record_time, channel_name, value
+                        FROM {power_table}
+                        WHERE (type LIKE '%节点电价%' AND type LIKE '%实时%')
+                          AND channel_name NOT LIKE '%均值%'
+                          AND channel_name NOT LIKE '%节点均价%'
+                          AND channel_name <> '节点电价'
+                          AND record_time IS NOT NULL
+                        """
+                    )
+                )
+                for row in res:
+                    m = dict(row._mapping)
+                    node = m.get("channel_name")
+                    city = importer._get_city_from_node(node) if hasattr(importer, "_get_city_from_node") else None
+                    if not city or city not in city_hour_sum:
+                        continue
+                    hour = importer._extract_hour(m.get("record_time")) if hasattr(importer, "_extract_hour") else None
+                    if hour is None or hour < 0 or hour > 23:
+                        continue
+                    try:
+                        val = float(m.get("value"))
+                    except Exception:
+                        continue
+                    city_hour_sum[city][hour] = city_hour_sum[city].get(hour, 0.0) + val
+                    city_hour_cnt[city][hour] = city_hour_cnt[city].get(hour, 0) + 1
+                    city_raw_rows[city] += 1
+            except Exception:
+                return 0
+
+        # Build payload
+        any_data = any((city_raw_rows.get(c) or 0) > 0 for c in cities)
+        if not any_data:
+            return 0
+
+        payload = []
+        for c in cities:
+            hour_means = []
+            for h in range(24):
+                cnt = city_hour_cnt[c].get(h) or 0
+                if cnt <= 0:
+                    continue
+                hour_means.append(city_hour_sum[c].get(h, 0.0) / cnt)
+            rt_daily_mean = float(np.mean(hour_means)) if hour_means else None
+            payload.append(
+                {
+                    "record_date": date_str,
+                    "city": c,
+                    "rt_daily_mean": rt_daily_mean,
+                    "hours_with_data": int(len(hour_means)),
+                    "raw_rows": int(city_raw_rows.get(c) or 0),
+                }
+            )
+
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO `{cache_table}`
+                  (`record_date`, `city`, `rt_daily_mean`, `hours_with_data`, `raw_rows`)
+                VALUES
+                  (:record_date, :city, :rt_daily_mean, :hours_with_data, :raw_rows)
+                ON DUPLICATE KEY UPDATE
+                  `rt_daily_mean`=VALUES(`rt_daily_mean`),
+                  `hours_with_data`=VALUES(`hours_with_data`),
+                  `raw_rows`=VALUES(`raw_rows`)
+                """
+            ),
+            payload,
+        )
+
+    return len(cities)
+
+def update_gd_price_hourly_cache_for_date(target_date_str: str, cache_table: str = "gd_price_hourly_cache") -> int:
+    """
+    更新指定日期的“广东日前/实时节点电价(小时均价)”缓存表。
+
+    用途：
+    - /gd_city_price 切换日期时需要 DA/RT 曲线与价差；直接扫 power_data_YYYYMMDD 可能偏慢。
+    - 此表只存 24 行/天（小时级），查询非常快。
+    """
+    try:
+        d_obj = pd.to_datetime(target_date_str).date()
+        date_str = d_obj.strftime("%Y-%m-%d")
+    except Exception:
+        return 0
+
+    power_table = f"power_data_{d_obj.strftime('%Y%m%d')}"
+    try:
+        if power_table not in db_manager.get_tables():
+            return 0
+    except Exception:
+        pass
+
+    with db_manager.engine.begin() as conn:
+        # Ensure cache table exists.
+        conn.execute(
+            text(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{cache_table}` (
+                    `record_date` DATE NOT NULL,
+                    `hour` TINYINT NOT NULL,
+                    `price_da` FLOAT NULL,
+                    `price_rt` FLOAT NULL,
+                    `price_diff` FLOAT NULL,
+                    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`record_date`, `hour`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+        )
+
+        da_map: Dict[int, float] = {}
+        rt_map: Dict[int, float] = {}
+
+        # We restrict to Guangdong to avoid mixing other areas if they exist.
+        try:
+            rows = conn.execute(
+                text(
+                    f"""
+                    SELECT HOUR(record_time) AS hour, AVG(value) AS v
+                    FROM {power_table}
+                    WHERE type LIKE '%广东%' AND type LIKE '%节点电价%' AND type LIKE '%日前%'
+                      AND channel_name NOT LIKE '%均值%'
+                      AND channel_name NOT LIKE '%节点均价%'
+                      AND channel_name <> '节点电价'
+                      AND record_time IS NOT NULL
+                    GROUP BY HOUR(record_time)
+                    """
+                )
+            ).fetchall()
+            for h, v in rows:
+                try:
+                    hh = int(h)
+                except Exception:
+                    continue
+                if 0 <= hh <= 23 and v is not None:
+                    da_map[hh] = float(v)
+        except Exception:
+            da_map = {}
+
+        try:
+            rows = conn.execute(
+                text(
+                    f"""
+                    SELECT HOUR(record_time) AS hour, AVG(value) AS v
+                    FROM {power_table}
+                    WHERE type LIKE '%广东%' AND type LIKE '%节点电价%' AND type LIKE '%实时%'
+                      AND channel_name NOT LIKE '%均值%'
+                      AND channel_name NOT LIKE '%节点均价%'
+                      AND channel_name <> '节点电价'
+                      AND record_time IS NOT NULL
+                    GROUP BY HOUR(record_time)
+                    """
+                )
+            ).fetchall()
+            for h, v in rows:
+                try:
+                    hh = int(h)
+                except Exception:
+                    continue
+                if 0 <= hh <= 23 and v is not None:
+                    rt_map[hh] = float(v)
+        except Exception:
+            rt_map = {}
+
+        payload = []
+        for h in range(24):
+            da = da_map.get(h)
+            rt = rt_map.get(h)
+            diff = (da - rt) if (da is not None and rt is not None) else None
+            payload.append(
+                {
+                    "record_date": date_str,
+                    "hour": h,
+                    "price_da": da,
+                    "price_rt": rt,
+                    "price_diff": diff,
+                }
+            )
+
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO `{cache_table}`
+                  (`record_date`, `hour`, `price_da`, `price_rt`, `price_diff`)
+                VALUES
+                  (:record_date, :hour, :price_da, :price_rt, :price_diff)
+                ON DUPLICATE KEY UPDATE
+                  `price_da`=VALUES(`price_da`),
+                  `price_rt`=VALUES(`price_rt`),
+                  `price_diff`=VALUES(`price_diff`)
+                """
+            ),
+            payload,
+        )
+
+    return 24
 
 class PriceDiffCacheRequest(BaseModel):
     dates: list[str] = Field(..., description="日期列表")

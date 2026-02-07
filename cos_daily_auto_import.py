@@ -264,10 +264,27 @@ def _import_excel_and_update_cache(importer: PowerDataImporter, filename: str, f
         raise RuntimeError(f"Cannot extract date from filename for cache update: {filename}")
 
     # Lazy import to avoid pulling FastAPI on dry runs / listing.
-    from api import update_price_cache_for_date  # noqa: E402
+    from api import update_price_cache_for_date, update_gd_city_rt_price_daily_for_date, update_gd_price_hourly_cache_for_date  # noqa: E402
 
     updated = update_price_cache_for_date(date_str)
     LOG.info("Cache updated | date=%s | rows=%s", date_str, updated)
+
+    # Also update Guangdong city realtime node price daily cache when realtime price is imported.
+    # This keeps /gd_city_price fast without any manual action.
+    if "实时节点" in filename:
+        try:
+            n_city = update_gd_city_rt_price_daily_for_date(date_str)
+            LOG.info("GD city RT cache updated | date=%s | rows=%s", date_str, n_city)
+        except Exception as e:
+            LOG.warning("GD city RT cache update failed | date=%s | err=%s", date_str, e)
+
+    # Update Guangdong DA/RT hourly curve cache when any node price file is imported (DA or RT).
+    if "节点电价" in filename:
+        try:
+            n_curve = update_gd_price_hourly_cache_for_date(date_str)
+            LOG.info("GD price hourly cache updated | date=%s | rows=%s", date_str, n_curve)
+        except Exception as e:
+            LOG.warning("GD price hourly cache update failed | date=%s | err=%s", date_str, e)
 
 
 def _ensure_safe_key(key: str) -> str:
