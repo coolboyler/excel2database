@@ -148,12 +148,12 @@ SQL_RULES = {
     "ne_pv_forecast": {
         "name": "统调新能源光伏预测",
         "source": TABLE_SOURCE_POWER,
-        "where": "channel_name LIKE '%光伏%' AND type LIKE '%预测%'"
+        "where": "channel_name LIKE '%光伏%' AND type LIKE '%预测%' AND sheet_name LIKE '%统调新能源%'"
     },
     "ne_wind_forecast": {
         "name": "统调新能源风电预测",
         "source": TABLE_SOURCE_POWER,
-        "where": "channel_name LIKE '%风电%' AND type LIKE '%预测%'"
+        "where": "channel_name LIKE '%风电%' AND type LIKE '%预测%' AND sheet_name LIKE '%统调新能源%'"
     },
     "hydro_forecast": {
         "name": "水电含抽蓄预测",
@@ -167,7 +167,7 @@ SQL_RULES = {
     "load_actual": {
         "name": "实际统调负荷",
         "source": TABLE_SOURCE_POWER,
-        "where": "channel_name LIKE '%统调%' AND type LIKE '%实际%'"
+        "where": "channel_name LIKE '%统调%' AND type LIKE '%实际%' AND sheet_name LIKE '%负荷实际%'"
     },
     "class_a_actual": {
         "name": "A类电源实际",
