@@ -1,0 +1,85 @@
+{# Shared navbar for all pages. Kept self-contained (style + markup) so individual pages don't need to keep navbar CSS in sync. #}
+{% set _path = (request.url.path if request and request.url else '') %}
+<style>
+  /* App Navbar (Apple-ish, consistent across pages) */
+  .app-navbar.navbar {
+    position: sticky;
+    top: 0;
+    z-index: 1030;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+  }
+
+  .app-navbar .navbar-brand,
+  .app-navbar .navbar-brand:hover {
+    color: #111827;
+    font-weight: 800;
+    font-size: 1.35rem;
+    letter-spacing: -0.02em;
+  }
+
+  .app-navbar .navbar-nav {
+    gap: 0.5rem;
+  }
+
+  .app-navbar .navbar-nav .nav-link {
+    color: rgba(55, 65, 81, 0.92);
+    font-weight: 600;
+    font-size: 1.02rem;
+    padding: 0.48rem 0.9rem;
+    border-radius: 10px;
+    transition: background-color 0.18s ease, color 0.18s ease;
+    white-space: nowrap;
+  }
+
+  .app-navbar .navbar-nav .nav-link:hover,
+  .app-navbar .navbar-nav .nav-link:focus {
+    color: #111827;
+    background: rgba(15, 23, 42, 0.06);
+  }
+
+  .app-navbar .navbar-nav .nav-link.active {
+    color: #2563eb;
+    background: rgba(37, 99, 235, 0.10);
+    box-shadow: inset 0 -2px 0 currentColor;
+  }
+
+  .app-navbar .navbar-toggler {
+    border-radius: 12px;
+    border: 1px solid rgba(0, 0, 0, 0.10);
+    padding: 0.45rem 0.6rem;
+  }
+
+  .app-navbar .navbar-toggler:focus {
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+  }
+</style>
+
+<nav class="navbar navbar-expand-lg navbar-light app-navbar mb-4">
+  <div class="container-fluid">
+    <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain"
+      aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarMain">
+      <ul class="navbar-nav me-auto">
+        <li class="nav-item"><a class="nav-link {% if _path == '/' %}active fw-bold{% endif %}" href="/">首页</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/file_manager' %}active fw-bold{% endif %}" href="/file_manager">文件管理</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/daily_hourly' %}active fw-bold{% endif %}" href="/daily_hourly">分时看板</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/join_query' %}active fw-bold{% endif %}" href="/join_query">多天均值查询</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/similar_day' %}active fw-bold{% endif %}" href="/similar_day">类比日匹配</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/multi_day_compare' %}active fw-bold{% endif %}" href="/multi_day_compare">多日对比</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/gd_city_price' %}active fw-bold{% endif %}" href="/gd_city_price">广东城市电价</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/strategy_quote' %}active fw-bold{% endif %}" href="/strategy_quote">报价申报</a></li>
+        <li class="nav-item"><a class="nav-link {% if _path == '/strategy_review' %}active fw-bold{% endif %}" href="/strategy_review">策略复盘</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+

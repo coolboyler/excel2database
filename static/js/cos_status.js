@@ -56,31 +56,45 @@
     }
 
     function loadCosDailyStatus() {
+        // 支持两种DOM结构：旧版（文件管理页）和新版（首页）
         const banner = document.getElementById("refresh-banner");
-        const textEl = document.getElementById("refresh-status-text");
-        const detailEl = document.getElementById("refresh-status-details");
-        const dotEl = document.getElementById("refresh-status-dot");
-        if (!banner || !textEl || !detailEl || !dotEl) return;
+        const textEl =
+            document.getElementById("refresh-status-text") ||
+            document.getElementById("monitor-status-text");
+        const detailEl =
+            document.getElementById("refresh-status-details") ||
+            document.getElementById("monitor-status-details");
+        const dotEl =
+            document.getElementById("refresh-status-dot") ||
+            document.getElementById("monitor-dot");
+        if (!textEl || !dotEl) return;
+
+        // 在加载过程中给新版首页的圆点一个轻微的“读取中”提示
+        if (dotEl.classList) {
+            dotEl.classList.add("pulsing");
+        }
 
         fetch("/api/cos_daily/status")
             .then(res => res.json())
             .then(data => {
                 if (!data || data.status !== "ok") {
-                    const msg = data && data.status ? `状态：${data.status}` : "无法获取状态";
-                    textEl.textContent = `每日自动更新未运行或无状态文件。${msg}`;
+                    const statusMsg = data && data.status ? `状态：${data.status}` : "无法获取状态";
+                    const extraMsg = data && data.message ? `（${String(data.message)}）` : "";
+                    textEl.textContent = `每日自动更新未运行或无状态文件。${statusMsg}${extraMsg}`;
                     const parts = [];
                     Object.keys(COS_TARGET_LABELS).forEach(key => {
                         const label = COS_TARGET_LABELS[key];
                         const statusInfo = normalizeStatus("");
                         parts.push(`${label}：${statusInfo.icon} ${statusInfo.text}`);
                     });
-                    detailEl.textContent = parts.join(" ｜ ");
-                    dotEl.style.background = "#94a3b8";
+                    if (detailEl) detailEl.textContent = parts.join(" ｜ ");
+                    applyDotStatus(dotEl, { level: "neutral" });
                     return;
                 }
 
                 const lastSuccess = data.last_success_at ? formatLocalTime(data.last_success_at) : "暂无";
-                textEl.textContent = `最近刷新：${lastSuccess}（监控日：${data.day || "未知"}）`;
+                const note = data && data.enabled === false ? "（自动任务已关闭，仅展示最近状态）" : "";
+                textEl.textContent = `最近刷新：${lastSuccess}（监控日：${data.day || "未知"}）${note}`;
 
                 const targets = data.targets || {};
                 const parts = [];
@@ -96,8 +110,8 @@
                     const suffix = dateHint ? `（${dateHint}）` : "";
                     parts.push(`${label}：${statusInfo.icon} ${statusInfo.text}${suffix}`);
                 });
-                detailEl.textContent = parts.join(" ｜ ");
-                dotEl.style.background = hasFail ? "#ef4444" : (hasDone ? "#22c55e" : "#94a3b8");
+                if (detailEl) detailEl.textContent = parts.join(" ｜ ");
+                applyDotStatus(dotEl, { level: hasFail ? "error" : (hasDone ? "ok" : "neutral") });
 
                 const lastNotified = localStorage.getItem("cos_last_success_at");
                 if (data.last_success_at && data.last_success_at !== lastNotified) {
@@ -109,9 +123,35 @@
             })
             .catch(() => {
                 textEl.textContent = "状态获取失败（网络或服务异常）";
-                detailEl.textContent = "";
-                dotEl.style.background = "#94a3b8";
+                if (detailEl) detailEl.textContent = "";
+                applyDotStatus(dotEl, { level: "neutral" });
             });
+    }
+
+    function applyDotStatus(dotEl, { level }) {
+        // 新版首页使用 class 控制（active / warning / error），旧版使用内联背景色即可
+        const isNewDot = dotEl && dotEl.id === "monitor-dot";
+        const color =
+            level === "error" ? "#ef4444" :
+            level === "ok" ? "#22c55e" :
+            "#94a3b8";
+        const shadow =
+            level === "error" ? "rgba(239, 68, 68, 0.18)" :
+            level === "ok" ? "rgba(34, 197, 94, 0.18)" :
+            "rgba(148, 163, 184, 0.18)";
+
+        if (!dotEl) return;
+        if (dotEl.classList) {
+            dotEl.classList.remove("active", "warning", "error", "pulsing");
+            if (isNewDot) {
+                if (level === "ok") dotEl.classList.add("active");
+                else if (level === "error") dotEl.classList.add("error");
+            }
+        }
+        dotEl.style.background = color;
+        // 兼容旧版 dot 是 span 的情况
+        if (dotEl.style) dotEl.style.background = color;
+        if (dotEl.style) dotEl.style.boxShadow = `0 0 0 4px ${shadow}`;
     }
 
     function setupCosDailyStatus() {

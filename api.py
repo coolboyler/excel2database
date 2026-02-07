@@ -65,8 +65,14 @@ templates = Jinja2Templates(directory="templates")
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    """返回前端页面"""
+    """返回导航首页"""
     return templates.TemplateResponse("index.html", {"request": request})
+
+# 文件管理页面
+@app.get("/file_manager", response_class=HTMLResponse)
+async def file_manager_page(request: Request):
+    """返回文件管理页面"""
+    return templates.TemplateResponse("file_manager.html", {"request": request})
 
 # 新增：表查询页面
 @app.get("/table_query", response_class=HTMLResponse)
@@ -506,8 +512,11 @@ def _load_cos_daily_state():
     except Exception as e:
         return {"status": "invalid_config", "message": str(e)}
 
+    enabled = _cos_scheduler_enabled()
+
     # Report missing COS settings early, so the UI doesn't look "broken" when COS is simply not configured.
-    if _cos_scheduler_enabled():
+    # If scheduler is disabled, still return latest state (if any) for display.
+    if enabled:
         resolved = _resolve_cos_env_from_config(cfg)
         missing = _cos_daily_missing_requirements(resolved)
         if missing:
@@ -517,12 +526,6 @@ def _load_cos_daily_state():
                 "missing": missing,
                 "message": "COS daily scheduler enabled but COS is not configured.",
             }
-    else:
-        return {
-            "status": "disabled",
-            "enabled": False,
-            "message": "COS daily scheduler disabled via COS_DAILY_SCHEDULER=0.",
-        }
 
     state_rel = (cfg.get("local") or {}).get("state_file") or "./state/cos_daily_state.json"
     state_path = (_BASE_DIR / state_rel).resolve()
@@ -531,6 +534,8 @@ def _load_cos_daily_state():
             "status": "no_state",
             "state_file": str(state_path),
             "days": {},
+            "enabled": enabled,
+            "message": "state file not found.",
         }
 
     try:
@@ -541,6 +546,7 @@ def _load_cos_daily_state():
             "status": "invalid_state",
             "state_file": str(state_path),
             "message": str(e),
+            "enabled": enabled,
         }
 
     days = state.get("days", {}) or {}
@@ -549,6 +555,7 @@ def _load_cos_daily_state():
             "status": "empty",
             "state_file": str(state_path),
             "days": {},
+            "enabled": enabled,
         }
 
     latest_day = sorted(days.keys())[-1]
@@ -578,8 +585,9 @@ def _load_cos_daily_state():
             elif last_success_at and t_time == last_success_at:
                 last_success_targets.append(target_name)
 
-    return {
+    resp = {
         "status": "ok",
+        "enabled": enabled,
         "server_time": datetime.datetime.now().isoformat(),
         "state_file": str(state_path),
         "day": latest_day,
@@ -588,6 +596,11 @@ def _load_cos_daily_state():
         "last_success_at": last_success_at.isoformat() if last_success_at else None,
         "last_success_targets": sorted(set(last_success_targets)),
     }
+
+    if not enabled:
+        resp["message"] = "COS daily scheduler disabled via COS_DAILY_SCHEDULER=0 (showing latest state)."
+
+    return resp
 
 
 @app.get("/api/cos_daily/status")

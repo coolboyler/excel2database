@@ -57,7 +57,7 @@
       color: var(--accent-color);
       font-weight: 700;
       background-color: rgba(59, 130, 246, 0.12);
-      border-bottom: 2px solid var(--accent-color);
+      box-shadow: inset 0 -2px 0 currentColor;
     }
     .dashboard-card {
       background: var(--card-bg);
@@ -72,26 +72,12 @@
   </style>
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg navbar-light mb-4">
-    <div class="container-fluid">
-      <a class="navbar-brand fw-bold" href="/"><i class="bi bi-grid-1x2-fill"></i> Excel2SQL</a>
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain"
-        aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
-        <span class="navbar-toggler-icon"></span>
-      </button>
-      <div class="collapse navbar-collapse" id="navbarMain">
-        <ul class="navbar-nav me-auto">
-          <li class="nav-item"><a class="nav-link" href="/">首页</a></li>
-          <li class="nav-item"><a class="nav-link" href="/strategy_quote">报价申报</a></li>
-          <li class="nav-item"><a class="nav-link active fw-bold" href="/strategy_review">策略复盘</a></li>
-          <li class="nav-item"><a class="nav-link" href="/gd_city_price">广东城市电价</a></li>
-        </ul>
-      </div>
-      <a class="btn btn-outline-secondary btn-sm" href="/strategy_review"><i class="bi bi-arrow-left"></i> 返回复盘</a>
-    </div>
-  </nav>
+  {% include "_navbar.html" %}
 
   <div class="container-fluid px-4 py-4">
+<div class="d-flex justify-content-end mb-2">
+      <a class="btn btn-outline-secondary btn-sm" href="/strategy_review"><i class="bi bi-arrow-left"></i> 返回复盘</a>
+    </div>
 <div class="dashboard-card mb-3">
       <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
         <div>
